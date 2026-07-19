@@ -13,6 +13,12 @@ config/profiles/john.yaml
 config/secrets/**
 !config/secrets/.gitkeep
 
+# Fake demonstration credentials pairing with config/profiles/alice.yaml
+# — not real, safe to commit. Everything else under config/secrets/
+# stays ignored.
+!config/secrets/pocketcasts/
+!config/secrets/pocketcasts/alice.json
+
 state/**
 !state/.gitkeep
 
