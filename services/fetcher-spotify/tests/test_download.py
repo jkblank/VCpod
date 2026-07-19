@@ -26,14 +26,14 @@ TRACK2 = TrackMeta(
 
 def _fake_zotify_run(fixture_by_id: dict[str, str]):
     """Simulates zotify downloading a single track into whatever
-    --album-library scratch dir it's pointed at for that invocation. A track
+    --root-path scratch dir it's pointed at for that invocation. A track
     id absent from fixture_by_id simulates a real per-track failure (no file
     produced)."""
 
     def _run(cmd, capture_output, text):
         url = cmd[1]
         track_id = url.rsplit("/", 1)[-1]
-        scratch_dir = Path(cmd[cmd.index("--album-library") + 1])
+        scratch_dir = Path(cmd[cmd.index("--root-path") + 1])
         fixture_name = fixture_by_id.get(track_id)
         if fixture_name is not None:
             scratch_dir.mkdir(parents=True, exist_ok=True)

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import httpx
 from librespot.core import Session
+from librespot.oauth import OAuth
 
 SCOPES = (
     "playlist-read-private",
@@ -34,9 +36,29 @@ class TrackMeta:
     isrc: str | None = None
 
 
-def _get_access_token(credentials_path: str) -> str:
+def _build_session(credentials_path: str) -> Session:
+    # As of the migration to Googolplexed0/zotify (login5 auth fix, see
+    # notes.md), credentials saved via an interactive login are OAuth PKCE
+    # tokens (a JSON dict: client_id/access_token/refresh_token/expires_at)
+    # — a different format from the legacy raw stored-credentials blob
+    # Session.Builder.stored_file() expects. Mirrors zotify's own
+    # Zotify.login() branching (zotify/config.py) so credentials created
+    # via zotify's interactive login work here too.
     conf = Session.Configuration.Builder().set_store_credentials(False).build()
-    session = Session.Builder(conf).stored_file(str(credentials_path)).create()
+    builder = Session.Builder(conf)
+    with open(credentials_path, encoding="utf-8") as f:
+        creds = json.load(f)
+    if creds.get("type") == OAuth.OAUTH_PKCE_TOKEN:
+        oauth = OAuth(creds["client_id"], "", None).ingest_token_response(creds)
+        oauth.refresh_token()
+        builder.login_credentials = oauth.get_credentials()
+    else:
+        builder.stored_file(str(credentials_path))
+    return builder.create()
+
+
+def _get_access_token(credentials_path: str) -> str:
+    session = _build_session(credentials_path)
     return session.tokens().get_token(*SCOPES).access_token
 
 

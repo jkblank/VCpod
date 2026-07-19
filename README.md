@@ -33,7 +33,7 @@ upstream tools it depends on.
 |---|---|---|
 | M1 | Repo scaffold, config loader/validator | Done |
 | M2 | Apple Music fetcher (`gamdl` wrapper) | Done |
-| M3 | Spotify fetcher | Shelved — upstream Spotify/librespot auth instability |
+| M3 | Spotify fetcher | Built and auth-working (see `notes.md`) — shelved on a Spotify Premium requirement for API access, not a code issue |
 | M4 | Library manager: cross-source dedup, playlist writer | Done |
 | M5 | Podcast manager: Pocket Casts client, episode downloader | Done |
 | M6 | iOpenPod headless spike: full real sync (music + playlists + podcasts) | Done — see [`docs/m6-ipod-headless-recommendation.md`](docs/m6-ipod-headless-recommendation.md) |

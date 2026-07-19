@@ -16,23 +16,26 @@ fetcher-spotify = "fetcher_spotify.cli:main"
 
 [tool.uv.sources]
 common = { path = "../common" }
-zotify = { git = "https://github.com/zotify-dev/zotify.git", branch = "v1.0-dev" }
-librespot = { git = "https://github.com/kokarare1212/librespot-python.git", rev = "3b46fe560ad829b976ce63e85012cff95b1e0bf3" }
-music-tag = { git = "https://github.com/KristoforMaynard/music-tag.git" }
+# zotify-dev/zotify (both `main` and the `v1.0-dev` branch used previously)
+# is effectively abandoned as of the Spotify login5 auth migration
+# (Aug 2025) — confirmed both still pin librespot to a June 2024 commit
+# that predates the breaking change and its fix, and the v1.0-dev branch
+# hasn't been touched since Sep 2024. Migrated to Googolplexed0/zotify, an
+# actively maintained fork created specifically because of this (526
+# stars, commits through 2026), which already carries the login5 fix.
+# Pinned to a specific tested commit rather than tracking `main`, per this
+# project's usual discipline for fetcher dependencies.
+zotify = { git = "https://github.com/Googolplexed0/zotify.git", rev = "9ea3210198e1ad9f3fc995cca046973ff77238e5" }
+librespot = { git = "https://github.com/Googolplexed0/librespot-python.git", rev = "7a89401ba151897d04efc6e8476c8ed68d417b3e" }
 
 [tool.uv]
-# zotify (v1.0-dev) pins both of these to a direct URL in its own metadata
+# zotify pins librespot to its own unpinned `main` in its own metadata
 # ([tool.uv.sources] above doesn't override a direct-URL pin embedded in
-# another package's metadata), so force the substitution here instead:
-# - music-tag: zotify's own fork lives at zotify.xyz, which currently has a
-#   broken TLS cert (external infra issue, not ours) — use upstream instead.
-# - librespot: zotify points at unpinned HEAD, which has since diverged and
-#   breaks zotify's playable.py (PlayableContentFeeder.LoadedStream no
-#   longer exists there) — pin to the exact commit zotify's own
-#   Pipfile.lock was actually built and tested against.
+# another package's metadata) — force the same pinned commit as above so
+# both this project and zotify's own install resolve to the identical,
+# tested librespot commit.
 override-dependencies = [
-    "music-tag @ git+https://github.com/KristoforMaynard/music-tag.git",
-    "librespot @ git+https://github.com/kokarare1212/librespot-python.git@3b46fe560ad829b976ce63e85012cff95b1e0bf3",
+    "librespot @ git+https://github.com/Googolplexed0/librespot-python.git@7a89401ba151897d04efc6e8476c8ed68d417b3e",
 ]
 
 [dependency-groups]

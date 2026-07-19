@@ -38,14 +38,21 @@ def _sanitize(text: str) -> str:
 def _run_zotify_single_track(
     *, track_id: str, credentials_path: Path, scratch_dir: Path
 ) -> None:
+    # Flags match Googolplexed0/zotify's CLI (see notes.md for the
+    # migration from the abandoned zotify-dev/zotify): --credentials
+    # became --creds, --album-library became --root-path, --audio-format
+    # became --codec. --output-album is left at its default nested
+    # template rather than forced flat — _download_one below finds the
+    # single output file via rglob() regardless of where it lands under
+    # scratch_dir.
     result = subprocess.run(
         [
             "zotify",
             f"https://open.spotify.com/track/{track_id}",
-            "--credentials", str(credentials_path),
-            "--album-library", str(scratch_dir),
-            "--audio-format", "mp3",
-            "--output-album", "track",
+            "--creds", str(credentials_path),
+            "--root-path", str(scratch_dir),
+            "--codec", "mp3",
+            "-ns",
         ],
         capture_output=True,
         text=True,

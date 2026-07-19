@@ -238,3 +238,164 @@ exhausted. Regression tests added
 `test_download_enclosure_raises_after_exhausting_all_retries`).
 
 **Status**: done.
+
+## Future: per-podcast listening order (newest-first vs. chronological)
+
+Some podcasts should sync "get me the latest unlistened episode" (news,
+commentary shows), but others make more sense listened to in
+chronological order from wherever you left off (serialized fiction,
+courses, anything where episode order matters).
+
+iOpenPod's own `podcasts.models.PodcastFeed` already has exactly this
+concept built in — `fill_mode: str = "newest"`, with the alternative
+`"next"` documented as "pick the next unheard episode (oldest on iPod + 1;
+if none on iPod, pick the oldest retrieved episode)." We never set this
+when constructing `PodcastFeed` objects in `headless_write_poc.py`'s
+`_load_podcast_feeds()`, so every show currently defaults to `"newest"`.
+
+**Fix idea**: expose this as a per-show setting in the profile YAML
+(`podcasts.pocketcasts.shows` currently only takes a bare list of UUIDs or
+`"all"` — would need to become a richer structure, or a separate
+`fill_mode` map keyed by show UUID/name), and set
+`PodcastFeed(fill_mode=...)` accordingly when building feeds for the sync
+plan. No new iOpenPod capability needed — just wiring up what already
+exists.
+
+**Status**: not started, noted 2026-07-19 after confirming the M6
+combined sync (music + playlists + podcasts) worked correctly end to end.
+
+## Bug to investigate: some already-listened episodes get downloaded anyway
+
+Observed live 2026-07-19: after the combined sync, some episodes that had
+already been listened to were still downloaded. `sync_podcast()`'s
+`sync_unplayed_only` filter relies on `list_episode_states()` having a row
+for that episode — and we already know from M5
+(`podcast_manager/api.py`'s `EpisodeState` docstring) that Pocket Casts
+"only returns a row here for episodes the user has actually interacted
+with... there is no row at all for an episode still in its default/
+untouched (unplayed) state." If a real listen doesn't reliably produce
+that row (sync lag between devices, a threshold not met, listened to via
+a different app, etc.), a genuinely-played episode would incorrectly be
+treated as unplayed and downloaded again.
+
+**Fix idea**: instrument/log the actual `EpisodeState` rows Pocket Casts
+returns for a few episodes the user knows they've listened to, to confirm
+whether this is a Pocket Casts API data gap, a sync-timing issue, or a bug
+in how we match states by UUID.
+
+**Status**: not started, needs live investigation.
+
+## Future: absolute vs. additive playlist sync
+
+Some playlists should be "absolute" — always mirror exactly what the
+source (Apple Music/Spotify/YouTube) currently has, including removals.
+Others should be "additive" — only ever add new tracks locally, never
+remove, since some source playlists (especially platform-curated ones
+like Apple's algorithmic Mixes) rotate/shrink their contents to stay a
+fixed length, and losing tracks locally just because the platform rotated
+them out isn't wanted.
+
+Unlike the podcast fill_mode case, this doesn't need any new iOpenPod
+capability — iOpenPod's playlist-file sync (`sync_playlist_files.py`) just
+mirrors whatever `.m3u8` file it's given. "Additive" mode can be
+implemented entirely at our own layer: before a fetcher overwrites a
+playlist's `.m3u8` (`common/playlist.py`'s `write_m3u8`), read the
+existing file's current entries and union them with the newly-fetched
+list instead of replacing it outright, for playlists configured as
+additive. "Absolute" playlists keep today's replace-outright behavior.
+
+**Fix idea**: add a `sync_mode: absolute | additive` (or similar) field to
+each playlist entry in the profile YAML's `playlists` list, and branch on
+it in each fetcher's `fetch_playlist` before calling `write_m3u8`.
+
+**Status**: not started, noted 2026-07-19.
+
+## M8 scope expansion: 5-star rating -> "favourite"/"like" on the source platform
+
+A track rated 5 stars on the iPod should get marked as a favourite/like on
+whichever platform is its "main source" (Apple Music, Spotify, YouTube
+Music) — not just have the rating recorded locally. Extends M8's
+play-status round trip (already scoped for play counts/played-position →
+Pocket Casts for podcasts) to ratings → source-platform favourites for
+music.
+
+Needs: (1) reading the on-device rating back per track (iTunesDB track
+dicts already carry a rating field, same general mechanism as the
+play_count_1/last_played fields M8's podcast round trip already reads —
+see the `iopenpod` podcast round-trip section above), (2) resolving each
+track's "main source" (source + source_id are already tagged per track by
+every fetcher for dedup, per the fetcher output contract in CLAUDE.md —
+after cross-source dedup picks a canonical version, that's the main
+source), (3) a per-source "mark as favourite/liked" API call — Apple
+Music's library API, Spotify's "Save Track"/Liked Songs, YouTube Music's
+like endpoint — none of which exist in any fetcher yet.
+
+**Status**: not started, noted 2026-07-19 as an M8 scope expansion.
+
+## fetcher-spotify: migrated to an actively-maintained zotify fork — auth fixed, but blocked on Premium (re-shelved)
+
+Revisited the M3 shelving decision (2026-07-19). Root-caused the original
+403 `MercuryException` precisely this time: Spotify deprecated the old
+"keymaster" Web API token method industry-wide in August 2025 in favor of
+"login5". `zotify-dev/zotify` — both `main` and the `v1.0-dev` branch we
+were pinned to — never got the fix; the `v1.0-dev` branch hasn't been
+touched since September 2024, and its own `Pipfile.lock` still pins
+`librespot` to a June 2024 commit that predates both the breaking change
+and its fix. Effectively abandoned on this specific issue.
+
+**Migrated to `Googolplexed0/zotify`**, an actively maintained fork (526
+stars, commits through June 2026, created explicitly because the original
+went stale) that carries the login5 fix in its own `librespot` fork.
+Pinned to specific tested commits (not tracking `main`), per this
+project's usual fetcher-dependency discipline:
+- `zotify @ git+https://github.com/Googolplexed0/zotify.git@9ea3210198e1ad9f3fc995cca046973ff77238e5`
+- `librespot @ git+https://github.com/Googolplexed0/librespot-python.git@7a89401ba151897d04efc6e8476c8ed68d417b3e`
+
+Code changes needed, both confirmed necessary by reading the fork's own
+`zotify/config.py` `Zotify.login()` logic:
+- `fetcher_spotify/api.py`: credentials saved via interactive login can
+  now be either the legacy raw stored-credentials blob (loaded via
+  `Session.Builder.stored_file()`, unchanged) or a new OAuth PKCE JSON
+  format (`{client_id, access_token, refresh_token, expires_at, type:
+  "OAUTH_PKCE_TOKEN"}`) when a custom `--client-id` is used — `_build_session()`
+  now branches on `creds["type"]` and reconstructs an `OAuth` object for
+  the PKCE case, mirroring the fork's own login branching exactly.
+- `fetcher_spotify/download.py`: CLI flags changed — `--credentials` →
+  `--creds`, `--album-library` → `--root-path`, `--audio-format` →
+  `--codec`. `tag.py` (pure mutagen ID3 tagging) needed no changes at all.
+- `session.tokens().get_token(*scopes)` (used for our own Web API calls)
+  keeps the exact same public signature — confirmed by reading the
+  installed `TokenProvider.get_token()` source directly: it now calls
+  `self.login5(scopes)` internally instead of the old keymaster path, so
+  no caller-side change was needed there.
+
+**Confirmed live that the actual auth fix works**: a fresh interactive
+OAuth login (browser-based PKCE flow, zotify's `--creds`/`--client-id`
+flags) produced a real, valid session — proven by getting a **429 Too Many
+Requests** on `api.spotify.com/v1/me/playlists` instead of the old 403.
+That's a fundamentally different, far more benign class of error: the
+login5 auth genuinely succeeded; something else was rate-limiting us.
+
+**Real blocker found (not a code issue)**: registered a private Spotify
+Developer app (client_id `d38e5c1b8594498a8ce0c73494d5cabc`, redirect URI
+`http://127.0.0.1:4381/login`, "Web API" scope) to rule out the shared
+default client_id being globally rate-limited by other zotify users — the
+429 persisted identically even on a brand-new, never-used client_id,
+ruling that theory out. Then, testing zotify's own internal metadata
+resolution directly (bypassing our own Web API calls entirely) on both a
+playlist and a single track produced a deterministic, non-rate-limit
+error: `"ATTEMPTING TO ACCESS FORBIDDEN ENDPOINT"` /
+`"Active premium subscription required for the owner of the app."`
+Confirmed on two different endpoint types (playlist metadata, single-track
+metadata) — this is a hard Spotify account-tier restriction, not
+something fixable in code. The account in question is Spotify Free.
+
+**Status**: re-shelved (same operational decision as the original M3
+shelving), but for a completely different and now precisely known reason.
+The migration itself is done and correct — pinned to known-good commits,
+all 10 tests passing, code changes mirror the fork's own logic exactly.
+No further migration work is needed; this should just work the moment the
+account has an active Premium subscription. The registered developer app
+(client_id above) and the real OAuth credentials obtained during testing
+are still in place locally (`config/secrets/spotify_credentials.json`,
+gitignored) for whenever that happens.
