@@ -1,0 +1,18 @@
+paths:
+  library_root: /data/library
+  state_root: /data/state
+
+sources:
+  apple_music:
+    enabled: true
+    cookies_file: /config/secrets/apple_music_cookies.txt
+  spotify:
+    enabled: true
+    credentials_file: /config/secrets/spotify_credentials.json
+  ytmusic:
+    enabled: false
+    oauth_file: /config/secrets/ytmusic_oauth.json
+
+podcasts:
+  pocketcasts:
+    poll_interval_minutes: 60

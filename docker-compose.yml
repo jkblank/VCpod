@@ -1,0 +1,53 @@
+services:
+  fetcher-apple:
+    build:
+      context: .
+      dockerfile: services/fetcher-apple/Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - ./library:/data/library
+      - ./state:/data/state
+
+  fetcher-spotify:
+    build:
+      context: .
+      dockerfile: services/fetcher-spotify/Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - ./library:/data/library
+      - ./state:/data/state
+
+  fetcher-ytmusic:
+    build:
+      context: .
+      dockerfile: services/fetcher-ytmusic/Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - ./library:/data/library
+      - ./state:/data/state
+
+  library-manager:
+    build:
+      context: .
+      dockerfile: services/library-manager/Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - ./library:/data/library
+      - ./state:/data/state
+
+  podcast-manager:
+    build:
+      context: .
+      dockerfile: services/podcast-manager/Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - ./library:/data/library
+      - ./state:/data/state
+
+# sync-orchestrator is intentionally not defined here — it needs direct USB
+# access to the iPod and runs bare metal. See services/sync-orchestrator/README.md.

@@ -1,0 +1,48 @@
+[project]
+name = "fetcher-spotify"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "common",
+    "zotify",
+    "librespot",
+    "music-tag",
+    "mutagen>=1.47.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+fetcher-spotify = "fetcher_spotify.cli:main"
+
+[tool.uv.sources]
+common = { path = "../common" }
+zotify = { git = "https://github.com/zotify-dev/zotify.git", branch = "v1.0-dev" }
+librespot = { git = "https://github.com/kokarare1212/librespot-python.git", rev = "3b46fe560ad829b976ce63e85012cff95b1e0bf3" }
+music-tag = { git = "https://github.com/KristoforMaynard/music-tag.git" }
+
+[tool.uv]
+# zotify (v1.0-dev) pins both of these to a direct URL in its own metadata
+# ([tool.uv.sources] above doesn't override a direct-URL pin embedded in
+# another package's metadata), so force the substitution here instead:
+# - music-tag: zotify's own fork lives at zotify.xyz, which currently has a
+#   broken TLS cert (external infra issue, not ours) — use upstream instead.
+# - librespot: zotify points at unpinned HEAD, which has since diverged and
+#   breaks zotify's playable.py (PlayableContentFeeder.LoadedStream no
+#   longer exists there) — pin to the exact commit zotify's own
+#   Pipfile.lock was actually built and tested against.
+override-dependencies = [
+    "music-tag @ git+https://github.com/KristoforMaynard/music-tag.git",
+    "librespot @ git+https://github.com/kokarare1212/librespot-python.git@3b46fe560ad829b976ce63e85012cff95b1e0bf3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fetcher_spotify"]

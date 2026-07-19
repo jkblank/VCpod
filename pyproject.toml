@@ -1,0 +1,51 @@
+[project]
+name = "music-stack"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "services/common",
+    "services/fetcher-apple",
+    "services/library-manager",
+    "services/podcast-manager",
+]
+
+[tool.uv.sources]
+common = { workspace = true }
+fetcher-apple = { workspace = true }
+library-manager = { workspace = true }
+podcast-manager = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "common",
+    "fetcher-apple",
+    "library-manager",
+    "podcast-manager",
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+# Explicitly scoped to actual workspace members only — standalone services
+# (e.g. fetcher-spotify, which can't share this workspace's lockfile, see
+# its own pyproject.toml) have their own tests run via their own `uv run
+# pytest`, and must NOT be picked up by pytest's default recursive
+# discovery from repo root.
+testpaths = [
+    "services/common/tests",
+    "services/fetcher-apple/tests",
+    "services/library-manager/tests",
+    "services/podcast-manager/tests",
+]
+# Different services' test dirs have no __init__.py (and "fetcher-apple"
+# etc. aren't valid Python package names anyway), so same-named test files
+# across services (test_api.py, test_download.py, ...) collide under
+# pytest's default "prepend" import mode. importlib mode identifies test
+# modules by file path instead of a synthesized dotted name, so it doesn't
+# require globally-unique basenames.
+addopts = "--import-mode=importlib"

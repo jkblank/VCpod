@@ -1,0 +1,15 @@
+profile: dup
+device:
+  match_by: volume_label
+  match_value: "SOMETHING_ELSE"
+playlists: []
+podcasts:
+  pocketcasts:
+    credentials_file: /config/secrets/pocketcasts/dup2.json
+  sync_unplayed_only: false
+  max_episodes_per_show: 3
+  shows: all
+sync:
+  trigger: manual
+  transcode_format: mp3
+  push_play_status_back: false

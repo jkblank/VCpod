@@ -1,0 +1,22 @@
+[project]
+name = "fetcher-apple"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "common",
+    "gamdl>=3.8.4",
+    "mutagen>=1.47.0",
+]
+
+[project.scripts]
+fetcher-apple = "fetcher_apple.cli:main"
+
+[tool.uv.sources]
+common = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fetcher_apple"]

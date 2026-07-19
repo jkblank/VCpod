@@ -1,0 +1,15 @@
+profile: broken_wrong_type
+device:
+  match_by: serial
+  match_value: "AA11BB22"
+playlists: []
+podcasts:
+  pocketcasts:
+    credentials_file: /config/secrets/pocketcasts/broken.json
+  sync_unplayed_only: true
+  max_episodes_per_show: "five"
+  shows: all
+sync:
+  trigger: on_connect
+  transcode_format: alac
+  push_play_status_back: true

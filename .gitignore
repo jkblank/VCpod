@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+.env
+
+# Real per-user profiles contain personal playlist IDs and device info —
+# only the example profiles (alice.yaml, bob.yaml) are meant to be
+# committed as templates.
+config/profiles/john.yaml
+
+config/secrets/**
+!config/secrets/.gitkeep
+
+state/**
+!state/.gitkeep
+
+library/**
+!library/.gitkeep
+
+# Real device backup snapshots (spike/_backups) can be tens to hundreds
+# of GB — never meant to be committed.
+services/ipod-sync/spike/_backups/
