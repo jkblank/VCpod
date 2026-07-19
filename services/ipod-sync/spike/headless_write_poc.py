@@ -340,6 +340,19 @@ def main() -> int:
         f"to_update_metadata={len(plan.to_update_metadata)} "
         f"to_update_file={len(plan.to_update_file)}"
     )
+    if plan.duplicates:
+        # library-manager's own dedup only scans its own --library-root
+        # (music-stack/library/music), with no awareness of other PC
+        # folders like MusicLibrary — this is iOpenPod's own fingerprint-
+        # based cross-pc_folder duplicate detection (same audio content +
+        # same album = true duplicate, one canonical copy kept), the real
+        # last line of defense. Surfacing it here since a prior version of
+        # this script never printed it at all.
+        print(f"  duplicates detected across pc_folders ({len(plan.duplicates)} group(s)):")
+        for display_key, dupes in list(plan.duplicates.items())[:10]:
+            print(f"    {display_key}: {len(dupes)} copies, one kept")
+        if len(plan.duplicates) > 10:
+            print(f"    ... and {len(plan.duplicates) - 10} more groups")
     print(
         f"  playlists_to_add={len(plan.playlists_to_add)} "
         f"playlists_to_edit={len(plan.playlists_to_edit)} "

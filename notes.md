@@ -399,3 +399,50 @@ account has an active Premium subscription. The registered developer app
 (client_id above) and the real OAuth credentials obtained during testing
 are still in place locally (`config/secrets/spotify_credentials.json`,
 gitignored) for whenever that happens.
+
+## library-manager's dedup doesn't scan MusicLibrary — but iOpenPod's own sync-time dedup does
+
+Investigated 2026-07-19 after a real concern: does anything catch a track
+that's newly downloaded via a fetcher but already exists in the separate,
+pre-existing `~/Music/MusicLibrary`? Two findings:
+
+1. **`library-manager dedup` only scans one `--library-root`** (confirmed
+   by reading `cli.py`: a single required arg, passed to `scan_library()`)
+   — it has no awareness of `MusicLibrary` at all. A track fetched fresh
+   into `music-stack/library/music` that duplicates something already in
+   `MusicLibrary` is invisible to this dedup pass entirely.
+
+2. **iOpenPod's own device-sync `FingerprintDiffEngine` already covers
+   this at sync time**, independent of (1) — confirmed by reading
+   `fingerprint_diff_engine.py`'s "Phase 2: Group by identity" step. It
+   fingerprints every file across *all* `pc_folders` given to PLAN
+   combined (in our case, `MusicLibrary` + `music-stack/library/music` +
+   the playlists folder), groups by "same fingerprint + same album = true
+   duplicate," keeps one canonical copy, and reports the rest via
+   `plan.duplicates` rather than silently adding both to the device. This
+   is genuinely acoustic-content-based (not filename/tag-based), so it
+   catches duplicates even with different encodes/filenames.
+   `headless_write_poc.py` never printed `plan.duplicates` — fixed, now
+   surfaced in the plan output.
+
+These aren't fully redundant, though: iOpenPod's check requires matching
+*album* tags to call something a true duplicate (by design — "same
+fingerprint + different album" is treated as legitimately independent,
+e.g. a greatest-hits re-release). `library-manager`'s own dedup uses
+ISRC + fuzzy artist/title matching, no album requirement, so it could
+catch same-song-different-album-tag cases iOpenPod's stricter check
+would miss. And even where iOpenPod does catch it, an un-deduped local
+copy in `music-stack/library/music` still wastes local disk space and
+clutters playlist files, even though it won't reach the device twice.
+
+**Fix idea**: expand `library-manager dedup` to optionally accept
+additional read-only "reference" library roots (like `MusicLibrary`) to
+compare against, without trying to manage/quarantine files outside its
+own `--library-root` (those aren't ours to move).
+
+**Status**: `plan.duplicates` surfacing fixed. The `library-manager`
+scope expansion is not started, noted 2026-07-19. Live-checked overlap
+between the two libraries by normalized title+artist for the tracks
+synced so far and found zero — but this doesn't cover playlists not yet
+fetched (e.g. the two ex-Spotify playlists pending Apple Music
+migration), which is what prompted this investigation.
