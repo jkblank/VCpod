@@ -76,9 +76,10 @@ uv run podcast-manager sync --profile config/profiles/<you>.yaml ...
 uv run library-manager dedup ...
 ```
 
-`services/fetcher-spotify` and `services/ipod-sync` are standalone `uv`
-projects (heavy/conflicting dependencies kept out of the shared root
-workspace) — run their commands from inside those directories.
+`services/fetcher-spotify` and `services/sync-orchestrator` are
+standalone `uv` projects (heavy/conflicting dependencies kept out of the
+shared root workspace) — run their commands from inside those
+directories.
 
 ## Architecture
 
@@ -107,6 +108,26 @@ or exposure as a public service. Use accordingly.
   alternative.
 - No iPod Touch / iOS device support — click-wheel iPods only.
 - No in-browser playback or user-account system in the (future) web GUI.
+
+## Acknowledgments
+
+This project exists because of the real, hard reverse-engineering and
+protocol work done by others. In particular:
+
+- [**gamdl**](https://github.com/glomatico/gamdl) by
+  [glomatico](https://github.com/glomatico) — the Apple Music
+  downloader `fetcher-apple` wraps.
+- [**iOpenPod**](https://github.com/TheRealSavi/iOpenPod) by
+  [John Gibbons](https://github.com/TheRealSavi) — the click-wheel iPod
+  sync engine `sync-orchestrator` drives headlessly. See
+  [`docs/m6-ipod-headless-recommendation.md`](docs/m6-ipod-headless-recommendation.md)
+  for how deep this project actually goes.
+- [**zotify**](https://github.com/zotify-dev/zotify) and its actively
+  maintained fork, [**Googolplexed0/zotify**](https://github.com/Googolplexed0/zotify) —
+  the Spotify fetcher this project migrated to (currently shelved on a
+  Spotify Premium API requirement, not a code issue — see `notes.md`).
+
+None of these projects are affiliated with or endorse this one.
 
 ## License
 
