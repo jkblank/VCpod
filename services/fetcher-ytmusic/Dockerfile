@@ -1,9 +1,16 @@
 FROM python:3.12-slim
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
 WORKDIR /app
-
-# Placeholder — real dependency install (ytmusicapi + yt-dlp) + entrypoint
-# arrive with this service's implementation (M3, see music-stack-planning.md).
+COPY pyproject.toml uv.lock /app/
 COPY services/common /app/services/common
+COPY services/fetcher-ytmusic /app/services/fetcher-ytmusic
 
-CMD ["python3", "-c", "import sys; print('fetcher-ytmusic: not implemented yet (M3)'); sys.exit(1)"]
+RUN uv sync --frozen --no-dev --package fetcher-ytmusic
+
+ENTRYPOINT ["uv", "run", "fetcher-ytmusic"]

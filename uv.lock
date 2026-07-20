@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 members = [
     "common",
     "fetcher-apple",
+    "fetcher-ytmusic",
     "library-manager",
     "music-stack",
     "podcast-manager",
@@ -184,6 +185,25 @@ requires-dist = [
 ]
 
 [[package]]
+name = "fetcher-ytmusic"
+version = "0.1.0"
+source = { editable = "services/fetcher-ytmusic" }
+dependencies = [
+    { name = "common" },
+    { name = "mutagen" },
+    { name = "yt-dlp" },
+    { name = "ytmusicapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "common", editable = "services/common" },
+    { name = "mutagen", specifier = ">=1.47.0" },
+    { name = "yt-dlp" },
+    { name = "ytmusicapi", specifier = ">=1.12,<2" },
+]
+
+[[package]]
 name = "gamdl"
 version = "3.8.4"
 source = { registry = "https://pypi.org/simple" }
@@ -326,6 +346,7 @@ source = { virtual = "." }
 dev = [
     { name = "common" },
     { name = "fetcher-apple" },
+    { name = "fetcher-ytmusic" },
     { name = "library-manager" },
     { name = "podcast-manager" },
     { name = "pytest" },
@@ -337,6 +358,7 @@ dev = [
 dev = [
     { name = "common", editable = "services/common" },
     { name = "fetcher-apple", editable = "services/fetcher-apple" },
+    { name = "fetcher-ytmusic", editable = "services/fetcher-ytmusic" },
     { name = "library-manager", editable = "services/library-manager" },
     { name = "podcast-manager", editable = "services/podcast-manager" },
     { name = "pytest", specifier = ">=8.0" },
@@ -854,4 +876,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/c5/9972af4b472b0d55badf841ebafd2f98944cb0ae0f46e11d01f363ea5b91/yt_dlp-2026.7.4.tar.gz", hash = "sha256:b094813404f87a9dd2186f00815231df32e5fd8a5403be0f807b3bb2d21a4432", size = 3049326, upload-time = "2026-07-04T22:42:14.837Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f9/8a/cd4c9b02c10c563adfe78118310129641900e1cd6de888cfae2452072696/yt_dlp-2026.7.4-py3-none-any.whl", hash = "sha256:f11f2b11d5a8ac4059f9bdf29fa4407dc7c6bb00c5097e95ca22a7a9db518266", size = 3184705, upload-time = "2026-07-04T22:42:12.989Z" },
+]
+
+[[package]]
+name = "ytmusicapi"
+version = "1.12.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8a/16/f9737ae3a565abaf2e3d106507272f85e43abff6886fb514a22db3a8adaf/ytmusicapi-1.12.1.tar.gz", hash = "sha256:4e33f424db311ece1b9e5f29a51ade46b0697f6e2f284f8a40bcbd7219772755", size = 529510, upload-time = "2026-06-05T16:36:18.225Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/6d/f7156e7ab9953d09e14ef538de4e92c484169fac19d207b19b9d9eb9c845/ytmusicapi-1.12.1-py3-none-any.whl", hash = "sha256:2a53f6df504b97b93a4d41c804b699b46190207cb9d864fcf4edeb338b1f15d9", size = 108567, upload-time = "2026-06-05T16:36:16.523Z" },
 ]

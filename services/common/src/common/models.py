@@ -26,7 +26,15 @@ class SpotifySource(StrictModel):
 
 class YtMusicSource(StrictModel):
     enabled: bool
+    # ytmusicapi OAuth token file — only needed for authenticated calls
+    # (list_playlists, i.e. the account's own library). fetch_playlist
+    # against a public playlist works fine without it.
     oauth_file: str
+    # yt-dlp's YouTube cookies (Netscape format), separate from
+    # oauth_file because it authenticates a different thing: the actual
+    # CDN download, which YouTube's bot-check gates independently of
+    # ytmusicapi's own session. See notes.md.
+    cookies_file: str
 
 
 class SourcesConfig(StrictModel):

@@ -16,7 +16,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 def test_global_config_loads():
     config = load_global_config(REPO_ROOT / "config" / "global.yaml")
     assert config.sources.apple_music.enabled is True
-    assert config.sources.ytmusic.enabled is False
+    assert config.sources.ytmusic.enabled is True
     assert config.podcasts.pocketcasts.poll_interval_minutes == 60
 
 

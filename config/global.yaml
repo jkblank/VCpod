@@ -10,8 +10,9 @@ sources:
     enabled: true
     credentials_file: /config/secrets/spotify_credentials.json
   ytmusic:
-    enabled: false
+    enabled: true
     oauth_file: /config/secrets/ytmusic_oauth.json
+    cookies_file: /config/secrets/youtube_cookies.txt
 
 podcasts:
   pocketcasts:

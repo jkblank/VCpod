@@ -11,6 +11,7 @@ package = false
 members = [
     "services/common",
     "services/fetcher-apple",
+    "services/fetcher-ytmusic",
     "services/library-manager",
     "services/podcast-manager",
 ]
@@ -18,6 +19,7 @@ members = [
 [tool.uv.sources]
 common = { workspace = true }
 fetcher-apple = { workspace = true }
+fetcher-ytmusic = { workspace = true }
 library-manager = { workspace = true }
 podcast-manager = { workspace = true }
 
@@ -25,6 +27,7 @@ podcast-manager = { workspace = true }
 dev = [
     "common",
     "fetcher-apple",
+    "fetcher-ytmusic",
     "library-manager",
     "podcast-manager",
     "pytest>=8.0",
@@ -39,6 +42,7 @@ dev = [
 testpaths = [
     "services/common/tests",
     "services/fetcher-apple/tests",
+    "services/fetcher-ytmusic/tests",
     "services/library-manager/tests",
     "services/podcast-manager/tests",
 ]

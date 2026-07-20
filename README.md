@@ -33,7 +33,7 @@ upstream tools it depends on.
 |---|---|---|
 | M1 | Repo scaffold, config loader/validator | Done |
 | M2 | Apple Music fetcher (`gamdl` wrapper) | Done |
-| M3 | Spotify fetcher | Built and auth-working (see `notes.md`) — shelved on a Spotify Premium requirement for API access, not a code issue |
+| M3 | Spotify + YouTube Music fetchers | In progress — both built, with metadata/auth working, but downloads are currently blocked on platform-side requirements outside this project's control (see `notes.md`): Spotify needs Premium for API access, YouTube Music needs a PO-token provider service for yt-dlp to get past YouTube's bot-check |
 | M4 | Library manager: cross-source dedup, playlist writer | Done |
 | M5 | Podcast manager: Pocket Casts client, episode downloader | Done |
 | M6 | iOpenPod headless spike: full real sync (music + playlists + podcasts) | Done — see [`docs/m6-ipod-headless-recommendation.md`](docs/m6-ipod-headless-recommendation.md) |
@@ -81,6 +81,25 @@ uv run library-manager dedup ...
 standalone `uv` projects (heavy/conflicting dependencies kept out of the
 shared root workspace) — run their commands from inside those
 directories.
+
+### Running with Docker
+
+Fetcher containers are gated behind Compose profiles, one per music
+source (`apple`, `spotify`, `ytmusic`), matching `global.yaml`'s
+`sources.*.enabled` flags — a household that only uses Apple Music
+doesn't need to build or run containers for the others. `library-manager`
+and `podcast-manager` have no profile and always run.
+
+```bash
+docker compose --profile apple up
+docker compose --profile apple --profile spotify up   # multiple sources
+```
+
+Or set `COMPOSE_PROFILES` in `.env` once instead of passing `--profile`
+every time (see `.env.example`). Compose doesn't read `global.yaml`
+itself, so keep the two in sync by hand — enabling a source there
+without also enabling its profile here just means that fetcher's
+container never runs.
 
 ## Architecture
 

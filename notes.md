@@ -1,5 +1,67 @@
 # Notes / Future Work
 
+## fetcher-ytmusic: built, metadata works, downloads blocked on YouTube's PO Token gate (re-shelved)
+
+Built `services/fetcher-ytmusic/` from scratch (M3's other fetcher — was
+previously just a placeholder Dockerfile). Mirrors `fetcher-apple`'s
+contract and structure closely: `api.py` (`list_playlists`/
+`get_playlist_tracks` via `ytmusicapi`), `tag.py` (same MP4 freeform
+dedup-tag convention, since output is `.m4a`), `download.py` (per-track
+fetch via `yt-dlp`, same shape as `fetcher_apple`'s/`fetcher_spotify`'s
+own per-track fallback paths — YouTube has no whole-playlist-in-one-shot
+shortcut like gamdl's `--save-playlist`), `cli.py`.
+
+**Metadata layer fully verified live**, no auth needed: `ytmusicapi`
+1.12.1's `get_playlist()` works completely unauthenticated against a
+real public playlist (`john.yaml`'s "Semaphore" entry,
+`PLLtbEg-839W9x0GthAoFP7ZP1w0_1f4jV`) — 31 available tracks resolved
+correctly (title/artist/album/videoId). `get_library_playlists()` (for
+`list_playlists()`, the account's own library) does need OAuth, and per
+the library's Nov 2024 change that requires a self-registered Google
+Cloud OAuth client — same shape of problem as the Spotify client_id
+saga, not yet set up, but not a blocker for the fetch path.
+
+**Real blocker (not a code issue), confirmed with `--list-formats`**:
+downloading via `yt-dlp` — even with a real, freshly-exported YouTube
+cookies file (`config/secrets/youtube_cookies.txt`, Netscape format) —
+returns *zero* usable audio formats for every track, only thumbnail
+storyboards. Two YouTube-side anti-bot mechanisms are gating it
+simultaneously:
+1. Signature/"n challenge" solving requires a JS runtime (`deno`/
+   `node`) — not installed, and not something this session can install
+   (no passwordless sudo).
+2. Even with that, the `web_music` client's HTTPS formats require a
+   **GVS PO Token**, a newer, separate mechanism. The standard fix
+   (`bgutil-ytdlp-pot-provider`) isn't a simple pip install — it
+   requires a **separate, persistently-running companion service**
+   (Docker or a Node/Deno process) that mints tokens on demand.
+   Architecturally the same category of thing as gamdl's optional
+   wrapper for lossless Apple Music, which was already deliberately
+   skipped for the same reason: real extra infrastructure for a
+   secondary capability.
+
+Ruled out the cheap alternatives before concluding this: `--cookies-
+from-browser firefox` (both the default profile and explicitly
+`5cofd3no.default-release`) performed *worse* than the exported
+cookies.txt — fails at the earlier basic bot-check instead of reaching
+format resolution, meaning the local Firefox session is less
+authenticated than the manual export. Forcing a different extractor
+client (`--extractor-args "youtube:player_client=android"`) also didn't
+help — `android` gets skipped entirely once cookies are present. Already
+on the latest yt-dlp (2026.7.4, confirmed against PyPI), so this isn't a
+stale-version problem — it's the current state of the yt-dlp/YouTube
+arms race.
+
+**Status**: re-shelved (same operational decision as fetcher-spotify's
+Premium block), for a precisely known, entirely platform-side reason.
+Code is complete and correct — full unit test coverage (mocked
+subprocess, same pattern as the other fetchers), live-verified metadata
+resolution. Revisit only if: YouTube loosens the PO Token requirement,
+or setting up the `bgutil-ytdlp-pot-provider` companion service (likely
+as its own `docker-compose.yml` entry, matching how `sync-orchestrator`
+is the one service that can't be containerized rather than everything
+being forced into one shape) becomes worth the added infrastructure.
+
 ## gamdl: upstream fix for Apple "Mix" playlist URL support
 
 gamdl's CLI can't parse Apple Music's personalized/algorithmic "Mix"
@@ -103,12 +165,19 @@ call after `_ipod_track_fingerprint_index()` completes (or at the end of
 workaround. Worth filing alongside the other iopenpod findings at
 https://github.com/TheRealSavi/iOpenPod.
 
-**Status**: worked around locally. Matters a lot for M7/M9: a periodic
+**Confirmed live (2026-07-20)**: the sync-orchestrator execute run right
+after the two preceding plan-only runs (both of which paid the full
+device-side fingerprinting cost) came back fast — the persisted cache
+from those earlier runs meant this one hit cache instead of
+re-fingerprinting the whole device again. The workaround holds up under
+real, repeated use, not just the original one-off M6 test.
+
+**Status**: worked around locally, now verified across multiple real
+runs against the same device. Matters a lot for M9: a periodic
 cron-triggered sync needs the device side to be cheap on repeat runs, not
 just the PC side, or every sync against a large library pays close to an
 hour of USB-bound fingerprinting regardless of how little actually
-changed. Should verify on the next real sync that device-side cache hits
-actually show up.
+changed — confirmed this is no longer the case once the cache is warm.
 
 ## iopenpod (PyPI `iopenpod==1.66.2`): incomplete device support for 5th/5.5th-gen "iPod Video"
 
@@ -579,7 +648,13 @@ automation — this service still assumes the device is already mounted).
 
 ## Workflow gotcha: standalone projects cache a stale `common` build
 
-Hit twice now (`sync-orchestrator`, then `fetcher-spotify`): a standalone
+Hit three times now (`sync-orchestrator`, `fetcher-spotify`, then
+`sync-orchestrator` again for the nested `external_library.selections`
+mapping validator — added to `common/models.py` in one edit, but only
+`uv sync --reinstall-package common`'d for the root workspace, not
+`sync-orchestrator`'s own venv, so a real run failed with a pydantic
+"Input should be a valid string" error against the *old* schema even
+though the source was already correct): a standalone
 `uv` project depending on `common` via `{ path = "../common" }` doesn't
 automatically pick up changes to `common`'s source — it keeps using
 whatever was built into its `.venv` at the last `uv sync`, even though

@@ -1,5 +1,18 @@
+# Fetchers are gated behind Compose profiles, one per music source
+# (matching config/global.yaml's sources.*.enabled flags), so a
+# household that only uses e.g. Apple Music doesn't have to build/run
+# containers for sources it doesn't use — or for Spotify/YouTube Music
+# right now, whose downloads are both currently blocked on
+# platform-side requirements (see notes.md), not just "unused".
+# Activate one or more with `docker compose --profile apple up` or by
+# setting COMPOSE_PROFILES in .env (see .env.example). library-manager
+# and podcast-manager have no profile, so they're always included —
+# every profile needs dedup/tagging, and podcasts.* is a required part
+# of the profile schema today, not optional per-household like a music
+# source is.
 services:
   fetcher-apple:
+    profiles: ["apple"]
     build:
       context: .
       dockerfile: services/fetcher-apple/Dockerfile
@@ -10,6 +23,7 @@ services:
       - ./state:/data/state
 
   fetcher-spotify:
+    profiles: ["spotify"]
     build:
       context: .
       dockerfile: services/fetcher-spotify/Dockerfile
@@ -20,6 +34,7 @@ services:
       - ./state:/data/state
 
   fetcher-ytmusic:
+    profiles: ["ytmusic"]
     build:
       context: .
       dockerfile: services/fetcher-ytmusic/Dockerfile
