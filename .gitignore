@@ -25,6 +25,7 @@ state/**
 library/**
 !library/.gitkeep
 
-# Real device backup snapshots (spike/_backups) can be tens to hundreds
-# of GB — never meant to be committed.
-services/ipod-sync/spike/_backups/
+# Real device backup snapshots (default: state/device_backups/, already
+# covered by state/** above) can be tens to hundreds of GB — never meant
+# to be committed. Catches a --backup-dir override too, if placed here.
+services/sync-orchestrator/_backups/

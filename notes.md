@@ -446,3 +446,62 @@ between the two libraries by normalized title+artist for the tracks
 synced so far and found zero — but this doesn't cover playlists not yet
 fetched (e.g. the two ex-Spotify playlists pending Apple Music
 migration), which is what prompted this investigation.
+
+## Future: selective sync (artists/albums/songs), not the whole library
+
+Right now `sync_orchestrator`'s `pc_folders` mirror the *entire*
+`library_root/music` folder onto the device — all-or-nothing. Longer
+term, want the ability to select a subset (specific artists, albums, or
+individual songs) rather than syncing the whole main library every time —
+useful once the library grows large enough that it doesn't all fit on a
+given device, or when someone just wants specific things on a specific
+iPod.
+
+`SyncEngine`'s `EngineOptions` already has `allowed_paths`/
+`selected_playlist_paths` fields (seen during the M6 investigation,
+`sync/core/models.py`) that look aimed at exactly this kind of selective
+scoping — worth checking whether they already do most of the work before
+building anything new.
+
+**Status**: not started, noted 2026-07-20 while starting M7.
+
+## M7 (sync-orchestrator) shipped: real device discovery + config-driven service
+
+Promoted `services/ipod-sync` into `services/sync-orchestrator`
+(`git mv`), replacing the M6 spike's hardcoded paths with real device
+discovery and profile/CLI-driven config. Two real bugs found and fixed
+while building it, both confirmed live:
+
+1. **`global.yaml`'s `paths.library_root`/`paths.state_root` are
+   Docker-container paths** (`/data/library`, `/data/state`, per
+   `docker-compose.yml`'s volume mounts) — but `sync-orchestrator`
+   always runs bare metal, where those paths don't exist. Fixed by
+   taking `--library-root`/`--state-root` as explicit CLI args instead,
+   matching the pattern `fetcher-apple`/`podcast-manager` already use,
+   rather than inventing a new, inconsistent way to resolve paths for
+   the one service that can't use `global.yaml`'s values directly.
+2. **`Path.is_file()` raises `PermissionError` instead of returning
+   `False`** for a mount the current user can't read (`/boot/efi`,
+   confirmed live) — device discovery's `is_ipod_mount()` was scanning
+   *all* mounted vfat/hfsplus volumes and crashed the whole scan on this
+   one unrelated, inaccessible mount. Fixed by catching `OSError` there
+   and treating "can't even read it" as "not an iPod."
+
+Also confirmed the real FAT volume label (via `lsblk -no LABEL`) differs
+from the mount-point directory name — udisks2 sanitizes apostrophes
+(`JOHN'S IPOD` on disk vs. `JOHN_S IPOD` as the actual mount path), so
+`match_by: volume_label` has to read the label directly from the block
+device, not infer it from the mount point.
+
+Live-verified end to end against the real device and profile: correct
+auto-discovery by `volume_label`, and a plan matching known-good numbers
+(`to_add=0, to_remove=0`, all 7 playlists already in sync). This run also
+surfaced 41 real cross-`pc_folder` duplicate groups (see the dedup
+section above) for the first time since that reporting was added — all
+correctly deduped by iopenpod, confirming that safety net actually works
+on real data, not just in theory.
+
+**Status**: M7 core done (`sync-orchestrator sync`, plan-only and
+`--execute`). Device-level `FileLock` reused from the Apple Music session
+lock work. Not yet done: M8 (play-status round trip), M9 (udev-triggered
+automation — this service still assumes the device is already mounted).

@@ -37,7 +37,8 @@ upstream tools it depends on.
 | M4 | Library manager: cross-source dedup, playlist writer | Done |
 | M5 | Podcast manager: Pocket Casts client, episode downloader | Done |
 | M6 | iOpenPod headless spike: full real sync (music + playlists + podcasts) | Done — see [`docs/m6-ipod-headless-recommendation.md`](docs/m6-ipod-headless-recommendation.md) |
-| M7+ | Sync orchestrator, play-status round trip, automation, web GUI | Not started |
+| M7 | Sync orchestrator core (`services/sync-orchestrator`) | Done — real device discovery + profile-driven sync plan, live-verified |
+| M8+ | Play-status round trip, automation, web GUI | Not started |
 
 ## Setup
 
