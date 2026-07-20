@@ -28,3 +28,18 @@ sync:
   trigger: on_connect
   transcode_format: alac
   push_play_status_back: true
+
+# Optional: sync a subset of a personal library that lives outside
+# music-stack's own managed library/ folder. "include" mode (default) is
+# a whitelist — only what's listed here gets synced. "path" and its
+# selections are matched artist/album/track by directory prefix.
+# external_library:
+#   path: /home/alice/Music/MusicLibrary
+#   mode: include
+#   selections:
+#     - "Linkin Park"
+#     - "Fleetwood Mac/Rumours"
+#     - "Talking Heads":
+#         - "Performance"
+#         - "Remixed"
+#     - "David Bowie/Hunky Dory/05 Life on Mars_.m4a"

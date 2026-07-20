@@ -35,26 +35,34 @@ blocking anything — just worth doing upstream eventually so playlist-based
 downloads for these playlists become as efficient as normal ones, and the
 fallback path stops being needed.
 
-## sync-orchestrator (M7): wire up real progress reporting
+## sync-orchestrator: real progress reporting — shipped
 
 The M6 spike script (`services/ipod-sync/spike/headless_write_poc.py`)
-calls `BackupManager.create_backup()` and `SyncEngine().run(...)` without
-passing a `progress_callback`, even though both accept one
+called `BackupManager.create_backup()` and `SyncEngine().run(...)`
+without passing a `progress_callback`, even though both accept one
 (`BackupProgress`/`EngineProgress` respectively). This made the spike run
 opaque for long stretches — the first full-device backup took ~30+ min
 over USB with zero output in between, and the only way to see it was
 happening was polling the backup directory's file count/size from
 outside the process.
 
-**Fix idea**: when M7 (the real sync-orchestrator service) is built, wire
-these callbacks up properly from the start — print/log per-file or
-per-stage progress (file count, bytes, current filename) as iOpenPod's
-own `BackupProgress`/`EngineProgress`/`SyncProgress` objects already
-carry that data. Don't repeat the M6 spike's "silent for 30 minutes"
-behavior in anything meant for regular use.
+**Shipped**: `plan_sync`/`execute_sync`
+(`services/sync-orchestrator/src/sync_orchestrator/sync.py`) now accept
+an optional `progress_callback: Callable[[str], None]`, wired through to
+both `BackupManager.create_backup()` and every `EngineRequest`. `cli.py`
+passes a plain `print`-based sink, so a real run now shows e.g. `[scan]
+3120/4416 — Talking Heads/...m4a` instead of going silent.
 
-**Status**: not started, noted during the M6 spike (2026-07-18) for when
-M7 begins.
+One thing found while wiring this up: iOpenPod's own progress callbacks
+(`pc_library.py`'s scan loop, confirmed by reading it) fire completely
+unthrottled — once per file, no batching. For a ~4,400-file external
+library plus a large device, printing every callback verbatim would be
+thousands of lines of spam. Added `_ThrottledProgressPrinter` in
+`sync.py`: at most one line per second per stage, but always prints on a
+stage change or on completion (`current >= total`) so nothing important
+gets swallowed by the throttle.
+
+**Status**: done, shipped 2026-07-20.
 
 ## iopenpod: device-side fingerprint cache is never persisted to disk (worked around)
 
@@ -466,23 +474,67 @@ synced so far and found zero — but this doesn't cover playlists not yet
 fetched (e.g. the two ex-Spotify playlists pending Apple Music
 migration), which is what prompted this investigation.
 
-## Future: selective sync (artists/albums/songs), not the whole library
+## Selective sync from an external library — shipped (`external_library` config)
 
-Right now `sync_orchestrator`'s `pc_folders` mirror the *entire*
-`library_root/music` folder onto the device — all-or-nothing. Longer
-term, want the ability to select a subset (specific artists, albums, or
-individual songs) rather than syncing the whole main library every time —
-useful once the library grows large enough that it doesn't all fit on a
-given device, or when someone just wants specific things on a specific
-iPod.
+Follow-up to the note below this one, from when M7 started: the ability
+to choose specific artists/albums/songs to sync from a personal library
+that lives outside music-stack's own managed `library/` folder (e.g.
+`~/Music/MusicLibrary`), instead of mirroring the whole thing.
 
-`SyncEngine`'s `EngineOptions` already has `allowed_paths`/
-`selected_playlist_paths` fields (seen during the M6 investigation,
-`sync/core/models.py`) that look aimed at exactly this kind of selective
-scoping — worth checking whether they already do most of the work before
-building anything new.
+**`EngineOptions.allowed_paths` turned out to be unsafe for this** — it
+was the obvious-looking mechanism (see the original note below), but
+tracing it through `iopenpod/sync/planning_stages.py`
+(`scan_source_libraries`) and `iopenpod/sync/fingerprint_diff_engine.py`
+(`_plan_removed_tracks` → `_plan_orphaned_mapping_removals`) showed it
+narrows *Phase 1 PC-side scanning*, which shrinks `seen_fps`. Removal
+planning then computes `orphaned_fps = mapping.all_fingerprints() -
+seen_fps` — any previously-synced track whose fingerprint isn't in this
+run's (now narrower) scan gets treated as "removed from PC" and staged
+for device removal, regardless of whether the file is still on disk.
+Used directly for "sync just this subset," it would have proposed
+deleting every previously-synced track outside that subset.
 
-**Status**: not started, noted 2026-07-20 while starting M7.
+**Design used instead** (`services/sync-orchestrator/src/
+sync_orchestrator/selection.py`): resolve the profile's
+`external_library.selections` (artist/album/track path-prefix matches,
+`mode: include` = whitelist or `mode: exclude` = blacklist) into a
+staging directory of symlinks, fully rebuilt every run, and pass *that*
+directory as a `pc_folder` instead of the raw library path. iopenpod
+never sees the deselected files, so it can't reason about them — same
+"build the safety guarantee at our own layer" approach already used for
+additive/absolute playlist sync. Confirmed safe with `pc_library.py`'s
+plain `os.walk` (no `followlinks=True`): it won't descend into a
+symlinked *directory*, but a symlinked *file* inside a real directory is
+read normally — staging only ever symlinks leaf files, never directories.
+
+**Real, intended behavior change**: the first sync after narrowing a
+selection proposes removing every previously-synced track that falls
+outside it — expected (deselecting something should remove it from the
+device), not a bug, but a one-time large batch the first time. The
+existing hard safety gate (refuse `--execute` on any `to_remove`) was
+loosened to require a second explicit flag, `--allow-removals`, passed
+alongside `--execute` — `--execute` alone still refuses on any removal,
+matching the original behavior for the too-narrow-`--pc-folder`-by-
+accident case that gate was built for.
+
+**Path validation added afterward**: `plan_sync` now checks
+`external_library.path` itself exists before touching it, and a
+`selections` entry that resolves to 0 files (near-certainly a typo'd
+artist/album name) is printed as a warning at plan time but hard-blocks
+`--execute` — never silently sync less (or, in `exclude` mode, more)
+than the profile actually asked for.
+
+**Nested selection shorthand added afterward**: a `selections` entry can
+also be a single-key mapping of artist -> list of album/track names
+relative to that artist, e.g. `"Talking Heads": ["Performance",
+"Remixed"]` instead of repeating `"Talking Heads/Performance"`,
+`"Talking Heads/Remixed"` as separate flat strings. Flattened into plain
+strings by a pydantic `field_validator` on `ExternalLibraryConfig.
+selections` (`services/common/src/common/models.py`) at config-load
+time — `selection.py` and everything downstream only ever sees flat
+strings, same as before. The two forms mix freely in one list.
+
+**Status**: done, shipped 2026-07-20.
 
 ## M7 (sync-orchestrator) shipped: real device discovery + config-driven service
 

@@ -23,6 +23,8 @@ from __future__ import annotations
 import dataclasses
 import shutil
 import sqlite3
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,13 +36,69 @@ from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
 from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
 from iopenpod.podcasts.podcast_sync import build_podcast_sync_plan
 from iopenpod.sync.audio_fingerprint import FingerprintCache
-from iopenpod.sync.backup_manager import BackupManager, SnapshotInfo
+from iopenpod.sync.backup_manager import BackupManager, BackupProgress, SnapshotInfo
 from iopenpod.sync.core.engine import SyncEngine
-from iopenpod.sync.core.models import EngineOperation, EngineOptions, EngineRequest
+from iopenpod.sync.core.models import (
+    EngineOperation,
+    EngineOptions,
+    EngineProgress,
+    EngineRequest,
+)
+
+from sync_orchestrator.selection import build_staging_dir, resolve_selected_files
 
 
 class SyncError(Exception):
     pass
+
+
+class _ThrottledProgressPrinter:
+    """Wraps a plain string sink so high-frequency progress callbacks
+    don't flood the terminal with one line per file — confirmed live in
+    iopenpod's pc_library.py scan loop that its progress_callback fires
+    completely unthrottled, once per file (thousands of calls for a real
+    library/device). Always emits on a stage change or completion,
+    otherwise at most once per min_interval seconds. See notes.md."""
+
+    def __init__(self, sink: Callable[[str], None], min_interval: float = 1.0):
+        self._sink = sink
+        self._min_interval = min_interval
+        self._last_stage: str | None = None
+        self._last_time = 0.0
+
+    def emit(self, stage: str, current: int, total: int, detail: str) -> None:
+        now = time.monotonic()
+        stage_changed = stage != self._last_stage
+        done = bool(total) and current >= total
+        if not (stage_changed or done or now - self._last_time >= self._min_interval):
+            return
+        self._last_stage = stage
+        self._last_time = now
+        progress = f" {current}/{total}" if total else ""
+        suffix = f" — {detail}" if detail else ""
+        self._sink(f"[{stage}]{progress}{suffix}")
+
+
+def _backup_progress_adapter(
+    sink: Callable[[str], None],
+) -> Callable[[BackupProgress], None]:
+    printer = _ThrottledProgressPrinter(sink)
+
+    def _on_progress(p: BackupProgress) -> None:
+        printer.emit(p.stage, p.current, p.total, p.current_file or p.message)
+
+    return _on_progress
+
+
+def _engine_progress_adapter(
+    sink: Callable[[str], None],
+) -> Callable[[EngineProgress], None]:
+    printer = _ThrottledProgressPrinter(sink)
+
+    def _on_progress(p: EngineProgress) -> None:
+        printer.emit(str(p.stage), p.current, p.total, p.message)
+
+    return _on_progress
 
 
 @dataclass(frozen=True)
@@ -134,6 +192,7 @@ class PlannedSync:
     storage: Any
     options: EngineOptions
     snapshot: SnapshotInfo | None
+    unresolved_selections: list[str] = dataclasses.field(default_factory=list)
 
 
 def plan_sync(
@@ -146,6 +205,7 @@ def plan_sync(
     skip_backup: bool = False,
     skip_podcasts: bool = False,
     backup_dir: str | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> PlannedSync:
     """Computes (but does not write) a full sync plan: music + playlists
     (via SyncEngine.PLAN against pc_folders) merged with podcasts (via
@@ -157,16 +217,31 @@ def plan_sync(
         raise SyncError(f"could not resolve iTunesDB path under {ipod_path}")
 
     library_root = Path(library_root)
+    state_root = Path(state_root)
+
+    unresolved_selections: list[str] = []
+    external_library_folders: tuple[str, ...] = ()
+    if profile.external_library is not None:
+        ext = profile.external_library
+        if not Path(ext.path).is_dir():
+            raise SyncError(f"external_library path not found: {ext.path}")
+        selected_files, unresolved_selections = resolve_selected_files(
+            ext.path, ext.selections, mode=ext.mode
+        )
+        staging_dir = state_root / ".external_library_staging" / profile.profile
+        build_staging_dir(staging_dir, ext.path, selected_files)
+        external_library_folders = (str(staging_dir),)
+
     pc_folders = (
         str(library_root / "music"),
         str(library_root / "playlists" / profile.profile),
+        *external_library_folders,
         *extra_pc_folders,
     )
     for folder in pc_folders:
         if not Path(folder).is_dir():
             raise SyncError(f"pc folder not found: {folder}")
 
-    state_root = Path(state_root)
     backup_mgr = BackupManager(
         device_id=device_info.serial or device_info.firewire_guid or profile.profile,
         backup_dir=backup_dir or str(state_root / "device_backups"),
@@ -176,6 +251,9 @@ def plan_sync(
     if not skip_backup:
         snapshot = backup_mgr.create_backup(
             ipod_path,
+            progress_callback=(
+                _backup_progress_adapter(progress_callback) if progress_callback else None
+            ),
             reported_volume_format=device_info.reported_volume_format,
             expected_volume_identity_key=device_info.volume_identity_key,
         )
@@ -212,6 +290,9 @@ def plan_sync(
             device_info=device_info,
             device_capabilities=capabilities,
             device_storage=storage,
+            progress_callback=(
+                _engine_progress_adapter(progress_callback) if progress_callback else None
+            ),
         )
     )
 
@@ -253,10 +334,13 @@ def plan_sync(
         storage=storage,
         options=options,
         snapshot=snapshot,
+        unresolved_selections=unresolved_selections,
     )
 
 
-def execute_sync(planned: PlannedSync) -> tuple[Any, dict]:
+def execute_sync(
+    planned: PlannedSync, progress_callback: Callable[[str], None] | None = None
+) -> tuple[Any, dict]:
     """Executes a previously computed plan and re-reads the device
     afterward to verify. Callers must have already decided the plan is
     safe to execute (see cli.py's hard gate on unexpected removals) —
@@ -271,6 +355,9 @@ def execute_sync(planned: PlannedSync) -> tuple[Any, dict]:
             device_info=planned.device_info,
             device_capabilities=planned.capabilities,
             device_storage=planned.storage,
+            progress_callback=(
+                _engine_progress_adapter(progress_callback) if progress_callback else None
+            ),
         )
     )
     exec_result = exec_outcome.result

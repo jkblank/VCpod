@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictModel(BaseModel):
@@ -67,6 +67,59 @@ class PlaylistEntry(StrictModel):
     sync_mode: Literal["absolute", "additive"] = "absolute"
 
 
+class ExternalLibraryConfig(StrictModel):
+    path: str
+    # "include" (default): only files matching a `selections` entry are
+    # synced — a whitelist ("only include Linkin Park").
+    # "exclude": every file is synced EXCEPT those matching a
+    # `selections` entry — a blacklist ("my whole library, but exclude
+    # Alanis Morissette"). Empty `selections` + exclude = sync
+    # everything (today's wholesale behavior); empty `selections` +
+    # include = sync nothing. See notes.md.
+    mode: Literal["include", "exclude"] = "include"
+    # Relative path fragments under `path`, matched by prefix against
+    # each file's path relative to `path`:
+    #   "Artist"                  -> every album/track by that artist
+    #   "Artist/Album"            -> every track on that album
+    #   "Artist/Album/Track.m4a"  -> a single track
+    # An entry may also be a single-key mapping of artist -> list of
+    # album/track names relative to that artist, as shorthand for
+    # several entries that all start with the same "Artist/" prefix:
+    #   "Talking Heads":
+    #     - "Performance"
+    #     - "Remixed"
+    # is exactly equivalent to ["Talking Heads/Performance",
+    # "Talking Heads/Remixed"] — flattened below before storage, so
+    # everything downstream only ever deals with plain strings.
+    selections: list[str] = Field(default_factory=list)
+
+    @field_validator("selections", mode="before")
+    @classmethod
+    def _flatten_nested_selections(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        flattened: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                flattened.append(item)
+            elif isinstance(item, dict):
+                for artist, children in item.items():
+                    if not isinstance(artist, str) or not isinstance(children, list):
+                        raise ValueError(
+                            f"invalid selections entry: {item!r} — expected "
+                            "'Artist': [\"Album\", ...]"
+                        )
+                    for child in children:
+                        if not isinstance(child, str):
+                            raise ValueError(
+                                f"invalid selections entry under {artist!r}: {child!r}"
+                            )
+                        flattened.append(f"{artist}/{child}")
+            else:
+                raise ValueError(f"invalid selections entry: {item!r}")
+        return flattened
+
+
 class ProfilePocketCastsConfig(StrictModel):
     credentials_file: str
 
@@ -97,3 +150,4 @@ class ProfileConfig(StrictModel):
     playlists: list[PlaylistEntry]
     podcasts: ProfilePodcastsConfig
     sync: SyncSettings
+    external_library: ExternalLibraryConfig | None = None

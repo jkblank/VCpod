@@ -96,6 +96,9 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
         f"path={device_info.path}"
     )
 
+    def _report_progress(message: str) -> None:
+        print(f"  {message}")
+
     extra_pc_folders = tuple(args.pc_folders) if args.pc_folders else ()
     try:
         planned = plan_sync(
@@ -106,9 +109,13 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
             extra_pc_folders=extra_pc_folders,
             skip_backup=args.skip_backup,
             skip_podcasts=args.skip_podcasts,
+            progress_callback=_report_progress,
         )
     except SyncError as e:
         return _fail(str(e))
+
+    for selection in planned.unresolved_selections:
+        print(f"  WARNING: external_library selection {selection!r} matched 0 files")
 
     print(f"== Plan for {profile.profile!r} ==")
     _print_plan(planned.plan)
@@ -120,20 +127,38 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
         )
         return 0
 
+    # A selection that resolves to 0 files is almost certainly a typo'd
+    # artist/album/track name (see the WARNING lines above) rather than
+    # something genuinely absent — never silently execute a sync that
+    # doesn't match what the profile actually asked for.
+    if planned.unresolved_selections:
+        return _fail(
+            f"{len(planned.unresolved_selections)} external_library selection(s) "
+            "matched 0 files (see WARNINGs above); refusing to execute until "
+            "the profile is fixed"
+        )
+
     # Hard safety gate, not just a printed warning — see
     # docs/m6-ipod-headless-recommendation.md for the near-miss that
     # motivated this: a too-narrow pc_folders list once produced a plan
     # proposing to remove every existing track, and nothing but a human
     # noticing the number stopped it from executing.
-    if planned.plan.to_remove:
+    #
+    # Removals aren't always a bug though — narrowing an external_library
+    # selection (see notes.md) intentionally proposes removing whatever
+    # fell out of scope. --allow-removals is the explicit, separate opt-in
+    # for that case: --execute alone still refuses on any to_remove, and
+    # --allow-removals alone does nothing without --execute.
+    if planned.plan.to_remove and not args.allow_removals:
         return _fail(
-            f"plan unexpectedly proposes removing {len(planned.plan.to_remove)} "
-            "track(s); refusing to execute against a real device"
+            f"plan proposes removing {len(planned.plan.to_remove)} track(s); "
+            "refusing to execute against a real device without --allow-removals "
+            "(review the removal list above first)"
         )
 
     print("== Executing ==")
     try:
-        result, after = execute_sync(planned)
+        result, after = execute_sync(planned, progress_callback=_report_progress)
     except SyncError as e:
         return _fail(str(e))
 
@@ -201,6 +226,14 @@ def main() -> None:
         action="store_true",
         help="Actually write the computed plan. Without this flag, the "
         "plan is computed and printed only — nothing touches the device.",
+    )
+    sync_parser.add_argument(
+        "--allow-removals",
+        action="store_true",
+        help="Required in addition to --execute whenever the plan proposes "
+        "removing tracks (e.g. after narrowing an external_library "
+        "selection). Without it, --execute refuses to run on any "
+        "to_remove, same as before this flag existed.",
     )
     sync_parser.add_argument(
         "--lock-timeout",

@@ -28,3 +28,15 @@ sync:
   trigger: manual
   transcode_format: mp3
   push_play_status_back: false
+
+# Optional: sync a subset of a personal library that lives outside
+# music-stack's own managed library/ folder. "exclude" mode is a
+# blacklist — everything under "path" gets synced EXCEPT what's listed
+# here (whole library minus a couple of artists), the mirror of alice's
+# "include" example.
+# external_library:
+#   path: /home/bob/Music/MusicLibrary
+#   mode: exclude
+#   selections:
+#     - "Nickelback"
+#     - "Creed"
