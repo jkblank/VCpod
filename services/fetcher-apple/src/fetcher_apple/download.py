@@ -306,6 +306,7 @@ def fetch_playlist(
     storefront: str = "us",
     lock_path: Path | str | None = None,
     lock_timeout: float = 1800,
+    sync_mode: str = "absolute",
 ) -> FetchResult:
     cookies_path = Path(cookies_path)
     # Must be absolute: _fetch_via_playlist_url's track paths always come
@@ -354,7 +355,7 @@ def fetch_playlist(
             )
 
     m3u8_path = playlists_root / profile / f"{playlist_name}.m3u8"
-    write_m3u8(m3u8_path, final_paths)
+    write_m3u8(m3u8_path, final_paths, mode=sync_mode)
 
     return FetchResult(
         m3u8_path=m3u8_path,

@@ -308,7 +308,16 @@ additive. "Absolute" playlists keep today's replace-outright behavior.
 each playlist entry in the profile YAML's `playlists` list, and branch on
 it in each fetcher's `fetch_playlist` before calling `write_m3u8`.
 
-**Status**: not started, noted 2026-07-19.
+**Status**: done (2026-07-20). `PlaylistEntry.sync_mode` (default
+`"absolute"`) added to `common/models.py`; `write_m3u8` gained a `mode`
+parameter — `"additive"` reads the existing `.m3u8`'s entries first and
+unions in new ones by exact string match, never dropping anything already
+there. Wired through both `fetcher-apple` and `fetcher-spotify`'s
+`fetch_playlist`/`cli.py`. Applied to the real profile: "Chill" and "New
+Music" (both genuinely Apple algorithmic Mixes) are now `additive` in
+`config/profiles/john.yaml`; `alice.yaml` updated as a worked example
+too. 6 new tests in `test_playlist.py`, full suite (105 across root +
+`fetcher-spotify` + `sync-orchestrator`) still green.
 
 ## M8 scope expansion: 5-star rating -> "favourite"/"like" on the source platform
 
@@ -505,3 +514,24 @@ on real data, not just in theory.
 `--execute`). Device-level `FileLock` reused from the Apple Music session
 lock work. Not yet done: M8 (play-status round trip), M9 (udev-triggered
 automation — this service still assumes the device is already mounted).
+
+## Workflow gotcha: standalone projects cache a stale `common` build
+
+Hit twice now (`sync-orchestrator`, then `fetcher-spotify`): a standalone
+`uv` project depending on `common` via `{ path = "../common" }` doesn't
+automatically pick up changes to `common`'s source — it keeps using
+whatever was built into its `.venv` at the last `uv sync`, even though
+nothing about the dependency *declaration* changed. Symptom: `import`
+succeeds but a newly-added function/parameter is missing
+(`TypeError: unexpected keyword argument`) or a whole new module is
+absent (`ModuleNotFoundError`), even though the source file clearly has
+it. Root-caused as real staleness, not a bug in the new code, both times.
+
+**Fix**: `uv sync --reinstall-package common` inside the standalone
+project whenever `services/common` changes. Root-workspace members
+(`fetcher-apple`, `podcast-manager`, `library-manager`) don't have this
+problem — `{ workspace = true }` stays live automatically.
+
+**Status**: known workaround, not really "fixable" — just something to
+remember whenever `common` changes and a standalone project
+(`fetcher-spotify`, `sync-orchestrator`) needs to see it.

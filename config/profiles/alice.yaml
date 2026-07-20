@@ -7,9 +7,15 @@ playlists:
   - name: "Workout Mix"
     source: apple_music
     source_id: "pl.u-abc123"
+    # sync_mode defaults to "absolute": the local .m3u8 always mirrors
+    # this playlist's current contents exactly, including removals.
   - name: "Chill"
     source: spotify
     source_id: "37i9dQZF1DX000000000"
+    # "additive": tracks are only ever added locally, never removed, even
+    # if this playlist later drops them — for platform-curated playlists
+    # that rotate/shrink their contents to stay a fixed length.
+    sync_mode: additive
 
 podcasts:
   pocketcasts:

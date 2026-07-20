@@ -58,6 +58,13 @@ class PlaylistEntry(StrictModel):
     name: str
     source: Literal["apple_music", "spotify", "ytmusic"]
     source_id: str
+    # "absolute" (default): the local .m3u8 always mirrors the source
+    # playlist's current contents exactly, including removals.
+    # "additive": tracks are only ever added locally, never removed, even
+    # if the source playlist no longer has them — for platform-curated
+    # playlists (e.g. Apple Music's algorithmic Mixes) that rotate/shrink
+    # their contents to stay a fixed length. See notes.md.
+    sync_mode: Literal["absolute", "additive"] = "absolute"
 
 
 class ProfilePocketCastsConfig(StrictModel):

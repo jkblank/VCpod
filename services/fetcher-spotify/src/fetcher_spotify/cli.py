@@ -58,6 +58,7 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
             library_root=args.library_root,
             playlists_root=args.playlists_root,
             state_db_path=args.state_path,
+            sync_mode=entry.sync_mode,
         )
     except (DownloadError, OSError, ValueError) as e:
         print(f"ERROR: {e}")

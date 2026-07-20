@@ -62,6 +62,7 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
             storefront=args.storefront,
             lock_path=args.lock_path,
             lock_timeout=args.lock_timeout,
+            sync_mode=entry.sync_mode,
         )
     except LockTimeoutError as e:
         print(f"ERROR: {e}")

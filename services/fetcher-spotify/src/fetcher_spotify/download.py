@@ -113,6 +113,7 @@ def fetch_playlist(
     library_root: Path | str,
     playlists_root: Path | str,
     state_db_path: Path | str,
+    sync_mode: str = "absolute",
 ) -> FetchResult:
     credentials_path = Path(credentials_path)
     library_root = Path(library_root)
@@ -158,7 +159,7 @@ def fetch_playlist(
     ]
 
     m3u8_path = playlists_root / profile / f"{playlist_name}.m3u8"
-    write_m3u8(m3u8_path, final_paths)
+    write_m3u8(m3u8_path, final_paths, mode=sync_mode)
 
     return FetchResult(
         m3u8_path=m3u8_path,
