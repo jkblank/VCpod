@@ -33,7 +33,9 @@ sync:
 # music-stack's own managed library/ folder. "exclude" mode is a
 # blacklist — everything under "path" gets synced EXCEPT what's listed
 # here (whole library minus a couple of artists), the mirror of alice's
-# "include" example.
+# "include" example. selections entries can also use the nested
+# "Artist": [...] shorthand for album/track-level exclusions — see
+# alice.yaml for that form.
 # external_library:
 #   path: /home/bob/Music/MusicLibrary
 #   mode: exclude

@@ -31,8 +31,11 @@ sync:
 
 # Optional: sync a subset of a personal library that lives outside
 # music-stack's own managed library/ folder. "include" mode (default) is
-# a whitelist — only what's listed here gets synced. "path" and its
-# selections are matched artist/album/track by directory prefix.
+# a whitelist — only what's listed here gets synced. Each selections
+# entry is an artist/album/track directory prefix, OR a single-key
+# mapping of artist -> list of album/track names under that artist
+# (shorthand for several entries sharing the same "Artist/" prefix, as
+# with "Talking Heads" below).
 # external_library:
 #   path: /home/alice/Music/MusicLibrary
 #   mode: include
