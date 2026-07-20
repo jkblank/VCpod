@@ -100,6 +100,7 @@ def sync_podcast(
     state_db_path: Path | str,
     sync_unplayed_only: bool = True,
     max_episodes_per_show: int = 5,
+    fill_mode: str = "newest",
 ) -> SyncResult:
     library_root = Path(library_root)
     result = SyncResult()
@@ -107,7 +108,14 @@ def sync_podcast(
     full_episodes = list_full_episodes(token, podcast.uuid)
     states_by_uuid = {s.uuid: s for s in list_episode_states(token, podcast.uuid)}
 
-    candidates = sorted(full_episodes, key=lambda e: e.published or "", reverse=True)
+    # "newest" (default): always grab the latest unheard episode(s) —
+    # right for news/commentary shows. "next": grab the oldest unheard
+    # episode(s) first instead, resuming chronologically — right for
+    # serialized fiction, courses, anything where episode order matters.
+    # See notes.md.
+    candidates = sorted(
+        full_episodes, key=lambda e: e.published or "", reverse=(fill_mode != "next")
+    )
 
     if sync_unplayed_only:
         candidates = [

@@ -88,6 +88,24 @@ def test_sync_podcast_downloads_unplayed_capped_at_max(monkeypatch, patched_pipe
     assert result.downloaded[0].episode_uuid == "ep-1"  # newest unplayed
 
 
+def test_sync_podcast_next_fill_mode_picks_oldest_unplayed(monkeypatch, patched_pipeline, tmp_path):
+    # ep-0 (newest) already played; fill_mode="next" should pick the
+    # OLDEST remaining unplayed episode (ep-2), not the newest (ep-1,
+    # which is what "newest" mode — the default — would pick instead).
+    states = [EpisodeState(uuid="ep-0", played=True, played_up_to=100)]
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: states)
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+        fill_mode="next",
+    )
+
+    assert len(result.downloaded) == 1
+    assert result.downloaded[0].episode_uuid == "ep-2"  # oldest unplayed
+
+
 def test_sync_podcast_includes_played_when_not_unplayed_only(monkeypatch, patched_pipeline, tmp_path):
     states = [EpisodeState(uuid="ep-0", played=True, played_up_to=100)]
     monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: states)

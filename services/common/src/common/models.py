@@ -76,6 +76,13 @@ class ProfilePodcastsConfig(StrictModel):
     sync_unplayed_only: bool
     max_episodes_per_show: int = Field(gt=0)
     shows: Literal["all"] | list[str] = "all"
+    # Per-show episode selection order, keyed by Pocket Casts podcast
+    # UUID (same convention `shows` already uses). Not listed = "newest":
+    # sort newest-first, take the top max_episodes_per_show. "next":
+    # sort oldest-first among unplayed episodes instead, for shows meant
+    # to be listened to in chronological order (serialized fiction,
+    # courses) rather than "whatever's newest." See notes.md.
+    fill_modes: dict[str, Literal["newest", "next"]] = Field(default_factory=dict)
 
 
 class SyncSettings(StrictModel):

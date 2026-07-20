@@ -239,30 +239,40 @@ exhausted. Regression tests added
 
 **Status**: done.
 
-## Future: per-podcast listening order (newest-first vs. chronological)
+## Per-podcast listening order (newest-first vs. chronological) — done
 
 Some podcasts should sync "get me the latest unlistened episode" (news,
 commentary shows), but others make more sense listened to in
 chronological order from wherever you left off (serialized fiction,
 courses, anything where episode order matters).
 
-iOpenPod's own `podcasts.models.PodcastFeed` already has exactly this
-concept built in — `fill_mode: str = "newest"`, with the alternative
-`"next"` documented as "pick the next unheard episode (oldest on iPod + 1;
-if none on iPod, pick the oldest retrieved episode)." We never set this
-when constructing `PodcastFeed` objects in `headless_write_poc.py`'s
-`_load_podcast_feeds()`, so every show currently defaults to `"newest"`.
+Originally assumed iOpenPod's own `podcasts.models.PodcastFeed.fill_mode`
+("newest"/"next") was the thing to wire up — it is not: read
+`podcast_sync.py` closely and confirmed `fill_mode`/`episode_slots` are
+only ever consulted inside `build_podcast_managed_plan` (and its
+`_plan_newest_mode`/`_plan_next_mode` helpers), a heavier function that
+also handles auto-removal to fit a fixed device slot count. The function
+this project actually uses, `build_podcast_sync_plan`, never reads
+`fill_mode` at all — setting it on the `PodcastFeed` objects
+`sync_orchestrator` builds would have been a silent no-op.
 
-**Fix idea**: expose this as a per-show setting in the profile YAML
-(`podcasts.pocketcasts.shows` currently only takes a bare list of UUIDs or
-`"all"` — would need to become a richer structure, or a separate
-`fill_mode` map keyed by show UUID/name), and set
-`PodcastFeed(fill_mode=...)` accordingly when building feeds for the sync
-plan. No new iOpenPod capability needed — just wiring up what already
-exists.
+The real fix belongs one layer up, in `podcast-manager`'s own episode
+*selection* (`download.py`'s `sync_podcast()`), which is what actually
+decides which episodes get downloaded in the first place — this project
+doesn't use iOpenPod's own subscription/slot management at all, so that's
+the only place this ordering can matter.
 
-**Status**: not started, noted 2026-07-19 after confirming the M6
-combined sync (music + playlists + podcasts) worked correctly end to end.
+**Implemented**: `ProfilePodcastsConfig.fill_modes: dict[str, "newest" |
+"next"]`, keyed by podcast UUID (same convention `shows` already uses).
+`sync_podcast()` gained a `fill_mode` parameter — `"newest"` (default,
+unchanged behavior) sorts newest-first; `"next"` sorts oldest-first
+among unplayed episodes instead, so a fixed `max_episodes_per_show`
+resumes chronologically rather than always grabbing the latest. Wired
+through `cli.py`'s `_cmd_sync` loop. New test
+(`test_sync_podcast_next_fill_mode_picks_oldest_unplayed`), example added
+to `bob.yaml`.
+
+**Status**: done, 2026-07-20.
 
 ## Bug to investigate: some already-listened episodes get downloaded anyway
 

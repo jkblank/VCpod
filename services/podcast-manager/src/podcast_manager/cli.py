@@ -74,6 +74,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
                 state_db_path=args.state_path,
                 sync_unplayed_only=profile.podcasts.sync_unplayed_only,
                 max_episodes_per_show=profile.podcasts.max_episodes_per_show,
+                fill_mode=profile.podcasts.fill_modes.get(podcast.uuid, "newest"),
             )
         except (httpx.HTTPError, OSError) as e:
             # A per-show API failure (e.g. list_full_episodes timing out)
