@@ -7,8 +7,9 @@ import sys
 import httpx
 
 from common.config import ConfigError, load_profile_config
+from common.state import StateDB
 
-from podcast_manager.api import list_subscriptions, login
+from podcast_manager.api import list_subscriptions, login, update_episode_status
 from podcast_manager.download import sync_podcast
 
 
@@ -105,6 +106,48 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_push_play_status(args: argparse.Namespace) -> int:
+    try:
+        email, password = _load_credentials(args.credentials_path)
+        token = login(email, password)
+    except (OSError, ValueError, KeyError) as e:
+        print(f"ERROR: could not authenticate with Pocket Casts: {e}")
+        return 1
+
+    pushed = 0
+    failed: list[tuple[str, str]] = []
+    with StateDB(args.state_path) as db:
+        pending = db.list_episodes_pending_push()
+        if not pending:
+            print("No pending play-state updates.")
+            return 0
+
+        for episode in pending:
+            try:
+                update_episode_status(
+                    token,
+                    episode_uuid=episode.episode_uuid,
+                    podcast_uuid=episode.podcast_uuid,
+                    played=episode.played,
+                    played_up_to=episode.played_up_to,
+                )
+            except httpx.HTTPError as e:
+                # One episode's push failing (e.g. a transient network
+                # blip) must not abort the rest of the batch — same
+                # resilience pattern as sync's per-show error handling.
+                failed.append((episode.title or episode.episode_uuid, str(e)))
+                continue
+            db.clear_pending_push(episode.episode_uuid)
+            pushed += 1
+
+    print(f"Pushed play state for {pushed} episode(s)")
+    if failed:
+        print(f"Failed to push {len(failed)} episode(s):")
+        for label, error in failed:
+            print(f"  {label}: {error}")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="podcast-manager")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -129,6 +172,15 @@ def main() -> None:
         "profile's podcasts.shows config.",
     )
     sync_parser.set_defaults(func=_cmd_sync)
+
+    push_parser = subparsers.add_parser(
+        "push-play-status",
+        help="Push locally-recorded device play state (from sync-orchestrator's "
+        "device read-back) to Pocket Casts",
+    )
+    push_parser.add_argument("--credentials-path", required=True)
+    push_parser.add_argument("--state-path", required=True)
+    push_parser.set_defaults(func=_cmd_push_play_status)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

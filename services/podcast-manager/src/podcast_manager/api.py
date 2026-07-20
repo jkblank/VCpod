@@ -9,7 +9,10 @@ LOGIN_URL = "https://api.pocketcasts.com/user/login"
 PODCAST_LIST_URL = "https://api.pocketcasts.com/user/podcast/list"
 PODCAST_EPISODES_URL = "https://api.pocketcasts.com/user/podcast/episodes"
 PODCAST_FULL_URL = "https://cache.pocketcasts.com/podcast/full/{uuid}/0/3/1000"
+UPDATE_EPISODE_URL = "https://api.pocketcasts.com/sync/update_episode"
 
+UNPLAYED_STATUS = 1
+IN_PROGRESS_STATUS = 2
 PLAYED_STATUS = 3  # confirmed against a real account
 
 # httpx's default 5s timeout produced spurious ConnectTimeout/ReadTimeout
@@ -104,6 +107,46 @@ def list_episode_states(token: str, podcast_uuid: str) -> list[EpisodeState]:
             )
         )
     return states
+
+
+def update_episode_status(
+    token: str, *, episode_uuid: str, podcast_uuid: str, played: bool, played_up_to: int
+) -> None:
+    """Pushes device-derived play state back to Pocket Casts. Endpoint and
+    status values found via a current third-party client using the same
+    api.pocketcasts.com domain/bearer-auth this project's own read calls
+    are already confirmed against.
+
+    Live-verified against a real account with a genuine before/after
+    state transition (not just re-sending an already-matching value,
+    which would have silently passed even if broken): status
+    (played/unplayed/in-progress) reliably takes effect. played_up_to
+    does NOT — confirmed with both snake_case and camelCase field names,
+    both accepted with 200 OK but the position silently stays unchanged.
+    The real iOS app's sync protocol uses Protocol Buffers in places
+    (confirmed via Automattic/pocket-casts-ios, the open-source client);
+    position sync specifically may require that instead of this simple
+    JSON endpoint. Still sent here (harmless, and future-proofs for if
+    it ever does start working) but do not rely on it — only `played`
+    is confirmed reliable. See notes.md's M8 write-up."""
+    if played:
+        status = PLAYED_STATUS
+    elif played_up_to > 0:
+        status = IN_PROGRESS_STATUS
+    else:
+        status = UNPLAYED_STATUS
+    resp = httpx.post(
+        UPDATE_EPISODE_URL,
+        headers=_auth_headers(token),
+        json={
+            "uuid": episode_uuid,
+            "podcast": podcast_uuid,
+            "status": status,
+            "played_up_to": played_up_to,
+        },
+        timeout=_REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
 
 
 def list_full_episodes(token: str, podcast_uuid: str) -> list[FullEpisode]:

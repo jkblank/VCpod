@@ -1,5 +1,76 @@
 # Notes / Future Work
 
+## M8: podcast play-status round trip — shipped (status confirmed, position not)
+
+M8's acceptance criterion: *"Episodes played on-device are correctly
+marked played in Pocket Casts after next sync."* Scoped to podcast
+play-status only — the related 5-star-rating→favourite/like expansion
+(logged separately below) touches three none-yet-built platform "like"
+APIs and is real follow-on work, not part of this milestone.
+
+**Read side** (`sync_orchestrator/playstate.py`, wired into
+`sync.py`'s `plan_sync`): iOpenPod's `load_ipod_library()` already
+parses the device's `Play Counts` file and merges deltas
+(`recent_playcount`, `bookmark_time`, `rating`) into every track dict on
+every call — confirmed read-only (never deletes/modifies the file), so
+this runs on a plan-only pass, no `--execute` needed, decoupling "push
+real listening progress back" from "sync new content forward." Device
+track → Pocket Casts episode correlation goes through iOpenPod's own
+`sync/mapping.py` `MappingFile` (`get_by_db_track_id` →
+`source_path_hint`, a PC file path) matched against
+`state/{profile}.sqlite`'s `episodes.local_path`. `resolve_played_states`
+only calls an episode "played" once its bookmark position reaches ~90%
+of a *known* duration — not just `recent_playcount > 0` alone — a
+deliberate improvement on the still-open "already-listened episodes
+redownload" bug below: this gives our own reliable on-device signal
+instead of depending solely on Pocket Casts' own `EpisodeState` rows.
+
+**Write side** (`podcast_manager/api.py`'s new `update_episode_status`,
+new `podcast-manager push-play-status` CLI command): kept as a
+*separate* step from `sync-orchestrator`'s read side — mirrors the
+existing precedent (`sync.py`'s `_load_podcast_feeds` already reads
+`podcast-manager`'s state db directly via raw `sqlite3` rather than
+importing it as a Python package) so `sync-orchestrator` doesn't gain
+`httpx`+Pocket Casts API logic just for this. New `episodes.pending_push`
+column is the handoff: `sync-orchestrator` sets it on a real local
+change, `podcast-manager push-play-status` clears it after a successful
+push.
+
+**Live-verified against the real account, with a genuine before/after
+state transition** (not just re-sending an already-matching value,
+which would silently pass even if broken — a mistake caught mid-testing
+here: two early "confirmations" turned out to be no-op re-pushes of
+already-current values):
+- `status` (played/unplayed/in-progress) — confirmed: pushed `played=True`
+  to a real episode that was genuinely `played=False`, re-fetched via
+  `list_episode_states`, confirmed it flipped. Reliable.
+- `played_up_to` (resume position) — confirmed **not** reliable: pushed
+  a new position (`5`, then `42` with the camelCase field name
+  `playedUpTo`) to an episode previously at `0`; both requests returned
+  `200 OK` with no error, but the position silently stayed `0` both
+  times. The real iOS app's sync protocol uses Protocol Buffers in
+  places (confirmed via the open-source `Automattic/pocket-casts-ios`
+  client) — position sync specifically may need that instead of this
+  simple JSON endpoint. `played_up_to` is still sent (harmless, and
+  future-proofs for if it starts working) but not relied on.
+- Test episode (`Linux Matters` / "Clearing the Decks") restored to its
+  real original state (`played=False, played_up_to=0`) both remotely
+  and in local state.sqlite after testing — no lasting change to the
+  real account from this investigation.
+
+**Status**: done for the milestone's actual acceptance criterion
+(played/unplayed marking) — verified end-to-end via the real
+`update_episode_status` write path. Precise resume-position sync is a
+known, separate gap; revisit only if reverse-engineering the protobuf
+sync protocol becomes worth it. Full device-read-back round trip
+(`sync-orchestrator sync` → `state.sqlite` picks up `pending_push` →
+`podcast-manager push-play-status` clears it) has solid unit coverage
+(`test_playstate.py`, `test_state.py`) but the device-dependent half
+wasn't live-tested this session — the iPod wasn't connected at the
+time; the write-path CLI was still verified fully via a manually-seeded
+pending row. Verify the true end-to-end device flow next time the
+device is connected.
+
 ## fetcher-ytmusic: built, metadata works, downloads blocked on YouTube's PO Token gate (re-shelved)
 
 Built `services/fetcher-ytmusic/` from scratch (M3's other fetcher — was

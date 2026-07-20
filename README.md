@@ -38,7 +38,8 @@ upstream tools it depends on.
 | M5 | Podcast manager: Pocket Casts client, episode downloader | Done |
 | M6 | iOpenPod headless spike: full real sync (music + playlists + podcasts) | Done — see [`docs/m6-ipod-headless-recommendation.md`](docs/m6-ipod-headless-recommendation.md) |
 | M7 | Sync orchestrator core (`services/sync-orchestrator`) | Done — real device discovery + profile-driven sync plan, live-verified |
-| M8+ | Play-status round trip, automation, web GUI | Not started |
+| M8 | Play-status round trip | Done for played/unplayed marking — live-verified with a real before/after state change. Resume-position sync doesn't work via the simple write endpoint used (see `notes.md`); Pocket Casts' real app likely needs its protobuf-based sync protocol for that, not yet built |
+| M9+ | Automation, web GUI | Not started |
 
 ## Setup
 

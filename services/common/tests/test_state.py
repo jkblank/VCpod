@@ -112,6 +112,21 @@ def test_tracks_and_episodes_are_independent_tables(tmp_path: Path):
         assert db.get_episode("ep-123") is not None
 
 
+def test_list_episodes_returns_all_rows(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode("ep-1"))
+        db.record_episode(_episode("ep-2"))
+
+        episodes = db.list_episodes()
+
+        assert {e.episode_uuid for e in episodes} == {"ep-1", "ep-2"}
+
+
+def test_list_episodes_empty_when_no_rows(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        assert db.list_episodes() == []
+
+
 def test_episode_record_round_trips_title_audio_url_and_duration(tmp_path: Path):
     with StateDB(tmp_path / "state.sqlite") as db:
         episode = _episode()
@@ -133,6 +148,73 @@ def test_episode_defaults_title_audio_url_duration_to_empty(tmp_path: Path):
         assert fetched.title == ""
         assert fetched.audio_url == ""
         assert fetched.duration_seconds == 0
+        assert fetched.pending_push is False
+
+
+def test_update_play_state_sets_pending_push_on_real_change(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode())
+
+        updated = db.update_play_state("ep-123", played=True, played_up_to=900)
+
+        assert updated is True
+        fetched = db.get_episode("ep-123")
+        assert fetched.played is True
+        assert fetched.played_up_to == 900
+        assert fetched.pending_push is True
+
+
+def test_update_play_state_no_op_when_unchanged(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        episode = _episode()
+        episode.played = True
+        episode.played_up_to = 900
+        db.record_episode(episode)
+
+        db.update_play_state("ep-123", played=True, played_up_to=900)
+
+        assert db.get_episode("ep-123").pending_push is False
+
+
+def test_update_play_state_returns_false_for_unknown_episode(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        updated = db.update_play_state("does-not-exist", played=True, played_up_to=100)
+        assert updated is False
+
+
+def test_list_episodes_pending_push_only_returns_flagged_rows(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode("ep-1"))
+        db.record_episode(_episode("ep-2"))
+        db.update_play_state("ep-1", played=True, played_up_to=500)
+
+        pending = db.list_episodes_pending_push()
+
+        assert [e.episode_uuid for e in pending] == ["ep-1"]
+
+
+def test_clear_pending_push_removes_flag(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode())
+        db.update_play_state("ep-123", played=True, played_up_to=500)
+
+        db.clear_pending_push("ep-123")
+
+        assert db.get_episode("ep-123").pending_push is False
+        assert db.list_episodes_pending_push() == []
+
+
+def test_record_episode_does_not_reset_pending_push(tmp_path: Path):
+    # A podcast-manager re-sync (record_episode's own upsert) must not
+    # silently clobber a pending_push flag set by sync-orchestrator's
+    # device read-back in between.
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode())
+        db.update_play_state("ep-123", played=True, played_up_to=500)
+
+        db.record_episode(_episode())
+
+        assert db.get_episode("ep-123").pending_push is True
 
 
 def test_pre_existing_episodes_table_migrates_new_columns_in_place(tmp_path: Path):
@@ -172,3 +254,4 @@ def test_pre_existing_episodes_table_migrates_new_columns_in_place(tmp_path: Pat
         assert fetched.title == ""
         assert fetched.audio_url == ""
         assert fetched.duration_seconds == 0
+        assert fetched.pending_push is False

@@ -117,6 +117,12 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
     for selection in planned.unresolved_selections:
         print(f"  WARNING: external_library selection {selection!r} matched 0 files")
 
+    if planned.play_states_updated:
+        print(
+            f"  {planned.play_states_updated} episode(s) with new local play state "
+            "recorded (run `podcast-manager push-play-status` to sync to Pocket Casts)"
+        )
+
     print(f"== Plan for {profile.profile!r} ==")
     _print_plan(planned.plan)
 

@@ -31,6 +31,7 @@ from typing import Any
 
 import iopenpod.device as _iopenpod_device
 from common.models import ProfileConfig
+from common.state import StateDB
 from iopenpod.device.info import DeviceInfo, resolve_itdb_path
 from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
 from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
@@ -44,7 +45,9 @@ from iopenpod.sync.core.models import (
     EngineProgress,
     EngineRequest,
 )
+from iopenpod.sync.mapping import MappingManager
 
+from sync_orchestrator.playstate import resolve_played_states
 from sync_orchestrator.selection import build_staging_dir, resolve_selected_files
 
 
@@ -193,6 +196,9 @@ class PlannedSync:
     options: EngineOptions
     snapshot: SnapshotInfo | None
     unresolved_selections: list[str] = dataclasses.field(default_factory=list)
+    # Count of local episodes whose play state changed vs. what was
+    # already recorded, per resolve_played_states — see playstate.py.
+    play_states_updated: int = 0
 
 
 def plan_sync(
@@ -266,6 +272,31 @@ def plan_sync(
     before_tracks = before.get("mhlt", [])
     before_playlists = before.get("mhlp", [])
 
+    play_states_updated = 0
+    state_db_path = state_root / f"{profile.profile}.sqlite"
+    if not skip_podcasts and state_db_path.is_file():
+        # Read-only (MappingManager.load() never touches on-device files)
+        # and independent of --execute: real listening progress since the
+        # last sync is already sitting in the device's Play Counts file
+        # the moment before_tracks is parsed. See playstate.py/notes.md.
+        mapping = MappingManager(ipod_path).load()
+        with StateDB(state_db_path) as db:
+            episodes_by_path = {e.local_path: e for e in db.list_episodes()}
+            durations_by_path = {
+                path: e.duration_seconds for path, e in episodes_by_path.items()
+            }
+            played_states = resolve_played_states(before, mapping, durations_by_path)
+            for local_path, (played, played_up_to) in played_states.items():
+                episode = episodes_by_path.get(local_path)
+                if episode is None:
+                    continue
+                if episode.played == played and episode.played_up_to == played_up_to:
+                    continue
+                if db.update_play_state(
+                    episode.episode_uuid, played=played, played_up_to=played_up_to
+                ):
+                    play_states_updated += 1
+
     fpcalc_path = shutil.which("fpcalc") or ""
     if not fpcalc_path:
         raise SyncError("fpcalc not found on PATH (chromaprint not installed)")
@@ -311,7 +342,6 @@ def plan_sync(
     plan = plan_outcome.result
 
     if not skip_podcasts:
-        state_db_path = state_root / f"{profile.profile}.sqlite"
         if state_db_path.is_file():
             for feed in _load_podcast_feeds(str(state_db_path), library_root):
                 episode_feed_pairs = [
@@ -335,6 +365,7 @@ def plan_sync(
         options=options,
         snapshot=snapshot,
         unresolved_selections=unresolved_selections,
+        play_states_updated=play_states_updated,
     )
 
 

@@ -27,6 +27,10 @@ class EpisodeRecord:
     title: str = ""
     audio_url: str = ""
     duration_seconds: int = 0
+    # Set by sync-orchestrator when device read-back finds a played-state
+    # change; cleared by podcast-manager once successfully pushed to
+    # Pocket Casts. See notes.md's M8 write-up.
+    pending_push: bool = False
 
 
 class StateDB:
@@ -60,6 +64,7 @@ class StateDB:
                 title TEXT NOT NULL DEFAULT '',
                 audio_url TEXT NOT NULL DEFAULT '',
                 duration_seconds INTEGER NOT NULL DEFAULT 0,
+                pending_push INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (episode_uuid)
             )
             """
@@ -69,14 +74,15 @@ class StateDB:
 
     def _migrate_episodes_columns(self) -> None:
         # Upgrades a pre-existing episodes table (created before title/
-        # audio_url/duration_seconds existed) in place. CREATE TABLE IF NOT
-        # EXISTS above is a no-op against an already-existing table, so
-        # older DBs need these added explicitly.
+        # audio_url/duration_seconds/pending_push existed) in place. CREATE
+        # TABLE IF NOT EXISTS above is a no-op against an already-existing
+        # table, so older DBs need these added explicitly.
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(episodes)")}
         for column, ddl in (
             ("title", "TEXT NOT NULL DEFAULT ''"),
             ("audio_url", "TEXT NOT NULL DEFAULT ''"),
             ("duration_seconds", "INTEGER NOT NULL DEFAULT 0"),
+            ("pending_push", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE episodes ADD COLUMN {column} {ddl}")
@@ -131,15 +137,13 @@ class StateDB:
         )
         self._conn.commit()
 
-    def get_episode(self, episode_uuid: str) -> EpisodeRecord | None:
-        row = self._conn.execute(
-            "SELECT episode_uuid, podcast_uuid, show_name, local_path, played, "
-            "played_up_to, downloaded_at, title, audio_url, duration_seconds "
-            "FROM episodes WHERE episode_uuid = ?",
-            (episode_uuid,),
-        ).fetchone()
-        if not row:
-            return None
+    _EPISODE_COLUMNS = (
+        "episode_uuid, podcast_uuid, show_name, local_path, played, "
+        "played_up_to, downloaded_at, title, audio_url, duration_seconds, pending_push"
+    )
+
+    @staticmethod
+    def _episode_from_row(row: tuple) -> EpisodeRecord:
         return EpisodeRecord(
             episode_uuid=row[0],
             podcast_uuid=row[1],
@@ -151,7 +155,19 @@ class StateDB:
             title=row[7],
             audio_url=row[8],
             duration_seconds=row[9],
+            pending_push=bool(row[10]),
         )
+
+    def get_episode(self, episode_uuid: str) -> EpisodeRecord | None:
+        row = self._conn.execute(
+            f"SELECT {self._EPISODE_COLUMNS} FROM episodes WHERE episode_uuid = ?",
+            (episode_uuid,),
+        ).fetchone()
+        return self._episode_from_row(row) if row else None
+
+    def list_episodes(self) -> list[EpisodeRecord]:
+        rows = self._conn.execute(f"SELECT {self._EPISODE_COLUMNS} FROM episodes").fetchall()
+        return [self._episode_from_row(row) for row in rows]
 
     def record_episode(self, record: EpisodeRecord) -> None:
         self._conn.execute(
@@ -182,5 +198,36 @@ class StateDB:
                 record.audio_url,
                 record.duration_seconds,
             ),
+        )
+        self._conn.commit()
+
+    def update_play_state(self, episode_uuid: str, *, played: bool, played_up_to: int) -> bool:
+        """Records a device-derived play-state change and marks it
+        pending_push, but only if it actually differs from what's already
+        recorded — avoids flagging every episode as pending on every sync
+        just because it was seen again with unchanged state. Returns False
+        if no row exists for episode_uuid (nothing to update)."""
+        existing = self.get_episode(episode_uuid)
+        if existing is None:
+            return False
+        if existing.played == played and existing.played_up_to == played_up_to:
+            return True
+        self._conn.execute(
+            "UPDATE episodes SET played = ?, played_up_to = ?, pending_push = 1 "
+            "WHERE episode_uuid = ?",
+            (int(played), played_up_to, episode_uuid),
+        )
+        self._conn.commit()
+        return True
+
+    def list_episodes_pending_push(self) -> list[EpisodeRecord]:
+        rows = self._conn.execute(
+            f"SELECT {self._EPISODE_COLUMNS} FROM episodes WHERE pending_push = 1"
+        ).fetchall()
+        return [self._episode_from_row(row) for row in rows]
+
+    def clear_pending_push(self, episode_uuid: str) -> None:
+        self._conn.execute(
+            "UPDATE episodes SET pending_push = 0 WHERE episode_uuid = ?", (episode_uuid,)
         )
         self._conn.commit()
