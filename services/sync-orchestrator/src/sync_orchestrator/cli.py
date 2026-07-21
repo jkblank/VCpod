@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
 from common.config import ConfigError, load_profile_config
 from common.lock import FileLock, LockTimeoutError
 
-from sync_orchestrator.device import DeviceNotFoundError, find_matching_device
+from sync_orchestrator.device import DeviceNotFoundError, EjectError, eject_device, find_matching_device
 from sync_orchestrator.sync import SyncError, execute_sync, plan_sync
+
+
+def _format_duration(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m{secs:02d}s"
 
 
 def _fail(message: str) -> int:
@@ -84,6 +90,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 
 
 def _run_sync(args: argparse.Namespace, profile) -> int:
+    start_time = time.monotonic()
     print(f"== Finding device for profile {profile.profile!r} "
           f"({profile.device.match_by}={profile.device.match_value!r}) ==")
     try:
@@ -131,6 +138,7 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
             "\nPLAN ONLY (no --execute passed). Review the numbers above, "
             "especially to_remove, before re-running with --execute."
         )
+        print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
         return 0
 
     # A selection that resolves to 0 files is almost certainly a typo'd
@@ -181,6 +189,21 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
         f"\nPASS: wrote {result.tracks_added} track(s) to a real device. "
         f"{snapshot_note} is available for rollback if needed."
     )
+
+    if not args.skip_eject:
+        # A plain filesystem unmount (the previous manual workflow)
+        # leaves the USB mass-storage session logically active — the
+        # iPod stays in "connected to computer" mode instead of
+        # switching to charge-only, unlike what a desktop file manager's
+        # eject button actually does (unmount + power off the drive).
+        # See device.py/notes.md.
+        try:
+            eject_device(device_info)
+            print("Device ejected — safe to disconnect.")
+        except EjectError as e:
+            print(f"WARNING: could not eject device automatically: {e}")
+
+    print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
     return 0
 
 
@@ -221,6 +244,13 @@ def main() -> None:
         help="Skip creating a new backup snapshot (only safe if a recent "
         "snapshot already exists and the device hasn't been written to "
         "since).",
+    )
+    sync_parser.add_argument(
+        "--skip-eject",
+        action="store_true",
+        help="Don't automatically unmount + power off the device after a "
+        "successful --execute. By default the device is fully ejected "
+        "(not just unmounted) so it actually switches to charge-only mode.",
     )
     sync_parser.add_argument(
         "--skip-podcasts",

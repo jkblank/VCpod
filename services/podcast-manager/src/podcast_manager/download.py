@@ -117,20 +117,33 @@ def sync_podcast(
         full_episodes, key=lambda e: e.published or "", reverse=(fill_mode != "next")
     )
 
-    if sync_unplayed_only:
-        candidates = [
-            e
-            for e in candidates
-            if not (states_by_uuid.get(e.uuid) and states_by_uuid[e.uuid].played)
-        ]
-
-    candidates = candidates[:max_episodes_per_show]
-    if not candidates:
-        return result
-
     show_dir = library_root / _sanitize(podcast.title)
 
     with StateDB(state_db_path) as db:
+        # Pocket Casts' own EpisodeState only has a row for episodes the
+        # user interacted with through a Pocket Casts client — a real
+        # listen elsewhere (or sync lag) can leave no row at all, wrongly
+        # treating a played episode as unplayed (see notes.md). Local
+        # state.sqlite can already know better: sync-orchestrator's M8
+        # device read-back (playstate.py) records played state straight
+        # from the iPod's own Play Counts file, independent of Pocket
+        # Casts ever seeing it. Treat "played" as true if *either* source
+        # says so — never let a locally-confirmed play get re-treated as
+        # unplayed just because Pocket Casts hasn't caught up.
+        local_by_uuid = {e.episode_uuid: e for e in db.list_episodes()}
+
+        def _is_played(episode_uuid: str) -> bool:
+            remote = states_by_uuid.get(episode_uuid)
+            local = local_by_uuid.get(episode_uuid)
+            return bool(remote and remote.played) or bool(local and local.played)
+
+        if sync_unplayed_only:
+            candidates = [e for e in candidates if not _is_played(e.uuid)]
+
+        candidates = candidates[:max_episodes_per_show]
+        if not candidates:
+            return result
+
         for episode in candidates:
             dest = _episode_path(show_dir, episode)
             already_downloaded = dest.exists()
@@ -156,14 +169,27 @@ def sync_podcast(
             # a second profile syncing the same episode has no local record
             # for it yet, but the file may already exist from another
             # profile's download).
+            #
+            # played/played_up_to are merged (OR'd / max'd), not simply
+            # overwritten from Pocket Casts — otherwise this same call
+            # would silently undo an M8 device read-back's played=True the
+            # moment Pocket Casts' own state hasn't (yet, or ever) caught
+            # up. record_episode's own ON CONFLICT already leaves
+            # pending_push untouched; this closes the equivalent gap for
+            # played/played_up_to.
             state = states_by_uuid.get(episode.uuid)
+            local = local_by_uuid.get(episode.uuid)
+            remote_played = bool(state and state.played)
+            remote_played_up_to = state.played_up_to if state else 0
+            local_played = bool(local and local.played)
+            local_played_up_to = local.played_up_to if local else 0
             record = EpisodeRecord(
                 episode_uuid=episode.uuid,
                 podcast_uuid=podcast.uuid,
                 show_name=podcast.title,
                 local_path=str(dest),
-                played=bool(state and state.played),
-                played_up_to=state.played_up_to if state else 0,
+                played=remote_played or local_played,
+                played_up_to=max(remote_played_up_to, local_played_up_to),
                 downloaded_at=datetime.now(timezone.utc).isoformat(),
                 title=episode.title,
                 audio_url=episode.url,

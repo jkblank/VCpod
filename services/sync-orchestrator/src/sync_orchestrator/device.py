@@ -8,6 +8,7 @@ connection and mounting it is M9's job ("automation"), not this one.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -16,6 +17,12 @@ from iopenpod.device.info import DeviceInfo, enrich
 
 _MOUNT_FSTYPES = ("vfat", "hfsplus")
 _MOUNTS_PATH = "/proc/mounts"
+
+# Matches a whole-disk device path off a partition path: /dev/sdc2 ->
+# /dev/sdc, /dev/nvme0n1p2 -> /dev/nvme0n1 (iPods are always plain USB
+# mass storage, so only the sdX form is ever hit live, but nvme is
+# handled too rather than assuming one shape).
+_PARENT_DRIVE_RE = re.compile(r"^(/dev/(?:[a-z]+|nvme\d+n\d+))p?\d+$")
 
 # /proc/mounts escapes space/tab/newline/backslash in paths with octal
 # codes — confirmed live these appear in real mount point names (a real
@@ -111,3 +118,42 @@ def find_matching_device(match: DeviceMatch) -> DeviceInfo:
     raise DeviceNotFoundError(
         f"no connected, mounted iPod matches {match.match_by}={match.match_value!r}"
     )
+
+
+class EjectError(Exception):
+    pass
+
+
+def eject_device(device_info: DeviceInfo) -> None:
+    """Fully unmounts and powers off the device so it actually leaves
+    "connected to computer" mode and switches to charge-only — confirmed
+    live that a plain filesystem unmount (`udisksctl unmount`) alone,
+    the previous manual workflow, is NOT enough: the USB mass-storage
+    session stays logically active and the iPod stays in "connected"
+    mode. A desktop file manager's eject button does both steps
+    (unmount, then power off the whole drive); this mirrors that.
+    """
+    block_device = None
+    for candidate_device, mount_point, _fstype in iter_candidate_mounts():
+        if mount_point == device_info.path:
+            block_device = candidate_device
+            break
+    if block_device is None:
+        raise EjectError(f"device no longer mounted at {device_info.path!r}; can't eject")
+
+    match = _PARENT_DRIVE_RE.match(block_device)
+    if not match:
+        raise EjectError(f"could not determine parent drive for {block_device!r}")
+    drive = match.group(1)
+
+    unmount = subprocess.run(
+        ["udisksctl", "unmount", "-b", block_device], capture_output=True, text=True
+    )
+    if unmount.returncode != 0:
+        raise EjectError(f"udisksctl unmount failed: {unmount.stdout}{unmount.stderr}")
+
+    power_off = subprocess.run(
+        ["udisksctl", "power-off", "-b", drive], capture_output=True, text=True
+    )
+    if power_off.returncode != 0:
+        raise EjectError(f"udisksctl power-off failed: {power_off.stdout}{power_off.stderr}")

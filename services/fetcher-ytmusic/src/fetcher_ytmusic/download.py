@@ -39,6 +39,12 @@ def _sanitize(text: str) -> str:
 def _run_ytdlp_single_track(
     *, video_id: str, cookies_path: Path, scratch_dir: Path
 ) -> None:
+    # Requires: deno on PATH (yt-dlp's JS challenge solver) and the
+    # bgutil-ytdlp-pot-provider companion HTTP server running on
+    # 127.0.0.1:4416 (yt-dlp auto-detects it once the plugin is
+    # installed — no explicit flag needed). Without both, every track
+    # fails identically: YouTube's bot-check blocks every real audio
+    # format, only thumbnail storyboards resolve. See notes.md.
     result = subprocess.run(
         [
             "yt-dlp",
@@ -46,6 +52,7 @@ def _run_ytdlp_single_track(
             "--audio-format", "m4a",
             "--audio-quality", "0",
             "--cookies", str(cookies_path),
+            "--remote-components", "ejs:github",
             "-o", str(scratch_dir / "%(id)s.%(ext)s"),
             f"https://music.youtube.com/watch?v={video_id}",
         ],

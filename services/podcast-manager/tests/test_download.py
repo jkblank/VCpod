@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from common.state import StateDB
+from common.state import EpisodeRecord, StateDB
 from podcast_manager import download as download_module
 from podcast_manager.api import EpisodeState, FullEpisode, PodcastSummary
 
@@ -118,6 +118,73 @@ def test_sync_podcast_includes_played_when_not_unplayed_only(monkeypatch, patche
     )
 
     assert len(result.downloaded) == 3
+
+
+def test_sync_podcast_excludes_episode_played_locally_but_not_on_pocket_casts(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # Regression test for the "already-listened episodes get downloaded
+    # anyway" bug (notes.md): Pocket Casts' own EpisodeState has no row
+    # at all for ep-0 (as if never interacted with there), but M8's
+    # device read-back already recorded it played locally. The local
+    # signal must still exclude it from re-download.
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    state_db_path = tmp_path / "state.sqlite"
+    with StateDB(state_db_path) as db:
+        db.record_episode(
+            EpisodeRecord(
+                episode_uuid="ep-0",
+                podcast_uuid="show-1",
+                show_name="Test Show",
+                local_path=str(tmp_path / "library" / "Test Show" / "existing.mp3"),
+                played=True,
+                played_up_to=100,
+                downloaded_at="2026-07-19T00:00:00+00:00",
+            )
+        )
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        max_episodes_per_show=5,
+    )
+
+    downloaded_uuids = {r.episode_uuid for r in result.downloaded}
+    assert "ep-0" not in downloaded_uuids
+
+
+def test_sync_podcast_does_not_downgrade_locally_played_episode(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # A subsequent sync (e.g. re-downloading other episodes for the same
+    # show) must not silently reset an already-known-played episode back
+    # to unplayed just because Pocket Casts' own state hasn't caught up
+    # yet (or never will, for a listen Pocket Casts never saw). Uses
+    # sync_unplayed_only=False so ep-0 is a re-sync candidate at all.
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    state_db_path = tmp_path / "state.sqlite"
+    with StateDB(state_db_path) as db:
+        db.record_episode(
+            EpisodeRecord(
+                episode_uuid="ep-0",
+                podcast_uuid="show-1",
+                show_name="Test Show",
+                local_path=str(tmp_path / "library" / "Test Show" / "placeholder.mp3"),
+                played=True,
+                played_up_to=100,
+                downloaded_at="2026-07-19T00:00:00+00:00",
+            )
+        )
+
+    _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        sync_unplayed_only=False,
+        max_episodes_per_show=10,
+    )
+
+    with StateDB(state_db_path) as db:
+        assert db.get_episode("ep-0").played is True
 
 
 def test_sync_podcast_orders_newest_first_regardless_of_input_order(monkeypatch, tmp_path):

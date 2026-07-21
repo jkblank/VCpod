@@ -1,6 +1,42 @@
 # Notes / Future Work
 
-## M8: podcast play-status round trip — shipped (status confirmed, position not)
+## Future: CLI ergonomics — no "sync everything for this profile" entrypoint
+
+Noticed live (2026-07-20): pulling all of a profile's playlists means one
+`fetcher-apple fetch --playlist "X" --cookies-path ... --library-root ...
+--playlists-root ... --state-path ...` invocation *per playlist*, repeating
+the same four path flags every time. `john.yaml` alone has 10 playlists
+across 2 sources (9 `apple_music` + 1 `ytmusic`) — 10 long, near-identical
+command lines just to do a full pull, and that's before podcasts
+(`podcast-manager sync`, its own separate long command) or a device sync
+(`sync-orchestrator sync`, likewise).
+
+The awkward part is that almost none of those flags actually vary per
+playlist or need retyping — `library-root`/`playlists-root`/`state-path`
+are the same for every playlist in a profile, and per-source credentials
+paths are already fully determined by `global.yaml`'s
+`sources.*.cookies_file`/`credentials_file`/`oauth_file`. Everything
+needed is already derivable from just `--profile <path>` +
+`--global-config <path>`.
+
+**Fix idea, two levels, not mutually exclusive**:
+1. Per-fetcher "sync all playlists for this profile" subcommand (e.g.
+   `fetcher-apple sync-profile --profile ... --library-root ...
+   --playlists-root ... --state-path ...`) that loops `profile.playlists`
+   itself for that source, calling `fetch_playlist()` per entry — same
+   internals as today, just removes the "one shell invocation per
+   playlist" repetition.
+2. A single top-level orchestrator (`music-stack sync --profile ...`?)
+   that resolves *all* paths from `global.yaml`+the profile itself and
+   drives every fetcher + `podcast-manager` + optionally
+   `sync-orchestrator` in one command — the biggest ergonomics win, but
+   a real new piece of surface area (would need to import each service's
+   fetch functions directly rather than shelling out, or shell out to
+   each service's own CLI with paths filled in on the caller's behalf).
+
+**Status**: not started, noted 2026-07-20 — real usability gap, not
+urgent, but worth doing before this is handed to anyone other than the
+one person who already knows every flag by heart.
 
 M8's acceptance criterion: *"Episodes played on-device are correctly
 marked played in Pocket Casts after next sync."* Scoped to podcast
@@ -71,7 +107,7 @@ time; the write-path CLI was still verified fully via a manually-seeded
 pending row. Verify the true end-to-end device flow next time the
 device is connected.
 
-## fetcher-ytmusic: built, metadata works, downloads blocked on YouTube's PO Token gate (re-shelved)
+## fetcher-ytmusic: downloads unblocked — deno + bgutil-ytdlp-pot-provider fixes the PO Token gate
 
 Built `services/fetcher-ytmusic/` from scratch (M3's other fetcher — was
 previously just a placeholder Dockerfile). Mirrors `fetcher-apple`'s
@@ -123,15 +159,47 @@ on the latest yt-dlp (2026.7.4, confirmed against PyPI), so this isn't a
 stale-version problem — it's the current state of the yt-dlp/YouTube
 arms race.
 
-**Status**: re-shelved (same operational decision as fetcher-spotify's
-Premium block), for a precisely known, entirely platform-side reason.
-Code is complete and correct — full unit test coverage (mocked
-subprocess, same pattern as the other fetchers), live-verified metadata
-resolution. Revisit only if: YouTube loosens the PO Token requirement,
-or setting up the `bgutil-ytdlp-pot-provider` companion service (likely
-as its own `docker-compose.yml` entry, matching how `sync-orchestrator`
-is the one service that can't be containerized rather than everything
-being forced into one shape) becomes worth the added infrastructure.
+**Fixed (2026-07-20)**: rather than re-shelving indefinitely, set up the
+real fix once the tradeoff (real infrastructure, no recurring cost —
+unlike the Apple MusicKit path investigated the same day, which needs a
+$99/year Developer Program membership) looked worth it:
+1. `sudo pacman -S deno` — resolves the JS-runtime/signature-solving
+   half on its own (the user ran this; needs a real terminal, `sudo` has
+   no passwordless/askpass path in this environment).
+2. Cloned `Brainicism/bgutil-ytdlp-pot-provider` (pinned tag `1.3.1`)
+   into `services/fetcher-ytmusic/pot-provider/` (gitignored — third-
+   party companion service, not vendored into this repo), ran its Deno-
+   based HTTP server (`deno run --allow-env --allow-net --allow-ffi=.
+   --allow-read=. ../src/main.ts`, listens on `127.0.0.1:4416`) — using
+   Deno for the server too (not Docker/Node) avoids a second, redundant
+   JS runtime alongside the one yt-dlp itself already needed.
+   **Must stay running continuously** — it mints tokens on demand,
+   there's no cached/offline mode.
+3. `uv add bgutil-ytdlp-pot-provider` (the pip-installable yt-dlp
+   plugin half) into the root workspace — yt-dlp auto-detects the
+   running server once this is installed, no explicit flag needed for
+   the PO Token part.
+4. One more piece surfaced only once the above got far enough to reach
+   it: yt-dlp also wants a "remote component" challenge-solver script
+   downloaded on demand (`--remote-components ejs:github`) — without
+   it, signature solving still fails even with deno + the PO Token
+   server both working. `fetcher_ytmusic/download.py`'s
+   `_run_ytdlp_single_track` now always passes this flag.
+
+**Live-verified end to end** against the real "Semaphore" playlist
+(`config/profiles/john.yaml`) with all three pieces running together:
+all 31 tracks downloaded successfully (`new tracks: 31, already known:
+0`, zero failures) — real, valid `.m4a` audio confirmed via `ffprobe`
+(correct duration, `aac` codec). Previously every single track failed
+identically with zero usable formats.
+
+**Status**: done, shipped 2026-07-20. Running the companion server is a
+real, permanent operational requirement now (not optional polish) —
+document this prominently in `services/fetcher-ytmusic/README.md` and
+consider it for `docker-compose.yml` (its own service, matching how
+`sync-orchestrator` is the one thing that *can't* be containerized
+rather than assuming everything must fit one shape) so it starts
+automatically instead of being a manually-run background process.
 
 ## gamdl: upstream fix for Apple "Mix" playlist URL support
 
@@ -422,26 +490,44 @@ to `bob.yaml`.
 
 **Status**: done, 2026-07-20.
 
-## Bug to investigate: some already-listened episodes get downloaded anyway
+## Bug: already-listened episodes downloaded anyway — fixed via M8's local play-state signal
 
 Observed live 2026-07-19: after the combined sync, some episodes that had
 already been listened to were still downloaded. `sync_podcast()`'s
-`sync_unplayed_only` filter relies on `list_episode_states()` having a row
-for that episode — and we already know from M5
+`sync_unplayed_only` filter relied solely on `list_episode_states()`
+having a row for that episode — and we already know from M5
 (`podcast_manager/api.py`'s `EpisodeState` docstring) that Pocket Casts
 "only returns a row here for episodes the user has actually interacted
 with... there is no row at all for an episode still in its default/
-untouched (unplayed) state." If a real listen doesn't reliably produce
-that row (sync lag between devices, a threshold not met, listened to via
-a different app, etc.), a genuinely-played episode would incorrectly be
-treated as unplayed and downloaded again.
+untouched (unplayed) state." A real listen not reliably producing that
+row (sync lag between devices, listened to via a different app, etc.)
+meant a genuinely-played episode could be incorrectly treated as unplayed
+and downloaded again.
 
-**Fix idea**: instrument/log the actual `EpisodeState` rows Pocket Casts
-returns for a few episodes the user knows they've listened to, to confirm
-whether this is a Pocket Casts API data gap, a sync-timing issue, or a bug
-in how we match states by UUID.
+**Fix**: once M8's device read-back existed (`sync_orchestrator/
+playstate.py` recording real on-device listening progress into
+`state.sqlite`, independent of whether Pocket Casts' own API ever saw
+it), `sync_podcast()` (`podcast_manager/download.py`) was updated to
+treat an episode as played if *either* Pocket Casts' `EpisodeState` OR
+the local `state.sqlite` row already says so — closing exactly the gap
+above, using a signal we now have. Also fixed a related bug the same
+change surfaced: the old code unconditionally overwrote
+`played`/`played_up_to` from Pocket Casts on every `record_episode()`
+call, which would have silently *undone* an M8 device read-back's
+`played=True` the moment Pocket Casts hadn't (yet, or ever) caught up —
+now merged (OR / max) instead of overwritten, mirroring how
+`record_episode`'s own `ON CONFLICT` already leaves `pending_push`
+untouched. Two regression tests added
+(`test_sync_podcast_excludes_episode_played_locally_but_not_on_pocket_casts`,
+`test_sync_podcast_does_not_downgrade_locally_played_episode`).
 
-**Status**: not started, needs live investigation.
+Residual, unfixable gap: an episode listened to on a device/app that
+never syncs to Pocket Casts *and* never gets read back from our own iPod
+sync either (e.g. deleted from the device before a sync runs) still has
+no signal available to us at all — genuinely outside what either source
+can catch.
+
+**Status**: done, shipped 2026-07-20.
 
 ## Future: absolute vs. additive playlist sync
 
@@ -719,13 +805,13 @@ automation — this service still assumes the device is already mounted).
 
 ## Workflow gotcha: standalone projects cache a stale `common` build
 
-Hit three times now (`sync-orchestrator`, `fetcher-spotify`, then
+Hit four times now (`sync-orchestrator`, `fetcher-spotify`, then
 `sync-orchestrator` again for the nested `external_library.selections`
-mapping validator — added to `common/models.py` in one edit, but only
-`uv sync --reinstall-package common`'d for the root workspace, not
-`sync-orchestrator`'s own venv, so a real run failed with a pydantic
-"Input should be a valid string" error against the *old* schema even
-though the source was already correct): a standalone
+mapping validator, then `sync-orchestrator` a third time for M8's
+`StateDB.list_episodes()` — `AttributeError: 'StateDB' object has no
+attribute 'list_episodes'` on a real sync run, right after the exact
+same session that had just added and tested it against the root
+workspace): a standalone
 `uv` project depending on `common` via `{ path = "../common" }` doesn't
 automatically pick up changes to `common`'s source — it keeps using
 whatever was built into its `.venv` at the last `uv sync`, even though

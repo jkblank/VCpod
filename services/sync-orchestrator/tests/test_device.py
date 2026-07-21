@@ -2,10 +2,14 @@ from pathlib import Path
 
 import pytest
 
+import subprocess
+
 from common.models import DeviceMatch
 from sync_orchestrator import device as device_module
 from sync_orchestrator.device import (
     DeviceNotFoundError,
+    EjectError,
+    eject_device,
     find_matching_device,
     is_ipod_mount,
     iter_candidate_mounts,
@@ -178,3 +182,73 @@ def test_find_matching_device_skips_non_ipod_vfat_mounts(monkeypatch, tmp_path):
     match = DeviceMatch(match_by="volume_label", match_value="JOHN'S IPOD")
     with pytest.raises(DeviceNotFoundError):
         find_matching_device(match)
+
+
+class _FakeDeviceInfoForEject:
+    def __init__(self, path):
+        self.path = path
+
+
+def test_eject_device_unmounts_then_powers_off_parent_drive(monkeypatch):
+    monkeypatch.setattr(
+        device_module,
+        "iter_candidate_mounts",
+        lambda: [("/dev/sdc2", "/run/media/john/JOHN_S IPOD", "vfat")],
+    )
+    calls = []
+
+    def _fake_run(cmd, capture_output, text):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
+
+    assert calls == [
+        ["udisksctl", "unmount", "-b", "/dev/sdc2"],
+        ["udisksctl", "power-off", "-b", "/dev/sdc"],
+    ]
+
+
+def test_eject_device_raises_if_no_longer_mounted(monkeypatch):
+    monkeypatch.setattr(device_module, "iter_candidate_mounts", lambda: [])
+
+    with pytest.raises(EjectError, match="no longer mounted"):
+        eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
+
+
+def test_eject_device_raises_on_unmount_failure(monkeypatch):
+    monkeypatch.setattr(
+        device_module,
+        "iter_candidate_mounts",
+        lambda: [("/dev/sdc2", "/run/media/john/JOHN_S IPOD", "vfat")],
+    )
+
+    def _fake_run(cmd, capture_output, text):
+        if "unmount" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="target is busy")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(EjectError, match="unmount failed"):
+        eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
+
+
+def test_eject_device_raises_on_power_off_failure(monkeypatch):
+    monkeypatch.setattr(
+        device_module,
+        "iter_candidate_mounts",
+        lambda: [("/dev/sdc2", "/run/media/john/JOHN_S IPOD", "vfat")],
+    )
+
+    def _fake_run(cmd, capture_output, text):
+        if "power-off" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="device busy")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(EjectError, match="power-off failed"):
+        eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))

@@ -29,3 +29,8 @@ library/**
 # covered by state/** above) can be tens to hundreds of GB — never meant
 # to be committed. Catches a --backup-dir override too, if placed here.
 services/sync-orchestrator/_backups/
+
+# bgutil-ytdlp-pot-provider — third-party companion service (own git repo,
+# cloned not vendored) that supplies YouTube PO Tokens to yt-dlp. See
+# notes.md. Not our code, never meant to be committed.
+services/fetcher-ytmusic/pot-provider/
