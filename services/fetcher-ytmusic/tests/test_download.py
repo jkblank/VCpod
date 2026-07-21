@@ -186,3 +186,34 @@ def test_fetch_playlist_additive_mode_preserves_existing_m3u8_entries(
 
     lines = result.m3u8_path.read_text().splitlines()
     assert "/already/there.m4a" in lines
+
+
+def test_fetch_playlist_m3u8_paths_are_absolute_even_with_relative_library_root(
+    monkeypatch, tmp_path
+):
+    # Confirmed live: a real "Semaphore" playlist synced with a relative
+    # --library-root wrote relative paths into its .m3u8 — iOpenPod's
+    # playlist-file matching compares against absolute paths from its own
+    # PC scan, so every entry came back skipped_count == total_entries,
+    # items == [] (the playlist was created on the device but empty).
+    # Same bug class as fetcher-apple's per-track fallback fix.
+    monkeypatch.setattr(
+        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: TRACKS
+    )
+    monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "library").mkdir()
+
+    result = download_module.fetch_playlist(
+        playlist_name="Semaphore",
+        playlist_source_id="PLxxxxxxxxxxxxxxxxxxxx",
+        profile="john",
+        cookies_path="cookies.txt",
+        library_root=Path("library"),  # relative, matching the real-world CLI call
+        playlists_root=tmp_path / "playlists",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    lines = result.m3u8_path.read_text().splitlines()
+    for line in lines[1:]:
+        assert Path(line).is_absolute(), f"expected absolute path, got {line!r}"

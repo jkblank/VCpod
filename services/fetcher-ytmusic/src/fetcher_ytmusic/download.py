@@ -162,7 +162,14 @@ def fetch_playlist(
     sync_mode: str = "absolute",
 ) -> FetchResult:
     cookies_path = Path(cookies_path)
-    library_root = Path(library_root)
+    # Must be absolute: iOpenPod's playlist-file matching compares .m3u8
+    # entries against absolute paths from its own PC-folder scan, so a
+    # relative library_root here silently produces paths in the .m3u8
+    # that never match anything — confirmed live: every entry in a real
+    # playlist synced with a relative --library-root came back
+    # skipped_count == total_entries, items == []. Same bug class as
+    # fetcher-apple's per-track fallback fix (see notes.md).
+    library_root = Path(library_root).resolve()
     playlists_root = Path(playlists_root)
     if lock_path is None:
         lock_path = Path(state_db_path).parent / ".ytmusic.lock"

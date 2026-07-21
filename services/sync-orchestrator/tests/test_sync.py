@@ -10,10 +10,13 @@ from common.models import (
     SyncSettings,
 )
 
+from iopenpod.device.info import DeviceInfo
+
 from sync_orchestrator import sync as sync_module
 from sync_orchestrator.sync import (
     SyncError,
     _backup_progress_adapter,
+    _capabilities_with_artwork_workaround,
     _engine_progress_adapter,
     _ThrottledProgressPrinter,
     plan_sync,
@@ -148,3 +151,33 @@ def test_plan_sync_raises_when_external_library_path_missing(tmp_path):
             state_root=state_root,
             profile=profile,
         )
+
+
+def test_capabilities_workaround_corrects_ipod_video_identity_and_finds_real_artwork_formats():
+    # Real DeviceInfo, real (unmocked) capabilities_for_family_gen — this
+    # is meant to prove iopenpod's own real table resolves correctly once
+    # given the right identity, not just that our code calls some mock
+    # the way we expect.
+    info = DeviceInfo(path="/fake/mount")
+    info.model_family = "iPod Video"
+    info.generation = ""
+
+    capabilities = _capabilities_with_artwork_workaround(info)
+
+    assert info.model_family == "iPod"
+    assert info.generation == "5.5th Gen"
+    assert capabilities.supports_artwork is True
+    assert len(capabilities.cover_art_formats) > 0
+
+
+def test_capabilities_workaround_falls_back_for_unrecognized_family():
+    info = DeviceInfo(path="/fake/mount")
+    info.model_family = "Some Unknown Device"
+    info.generation = ""
+
+    capabilities = _capabilities_with_artwork_workaround(info)
+
+    assert capabilities.supports_artwork is False
+    # Identity is left alone for families this workaround doesn't know
+    # anything special about.
+    assert info.model_family == "Some Unknown Device"

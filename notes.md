@@ -1,5 +1,108 @@
 # Notes / Future Work
 
+## library-manager dedup had genuinely never been run — run for real, found a real duplicate
+
+User noticed some songs on the device had multiple copies and asked to
+check the dedup service. Root cause was simpler than a bug in the
+dedup logic itself: `library/music/.duplicates/` didn't exist at all —
+`library-manager dedup` had never actually been invoked once in this
+project's real usage. Every fetch→sync cycle so far went straight from
+fetching to `sync-orchestrator sync`, skipping the dedup step entirely
+(the exact gap the "no sync-everything entrypoint" CLI-ergonomics note
+above already flags — dedup is a real, separate manual command with its
+own long flag list, easy to forget).
+
+Ran it for real against the full library: scanned 1044 tagged tracks,
+found and correctly quarantined 1 real cross-source duplicate (Hozier -
+"Eat Your Young", kept the `apple_music` copy per `FIDELITY_ORDER`,
+quarantined the `ytmusic` copy to `.duplicates/ytmusic/`) — and
+confirmed both playlists that referenced the quarantined copy
+(`Semaphore.m3u8`, `Songs to vape to.m3u8`) got correctly rewritten to
+point at the canonical file.
+
+**Related, separate finding surfaced while investigating**: 1044 scanned
+vs. 1158 real `.m4a` files on disk — 114 files never got scanned at all,
+because `scan_library()` silently skips anything missing our own
+`source`/`source_id` dedup tags (by design — distinguishes "ours" from
+a file a user dropped in manually). Traced these to real, legitimate-
+looking tracks (clean title/artist tags, e.g. BETWEEN FRIENDS -
+"Smiley", Bad Bunny - "DtMF") that `fetcher_apple`'s own fetch already
+knew about and reported — `unmatched (downloaded but not tagged/
+recorded): 109` and `: 7` were both printed during the "Songs to vape
+to"/"Zanny twitch playlist" fetches earlier this session, but got missed
+in the moment (not part of the summary grep pattern used to report
+results back). `_fetch_via_playlist_url` only tags a downloaded file
+once it's matched by title+artist against the playlist's own known
+track list (`_match_track`) — these never matched anything, most likely
+because gamdl's playlist download pulled in sibling tracks from the
+same album/release rather than only the specific requested track (no
+gamdl CLI flag found to prevent this). Since they're untagged, they're
+invisible to dedup, unlinked from any playlist or state-db row, and
+just sitting on disk — real wasted downloads, and potentially hiding
+more duplicates dedup can't see.
+
+**Fix idea**: (1) surface `unmatched` counts more prominently in fetch
+output so they don't get missed again (or fail loudly above some
+threshold rather than a single easy-to-miss summary line); (2) decide
+what to do with the 114 already-orphaned files — delete, or try to
+retroactively match/tag them; (3) investigate whether gamdl's whole-
+album-download behavior can actually be constrained to just the
+requested track, or if downstream matching needs to expect and handle
+it better.
+
+**Status**: dedup run for real, 1 real duplicate fixed. The
+untagged/unmatched-files issue is newly discovered, not yet
+investigated further or fixed — separate follow-up.
+
+## fetcher-ytmusic: relative --library-root wrote unmatchable .m3u8 paths (fixed) — Semaphore synced empty
+
+Discovered live 2026-07-21: the user checked the real device after the
+big 757-track sync and "Semaphore" (the YouTube Music playlist) wasn't
+actually there. The sync log's own `plan.playlists_to_add` entry for it
+told the whole story even at PLAN time: `'_sync_playlist_total_entries':
+31, '_sync_playlist_skipped_count': 31, 'items': []` — the playlist was
+created on the device, but completely empty. Compare a working playlist
+from the same sync ("Songs To Vape To"): `skipped_count: 0`.
+
+**Root cause**: exact same bug class already found and fixed for
+`fetcher-apple`'s per-track fallback path (see the "wrote relative paths
+into .m3u8" entry below) — `fetcher_ytmusic/download.py`'s
+`fetch_playlist()` never got the matching `library_root =
+Path(library_root).resolve()` fix when it was built (mirrored the
+overall structure but missed this one line). Invoked with a relative
+`--library-root library/music` (as every real invocation this session
+was), every path written into `Semaphore.m3u8` stayed relative
+(`library/music/nimino/...`). iOpenPod's playlist-file matching compares
+`.m3u8` entries against absolute paths from its own PC-folder scan, so a
+relative path matches nothing — all 31 entries silently skipped, both
+at plan time and (confirmed) at execute time. Fixed with the identical
+one-line fix fetcher-apple already had.
+
+**Real, already-synced damage needed a second fix**: the code fix alone
+didn't retroactively repair anything — the 31 `tracks` rows in
+`state.sqlite` already had the bad relative `local_path` stored from the
+original fetch, and re-running `fetch_playlist()` reuses an
+already-known track's stored `local_path` as-is (never re-resolves it).
+Had to directly walk and fix all 31 rows via `StateDB.update_local_path`
+(resolving each against the real repo root, verifying the file still
+exists before rewriting) before regenerating a correct `Semaphore.m3u8`.
+Regression test added
+(`test_fetch_playlist_m3u8_paths_are_absolute_even_with_relative_library_root`,
+mirrors fetcher-apple's own).
+
+**Fix idea worth doing later**: this class of bug (a fetcher's stored
+`local_path` silently going stale/wrong after a bug fix) can't be fully
+protected against by a regression test on `fetch_playlist()` alone,
+since the failure mode here was specifically in *already-recorded*
+state, not a fresh run. Worth a light periodic health check across all
+of `StateDB`'s `tracks`/`episodes` rows verifying `local_path` is
+absolute and the file still exists, surfaced loudly rather than
+discovered by the user checking their device.
+
+**Status**: done, fixed 2026-07-21 — code + the real corrupted state
+rows + a live re-sync verification still pending (device needs to be
+reconnected to confirm "Semaphore" actually populates this time).
+
 ## Future: CLI ergonomics — no "sync everything for this profile" entrypoint
 
 Noticed live (2026-07-20): pulling all of a profile's playlists means one
@@ -318,7 +421,7 @@ just the PC side, or every sync against a large library pays close to an
 hour of USB-bound fingerprinting regardless of how little actually
 changed — confirmed this is no longer the case once the cache is warm.
 
-## iopenpod (PyPI `iopenpod==1.66.2`): incomplete device support for 5th/5.5th-gen "iPod Video"
+## iopenpod (PyPI `iopenpod==1.66.2`): 5th/5.5th-gen "iPod Video" artwork — fixed (finding below was stale)
 
 Confirmed live against a real device (`lsusb`: "ID 05ac:1209 Apple, Inc.
 iPod Video"; on-device `SysInfo`: `ModelFamily: iPod Video`) — two
@@ -367,17 +470,72 @@ the native device format) — it just needs `supports_artwork=False` to
 actually reach it, which the private-registry re-resolution prevents by
 default.
 
-**Fix idea (upstream)**: add real `device/models.py` entries for 5th/5.5th
-gen iPod Video (model numbers, capacities, and — ideally — real native
-cover-art format specs, not just the existing iOpenPod-only fallback), and
-make `_restore_usb_pid_identity_if_needed()` prefer a specific cached
-identity over a placeholder/coarse PID-derived one instead of the reverse.
-Worth filing as an issue/PR against https://github.com/TheRealSavi/iOpenPod.
+**Correction (2026-07-21) — the "no data at all" half of this was
+stale.** User noticed album art never actually shows up on the device
+and asked to prioritize it. Re-checked against the *actually-installed*
+`iopenpod==1.66.2` (not whatever the M6 scratchpad checkout had at the
+time) and finding #1 above no longer holds: `device/capabilities.py`
+(a separate file from `device/models.py`, easy to conflate) has a
+complete, populated entry for `("iPod", "5.5th Gen")` —
+`supports_artwork=True`, `cover_art_formats=(ARTWORK_FORMATS_BY_ID[1028],
+ARTWORK_FORMATS_BY_ID[1029])`. Format IDs 1028/1029 aren't a guess —
+they're the exact IDs already seen live, unprompted, in a real sync's
+own log ("ART: encountered extra known artwork format 1028 at
+.../F1028_1.ithmb; preserving/regenerating it because it is present
+on-device") — the device's own real on-disk artwork already uses these
+formats, and iopenpod's table agrees.
 
-**Status**: not started, worked around locally for M6. All 400 new tracks
-on the real device currently have iOpenPod-fallback-format artwork rather
-than native-format artwork as a result — acceptable for now, revisit if
-native artwork on this device generation matters later.
+Finding #2 (the identity-resolution bug) was and still is exactly
+right, and turns out to be the *entire* real cause: with
+`generation=""`, `capabilities_for_family_gen("iPod", "")` can't find
+the real table entry (falls through to a "do all generations of this
+family share identical capabilities?" check, correctly says no since
+1st-4th gen mono lack artwork support, returns `None`). No table data
+was ever actually missing for this device — the lookup just never got
+the right key.
+
+**Fix shipped**: `sync_orchestrator/sync.py`'s
+`_capabilities_with_artwork_workaround()` now corrects
+`info.model_family`/`info.generation` to `"iPod"`/`"5.5th Gen"` directly
+on the `DeviceInfo` instance (a plain mutable dataclass — `enrich()`
+itself already mutates these fields internally, so this isn't a new
+kind of intrusion), instead of monkeypatching `capabilities_for_family_gen`
+to force `supports_artwork=False`. Deliberately did *not* go the
+"monkeypatch every module that imports capabilities_for_family_gen"
+route — traced the real ArtworkDB writer
+(`artworkdb_writer/rgb565.py`'s `get_artwork_format_definitions()`) and
+found it reads `model_family`/`generation` directly off the device
+object returned by `get_current_device_for_path()` (already patched),
+never through a separate `capabilities_for_family_gen` import at all —
+so fixing the identity once, in place, correctly reaches every consumer
+regardless of which module imported what. New tests
+(`test_capabilities_workaround_corrects_ipod_video_identity_and_finds_real_artwork_formats`,
+`..._falls_back_for_unrecognized_family`) exercise the *real*
+`capabilities_for_family_gen`, not a mock — proving iopenpod's own table
+resolves correctly once given the right key, not just that our code
+calls something the way we expect.
+
+Hardcodes `"5.5th Gen"` specifically (user confirmed live which
+generation the real device is) rather than auto-detecting 5th vs.
+5.5th — they share the same USB PID and only differ in
+`supports_gapless`/`db_version` in iopenpod's table, and reliable
+auto-disambiguation would need more device data than is easily
+available. Fine for the one real device this project runs against
+today; would need to become configurable or auto-detected if this
+project is ever used against a plain (non-5.5th) 5th-gen iPod Video.
+
+**Fix idea (upstream, unchanged)**: `_restore_usb_pid_identity_if_needed()`
+still prefers a coarse/placeholder identity over a more specific cached
+one whenever they textually differ, with no check for which is actually
+more specific — worth filing as an issue/PR against
+https://github.com/TheRealSavi/iOpenPod regardless of our local fix.
+
+**Status**: code shipped, unit-tested against the real
+`capabilities_for_family_gen`. **Not yet live-verified** — device wasn't
+physically connected this session (user was away from the machine).
+Next real sync should show real artwork format writes (`format 1028`/
+`1029` in the commit log) and, the actual proof, album art visible on
+the device's own screen for newly-synced tracks.
 
 ## podcast-manager: Pocket Casts credentials need reversible encryption before production
 
@@ -528,6 +686,38 @@ no signal available to us at all — genuinely outside what either source
 can catch.
 
 **Status**: done, shipped 2026-07-20.
+
+## Future: decide what happens to a track's local file when it's removed from an "absolute" playlist
+
+Noted 2026-07-21. `sync_mode: absolute` (the default) means the local
+`.m3u8` mirrors the source playlist's current contents exactly,
+including removals — but "removed from the playlist" today only ever
+means "no longer listed in that one `.m3u8` file." The actual downloaded
+track under `library/music/` is never touched, deleted, or reconsidered
+by anything in the fetch pipeline just because a playlist stopped
+referencing it. Whether that's actually right depends on a real
+decision this project hasn't made yet:
+
+- If the track is only ever referenced by that one playlist, keeping
+  the file around forever is arguably silent bloat — nothing will ever
+  clean it up.
+- If the track is shared across other playlists, or is something the
+  user actually wants in their library independent of any one playlist
+  (most likely case for most tracks), deleting it just because one
+  playlist rotated it out would be actively wrong.
+- iOpenPod's own device-side dedup/removal logic operates on `pc_folders`
+  contents, not on "was this in a playlist" — so this decision is really
+  about `library/music/` itself (and by extension `library-manager`),
+  not about anything sync-orchestrator or the fetchers currently do.
+
+**Fix idea**: needs an explicit policy decision before any code change —
+e.g. "never auto-delete, this is a library not a cache" (simplest, safe
+default) vs. "delete a track's file only when zero playlists/other
+references point to it anymore" (real reference-counting, meaningfully
+more complex, touches `library-manager`'s dedup/state tracking). No
+implementation started either way.
+
+**Status**: not started — decision needed, not yet made.
 
 ## Future: absolute vs. additive playlist sync
 
