@@ -1,4 +1,5 @@
 from podcast_manager import api as api_module
+from podcast_manager.api import PodcastSummary, resolve_show_selection
 
 
 class FakeResponse:
@@ -118,3 +119,39 @@ def test_list_full_episodes_parses_catalog_with_audio_urls(monkeypatch):
     assert result[0].uuid == "e1"
     assert result[0].url == "https://cdn.example/e1.mp3"
     assert result[0].duration == 100
+
+
+# --- resolve_show_selection --------------------------------------------------
+
+SUBSCRIPTIONS = [
+    PodcastSummary(uuid="uuid-1", title="Waveform", author="The Vergecast Network"),
+    PodcastSummary(uuid="uuid-2", title="Reply All", author="Gimlet"),
+]
+
+
+def test_resolve_show_selection_matches_by_uuid():
+    matched, unmatched = resolve_show_selection(SUBSCRIPTIONS, ["uuid-2"])
+
+    assert [p.title for p in matched] == ["Reply All"]
+    assert unmatched == []
+
+
+def test_resolve_show_selection_matches_by_title_case_insensitively():
+    matched, unmatched = resolve_show_selection(SUBSCRIPTIONS, ["waveform"])
+
+    assert [p.uuid for p in matched] == ["uuid-1"]
+    assert unmatched == []
+
+
+def test_resolve_show_selection_reports_unmatched_entries():
+    matched, unmatched = resolve_show_selection(SUBSCRIPTIONS, ["Reply All", "Nonexistent Show"])
+
+    assert [p.uuid for p in matched] == ["uuid-2"]
+    assert unmatched == ["Nonexistent Show"]
+
+
+def test_resolve_show_selection_dedups_when_same_show_requested_twice():
+    matched, unmatched = resolve_show_selection(SUBSCRIPTIONS, ["uuid-1", "waveform"])
+
+    assert [p.uuid for p in matched] == ["uuid-1"]
+    assert unmatched == []

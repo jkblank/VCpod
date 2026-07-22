@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.lock import FileLock
+from gamdl.utils import GamdlError
+
+from common.lock import FileLock, LockTimeoutError
+from common.models import PlaylistEntry
 from common.playlist import write_m3u8
 from common.state import StateDB, TrackRecord
 
@@ -48,6 +51,13 @@ class FetchResult:
     already_known_tracks: list[TrackRecord]
     unmatched_paths: list[Path]
     failed_tracks: list[TrackMeta]
+
+
+@dataclass
+class PlaylistSyncOutcome:
+    entry: PlaylistEntry
+    result: FetchResult | None
+    error: str | None
 
 
 def _normalize(text: str) -> str:
@@ -324,7 +334,18 @@ def fetch_playlist(
     if lock_path is None:
         lock_path = Path(state_db_path).parent / ".apple_music.lock"
 
-    tracks_meta = get_playlist_tracks(str(cookies_path), playlist_source_id)
+    try:
+        tracks_meta = get_playlist_tracks(str(cookies_path), playlist_source_id)
+    except GamdlError as e:
+        # gamdl's own API client raises this directly (e.g.
+        # GamdlApiResponseError from an expired/invalid cookies file) —
+        # normalize to DownloadError so every caller (fetch_playlists,
+        # the CLI, music-stack-cli's orchestrator) only has one exception
+        # type to catch for "this fetch attempt failed," instead of this
+        # one case slipping through uncaught and killing an entire
+        # sync-everything run over what a single per-playlist retry
+        # would otherwise handle fine.
+        raise DownloadError(f"could not fetch playlist metadata from Apple Music: {e}") from e
 
     # Apple Music only allows one active session at a time — confirmed
     # live (an in-progress session gets kicked by a second one starting).
@@ -364,3 +385,41 @@ def fetch_playlist(
         unmatched_paths=unmatched_paths,
         failed_tracks=failed_tracks,
     )
+
+
+def fetch_playlists(
+    entries: list[PlaylistEntry],
+    *,
+    profile: str,
+    cookies_path: Path | str,
+    library_root: Path | str,
+    playlists_root: Path | str,
+    state_db_path: Path | str,
+    storefront: str = "us",
+    lock_path: Path | str | None = None,
+    lock_timeout: float = 1800,
+) -> list[PlaylistSyncOutcome]:
+    """Fetch each entry in turn, same as calling fetch_playlist() once per
+    entry, except one entry's failure doesn't stop the rest — matching the
+    per-item resilience podcast_manager's sync already has."""
+    outcomes: list[PlaylistSyncOutcome] = []
+    for entry in entries:
+        try:
+            result = fetch_playlist(
+                playlist_name=entry.name,
+                playlist_source_id=entry.source_id,
+                profile=profile,
+                cookies_path=cookies_path,
+                library_root=library_root,
+                playlists_root=playlists_root,
+                state_db_path=state_db_path,
+                storefront=storefront,
+                lock_path=lock_path,
+                lock_timeout=lock_timeout,
+                sync_mode=entry.sync_mode,
+            )
+        except (LockTimeoutError, DownloadError, OSError, ValueError) as e:
+            outcomes.append(PlaylistSyncOutcome(entry=entry, result=None, error=str(e)))
+            continue
+        outcomes.append(PlaylistSyncOutcome(entry=entry, result=result, error=None))
+    return outcomes

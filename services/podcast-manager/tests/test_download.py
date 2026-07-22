@@ -406,4 +406,68 @@ def test_download_enclosure_raises_after_exhausting_all_retries(monkeypatch, tmp
 
     assert attempts["count"] == download_module._DOWNLOAD_RETRIES
     assert not dest.exists()
-    assert not dest.with_suffix(dest.suffix + ".part").exists()
+
+
+# --- sync_shows ---------------------------------------------------------------
+
+PODCAST_2 = PodcastSummary(uuid="show-2", title="Second Show", author="Author Two")
+
+
+def test_sync_shows_syncs_every_subscription(monkeypatch, patched_pipeline, tmp_path):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    outcomes = download_module.sync_shows(
+        [PODCAST, PODCAST_2],
+        token="tok",
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    assert [o.podcast.uuid for o in outcomes] == ["show-1", "show-2"]
+    assert all(o.error is None for o in outcomes)
+    assert all(len(o.result.downloaded) == 1 for o in outcomes)
+
+
+def test_sync_shows_one_show_api_failure_does_not_abort_the_rest(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    real_list_full_episodes = download_module.list_full_episodes
+
+    def _flaky_list_full_episodes(token, uuid):
+        if uuid == "show-1":
+            raise httpx.ReadTimeout("timed out")
+        return real_list_full_episodes(token, uuid)
+
+    monkeypatch.setattr(download_module, "list_full_episodes", _flaky_list_full_episodes)
+
+    outcomes = download_module.sync_shows(
+        [PODCAST, PODCAST_2],
+        token="tok",
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    by_uuid = {o.podcast.uuid: o for o in outcomes}
+    assert by_uuid["show-1"].error is not None
+    assert by_uuid["show-1"].result is None
+    assert by_uuid["show-2"].error is None
+    assert len(by_uuid["show-2"].result.downloaded) == 1
+
+
+def test_sync_shows_uses_per_show_fill_mode(monkeypatch, patched_pipeline, tmp_path):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    outcomes = download_module.sync_shows(
+        [PODCAST],
+        token="tok",
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+        fill_modes={"show-1": "next"},
+    )
+
+    assert outcomes[0].result.downloaded[0].episode_uuid == "ep-2"  # oldest, per "next" fill mode

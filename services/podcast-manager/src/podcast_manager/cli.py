@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 import httpx
@@ -9,19 +8,19 @@ import httpx
 from common.config import ConfigError, load_profile_config
 from common.state import StateDB
 
-from podcast_manager.api import list_subscriptions, login, update_episode_status
-from podcast_manager.download import sync_podcast
-
-
-def _load_credentials(path: str) -> tuple[str, str]:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    return data["email"], data["password"]
+from podcast_manager.api import (
+    list_subscriptions,
+    load_credentials,
+    login,
+    resolve_show_selection,
+    update_episode_status,
+)
+from podcast_manager.download import sync_shows
 
 
 def _cmd_list_subscriptions(args: argparse.Namespace) -> int:
     try:
-        email, password = _load_credentials(args.credentials_path)
+        email, password = load_credentials(args.credentials_path)
         token = login(email, password)
         podcasts = list_subscriptions(token)
     except (OSError, ValueError, KeyError) as e:
@@ -46,7 +45,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        email, password = _load_credentials(args.credentials_path)
+        email, password = load_credentials(args.credentials_path)
         token = login(email, password)
         subscriptions = list_subscriptions(token)
     except (OSError, ValueError, KeyError) as e:
@@ -55,42 +54,44 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 
     shows_filter = args.show or profile.podcasts.shows
     if shows_filter != "all":
-        wanted = set(shows_filter)
-        subscriptions = [p for p in subscriptions if p.uuid in wanted]
+        subscriptions, unmatched = resolve_show_selection(subscriptions, shows_filter)
+        for name in unmatched:
+            print(f"WARNING: no subscription matched --show {name!r}")
 
     if not subscriptions:
         print("No matching subscriptions to sync.")
         return 0
 
+    outcomes = sync_shows(
+        subscriptions,
+        token=token,
+        library_root=args.library_root,
+        state_db_path=args.state_path,
+        sync_unplayed_only=profile.podcasts.sync_unplayed_only,
+        max_episodes_per_show=profile.podcasts.max_episodes_per_show,
+        fill_modes=profile.podcasts.fill_modes,
+    )
+
     total_downloaded = 0
     total_already = 0
     total_failed = 0
     shows_with_errors: list[str] = []
-    for podcast in subscriptions:
-        try:
-            result = sync_podcast(
-                podcast=podcast,
-                token=token,
-                library_root=args.library_root,
-                state_db_path=args.state_path,
-                sync_unplayed_only=profile.podcasts.sync_unplayed_only,
-                max_episodes_per_show=profile.podcasts.max_episodes_per_show,
-                fill_mode=profile.podcasts.fill_modes.get(podcast.uuid, "newest"),
-            )
-        except (httpx.HTTPError, OSError) as e:
+    for outcome in outcomes:
+        if outcome.error is not None:
             # A per-show API failure (e.g. list_full_episodes timing out)
             # happens before any per-episode handling in sync_podcast, so
             # it isn't covered by that function's own per-episode
             # try/except — must not abort the remaining shows either.
-            print(f"{podcast.title}: ERROR ({e})")
-            shows_with_errors.append(podcast.title)
+            print(f"{outcome.podcast.title}: ERROR ({outcome.error})")
+            shows_with_errors.append(outcome.podcast.title)
             continue
 
+        result = outcome.result
         total_downloaded += len(result.downloaded)
         total_already += len(result.already_present)
         total_failed += len(result.failed)
         print(
-            f"{podcast.title}: {len(result.downloaded)} downloaded, "
+            f"{outcome.podcast.title}: {len(result.downloaded)} downloaded, "
             f"{len(result.already_present)} already present"
             + (f", {len(result.failed)} failed" if result.failed else "")
         )
@@ -108,7 +109,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 
 def _cmd_push_play_status(args: argparse.Namespace) -> int:
     try:
-        email, password = _load_credentials(args.credentials_path)
+        email, password = load_credentials(args.credentials_path)
         token = login(email, password)
     except (OSError, ValueError, KeyError) as e:
         print(f"ERROR: could not authenticate with Pocket Casts: {e}")
@@ -168,8 +169,8 @@ def main() -> None:
     sync_parser.add_argument(
         "--show",
         action="append",
-        help="Restrict sync to this show UUID (repeatable). Defaults to the "
-        "profile's podcasts.shows config.",
+        help="Restrict sync to this show, by UUID or title (case-insensitive, "
+        "repeatable). Defaults to the profile's podcasts.shows config.",
     )
     sync_parser.set_defaults(func=_cmd_sync)
 

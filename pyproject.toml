@@ -16,6 +16,7 @@ members = [
     "services/fetcher-ytmusic",
     "services/library-manager",
     "services/podcast-manager",
+    "services/music-stack-cli",
 ]
 
 [tool.uv.sources]
@@ -24,6 +25,7 @@ fetcher-apple = { workspace = true }
 fetcher-ytmusic = { workspace = true }
 library-manager = { workspace = true }
 podcast-manager = { workspace = true }
+music-stack-cli = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -32,6 +34,7 @@ dev = [
     "fetcher-ytmusic",
     "library-manager",
     "podcast-manager",
+    "music-stack-cli",
     "pytest>=8.0",
 ]
 
@@ -47,6 +50,7 @@ testpaths = [
     "services/fetcher-ytmusic/tests",
     "services/library-manager/tests",
     "services/podcast-manager/tests",
+    "services/music-stack-cli/tests",
 ]
 # Different services' test dirs have no __init__.py (and "fetcher-apple"
 # etc. aren't valid Python package names anyway), so same-named test files

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from common.lock import FileLock
+from common.models import PlaylistEntry
 from common.state import StateDB
 from fetcher_ytmusic import download as download_module
 from fetcher_ytmusic.api import TrackMeta
@@ -217,3 +219,62 @@ def test_fetch_playlist_m3u8_paths_are_absolute_even_with_relative_library_root(
     lines = result.m3u8_path.read_text().splitlines()
     for line in lines[1:]:
         assert Path(line).is_absolute(), f"expected absolute path, got {line!r}"
+
+
+def test_fetch_playlists_syncs_every_entry(patched_pipeline):
+    entries = [
+        PlaylistEntry(name="Semaphore", source="ytmusic", source_id="PLxxxxxxxxxxxxxxxxxxxx"),
+        PlaylistEntry(name="Other List", source="ytmusic", source_id="PLyyyyyyyyyyyyyyyyyyyy"),
+    ]
+
+    outcomes = download_module.fetch_playlists(
+        entries,
+        profile="john",
+        cookies_path="cookies.txt",
+        library_root=patched_pipeline["library_root"],
+        playlists_root=patched_pipeline["playlists_root"],
+        state_db_path=patched_pipeline["state_db_path"],
+    )
+
+    assert [o.entry.name for o in outcomes] == ["Semaphore", "Other List"]
+    assert all(o.error is None for o in outcomes)
+    # Both playlists share TRACKS' source_ids in this fixture — the state db
+    # is shared across playlists in one profile, so the second entry's
+    # tracks are correctly recognized as already-known, not re-downloaded.
+    assert len(outcomes[0].result.new_tracks) == 2
+    assert len(outcomes[1].result.already_known_tracks) == 2
+
+
+def test_fetch_playlists_lock_timeout_on_one_entry_does_not_abort_the_rest(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: TRACKS
+    )
+    library_root = tmp_path / "library"
+    playlists_root = tmp_path / "playlists"
+    state_db_path = tmp_path / "state.sqlite"
+    library_root.mkdir()
+
+    lock_path = tmp_path / ".ytmusic.lock"
+    holder = FileLock(lock_path, timeout=5)
+    holder.acquire()
+    try:
+        entries = [
+            PlaylistEntry(name="Semaphore", source="ytmusic", source_id="PLxxxxxxxxxxxxxxxxxxxx"),
+        ]
+        outcomes = download_module.fetch_playlists(
+            entries,
+            profile="john",
+            cookies_path="cookies.txt",
+            library_root=library_root,
+            playlists_root=playlists_root,
+            state_db_path=state_db_path,
+            lock_path=lock_path,
+            lock_timeout=0.2,
+        )
+    finally:
+        holder.release()
+
+    assert outcomes[0].result is None
+    assert outcomes[0].error is not None

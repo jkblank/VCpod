@@ -5,10 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from gamdl.utils import GamdlError
+
 from common.lock import FileLock, LockTimeoutError
+from common.models import PlaylistEntry
 from common.state import StateDB
 from fetcher_apple import download as download_module
 from fetcher_apple.api import TrackMeta
+from fetcher_apple.download import DownloadError
 from fetcher_apple.tag import read_dedup_tags
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -497,6 +501,148 @@ def test_fetch_playlist_raises_lock_timeout_when_another_session_active(
             )
     finally:
         holder.release()
+
+
+def test_fetch_playlist_wraps_gamdl_api_error_as_download_error(monkeypatch, tmp_path):
+    # Confirmed live: an expired/invalid Apple Music cookies file makes
+    # gamdl's own API client raise GamdlApiResponseError directly out of
+    # get_playlist_tracks() — uncaught, this crashed the whole
+    # music-stack-cli sync-everything run instead of being isolated to
+    # just the apple_music source.
+    def _raise(cookies_path, source_id):
+        raise GamdlError("Error fetching account info")
+
+    monkeypatch.setattr(download_module, "get_playlist_tracks", _raise)
+
+    with pytest.raises(DownloadError):
+        download_module.fetch_playlist(
+            playlist_name="ALT CTRL",
+            playlist_source_id="pl." + "a" * 32,
+            profile="john",
+            cookies_path="cookies.txt",
+            library_root=tmp_path / "library",
+            playlists_root=tmp_path / "playlists",
+            state_db_path=tmp_path / "state.sqlite",
+        )
+
+
+def test_fetch_playlists_isolates_gamdl_api_error_to_one_entry(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    playlists_root = tmp_path / "playlists"
+    state_db_path = tmp_path / "state.sqlite"
+    library_root.mkdir()
+
+    good_id = "pl." + "a" * 32
+    bad_id = "pl." + "b" * 32
+
+    def _get_playlist_tracks(cookies_path, source_id):
+        if source_id == bad_id:
+            raise GamdlError("Error fetching account info")
+        return TRACKS
+
+    monkeypatch.setattr(download_module, "get_playlist_tracks", _get_playlist_tracks)
+    monkeypatch.setattr(
+        subprocess, "run", _fake_gamdl_run(library_root, library_root / "_gamdl_scratch" / good_id)
+    )
+
+    entries = [
+        PlaylistEntry(name="Bad", source="apple_music", source_id=bad_id),
+        PlaylistEntry(name="Good", source="apple_music", source_id=good_id),
+    ]
+
+    outcomes = download_module.fetch_playlists(
+        entries,
+        profile="john",
+        cookies_path="cookies.txt",
+        library_root=library_root,
+        playlists_root=playlists_root,
+        state_db_path=state_db_path,
+    )
+
+    bad, good = outcomes
+    assert bad.result is None
+    assert "Apple Music" in bad.error
+    assert good.error is None
+    assert len(good.result.new_tracks) == 2
+
+
+def test_fetch_playlists_syncs_every_entry_and_isolates_failures(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    playlists_root = tmp_path / "playlists"
+    state_db_path = tmp_path / "state.sqlite"
+    library_root.mkdir()
+
+    monkeypatch.setattr(
+        download_module, "get_playlist_tracks", lambda cookies_path, source_id: TRACKS
+    )
+
+    good_id = "pl." + "a" * 32
+    bad_id = "pl." + "b" * 32
+
+    def _run(cmd, capture_output, text):
+        if bad_id in " ".join(cmd):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        return _fake_gamdl_run(library_root, library_root / "_gamdl_scratch" / good_id)(
+            cmd, capture_output, text
+        )
+
+    monkeypatch.setattr(subprocess, "run", _run)
+
+    entries = [
+        PlaylistEntry(name="Good", source="apple_music", source_id=good_id),
+        PlaylistEntry(name="Bad", source="apple_music", source_id=bad_id),
+    ]
+
+    outcomes = download_module.fetch_playlists(
+        entries,
+        profile="john",
+        cookies_path="cookies.txt",
+        library_root=library_root,
+        playlists_root=playlists_root,
+        state_db_path=state_db_path,
+    )
+
+    assert [o.entry.name for o in outcomes] == ["Good", "Bad"]
+    good, bad = outcomes
+    assert good.error is None
+    assert len(good.result.new_tracks) == 2
+    assert bad.result is None
+    assert bad.error is not None  # a whole-playlist gamdl failure raises DownloadError
+
+
+def test_fetch_playlists_lock_timeout_on_one_entry_does_not_abort_the_rest(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        download_module, "get_playlist_tracks", lambda cookies_path, source_id: TRACKS
+    )
+    library_root = tmp_path / "library"
+    playlists_root = tmp_path / "playlists"
+    state_db_path = tmp_path / "state.sqlite"
+    library_root.mkdir()
+
+    lock_path = tmp_path / ".apple_music.lock"
+    holder = FileLock(lock_path, timeout=5)
+    holder.acquire()
+    try:
+        entries = [
+            PlaylistEntry(name="Locked", source="apple_music", source_id="pl." + "a" * 32),
+        ]
+        outcomes = download_module.fetch_playlists(
+            entries,
+            profile="john",
+            cookies_path="cookies.txt",
+            library_root=library_root,
+            playlists_root=playlists_root,
+            state_db_path=state_db_path,
+            lock_path=lock_path,
+            lock_timeout=0.2,
+        )
+    finally:
+        holder.release()
+
+    assert outcomes[0].result is None
+    assert outcomes[0].error is not None
 
 
 def test_fetch_playlist_default_lock_path_derived_from_state_path(monkeypatch, tmp_path):

@@ -199,3 +199,44 @@ def sync_podcast(
             (result.already_present if already_downloaded else result.downloaded).append(record)
 
     return result
+
+
+@dataclass
+class ShowSyncOutcome:
+    podcast: PodcastSummary
+    result: SyncResult | None
+    error: str | None
+
+
+def sync_shows(
+    subscriptions: list[PodcastSummary],
+    *,
+    token: str,
+    library_root: Path | str,
+    state_db_path: Path | str,
+    sync_unplayed_only: bool = True,
+    max_episodes_per_show: int = 5,
+    fill_modes: dict[str, str] | None = None,
+) -> list[ShowSyncOutcome]:
+    """Sync each show in turn, same as calling sync_podcast() once per show,
+    except one show's failure doesn't stop the rest — e.g. a per-show API
+    call (list_full_episodes) timing out, which happens before sync_podcast's
+    own per-episode error handling ever gets a chance to run."""
+    fill_modes = fill_modes or {}
+    outcomes: list[ShowSyncOutcome] = []
+    for podcast in subscriptions:
+        try:
+            result = sync_podcast(
+                podcast=podcast,
+                token=token,
+                library_root=library_root,
+                state_db_path=state_db_path,
+                sync_unplayed_only=sync_unplayed_only,
+                max_episodes_per_show=max_episodes_per_show,
+                fill_mode=fill_modes.get(podcast.uuid, "newest"),
+            )
+        except (httpx.HTTPError, OSError) as e:
+            outcomes.append(ShowSyncOutcome(podcast=podcast, result=None, error=str(e)))
+            continue
+        outcomes.append(ShowSyncOutcome(podcast=podcast, result=result, error=None))
+    return outcomes

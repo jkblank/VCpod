@@ -9,6 +9,7 @@ members = [
     "fetcher-ytmusic",
     "library-manager",
     "music-stack",
+    "music-stack-cli",
     "podcast-manager",
 ]
 
@@ -360,6 +361,7 @@ dev = [
     { name = "fetcher-apple" },
     { name = "fetcher-ytmusic" },
     { name = "library-manager" },
+    { name = "music-stack-cli" },
     { name = "podcast-manager" },
     { name = "pytest" },
 ]
@@ -373,8 +375,28 @@ dev = [
     { name = "fetcher-apple", editable = "services/fetcher-apple" },
     { name = "fetcher-ytmusic", editable = "services/fetcher-ytmusic" },
     { name = "library-manager", editable = "services/library-manager" },
+    { name = "music-stack-cli", editable = "services/music-stack-cli" },
     { name = "podcast-manager", editable = "services/podcast-manager" },
     { name = "pytest", specifier = ">=8.0" },
+]
+
+[[package]]
+name = "music-stack-cli"
+version = "0.1.0"
+source = { editable = "services/music-stack-cli" }
+dependencies = [
+    { name = "common" },
+    { name = "fetcher-apple" },
+    { name = "fetcher-ytmusic" },
+    { name = "podcast-manager" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "common", editable = "services/common" },
+    { name = "fetcher-apple", editable = "services/fetcher-apple" },
+    { name = "fetcher-ytmusic", editable = "services/fetcher-ytmusic" },
+    { name = "podcast-manager", editable = "services/podcast-manager" },
 ]
 
 [[package]]

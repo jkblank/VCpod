@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from gamdl.utils import GamdlError
+
 from common.config import ConfigError, load_profile_config
 from common.lock import LockTimeoutError
 
@@ -13,7 +15,7 @@ from fetcher_apple.download import DownloadError, fetch_playlist
 def _cmd_list_playlists(args: argparse.Namespace) -> int:
     try:
         playlists = list_playlists(args.cookies_path)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, GamdlError) as e:
         print(f"ERROR: could not authenticate with Apple Music: {e}")
         return 1
 

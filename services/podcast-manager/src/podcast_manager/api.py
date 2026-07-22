@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -60,6 +62,12 @@ def _first_present(item: dict[str, Any], *keys: str, default: Any = None) -> Any
     return default
 
 
+def load_credentials(path: Path | str) -> tuple[str, str]:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return data["email"], data["password"]
+
+
 def login(email: str, password: str) -> str:
     resp = httpx.post(
         LOGIN_URL,
@@ -84,6 +92,32 @@ def list_subscriptions(token: str) -> list[PodcastSummary]:
         PodcastSummary(uuid=item["uuid"], title=item.get("title", ""), author=item.get("author", ""))
         for item in data.get("podcasts", [])
     ]
+
+
+def resolve_show_selection(
+    subscriptions: list[PodcastSummary], wanted: list[str]
+) -> tuple[list[PodcastSummary], list[str]]:
+    """Match each `wanted` entry against subscriptions by exact UUID or
+    case-insensitive title, so callers/users don't have to know a show's
+    Pocket Casts UUID just to target it by name. Returns (matched
+    subscriptions in subscription order, deduped; the `wanted` entries that
+    matched nothing) so callers can warn on typos instead of silently
+    syncing nothing.
+    """
+    by_uuid = {p.uuid: p for p in subscriptions}
+    by_title = {p.title.casefold(): p for p in subscriptions}
+
+    matched: list[PodcastSummary] = []
+    matched_uuids: set[str] = set()
+    unmatched: list[str] = []
+    for name in wanted:
+        podcast = by_uuid.get(name) or by_title.get(name.casefold())
+        if podcast is None:
+            unmatched.append(name)
+        elif podcast.uuid not in matched_uuids:
+            matched.append(podcast)
+            matched_uuids.add(podcast.uuid)
+    return matched, unmatched
 
 
 def list_episode_states(token: str, podcast_uuid: str) -> list[EpisodeState]:
