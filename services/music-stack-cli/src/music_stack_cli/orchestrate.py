@@ -179,6 +179,7 @@ def run_sync(
                     sync_unplayed_only=profile.podcasts.sync_unplayed_only,
                     max_episodes_per_show=profile.podcasts.max_episodes_per_show,
                     fill_modes=profile.podcasts.fill_modes,
+                    episode_filter=profile.podcasts.episode_filter,
                 )
 
     return result

@@ -101,8 +101,21 @@ def sync_podcast(
     sync_unplayed_only: bool = True,
     max_episodes_per_show: int = 5,
     fill_mode: str = "newest",
+    episode_filter: str = "played",
 ) -> SyncResult:
-    library_root = Path(library_root)
+    # Must be resolved to absolute: a relative library_root here produces
+    # a relative local_path recorded in the state db, which
+    # sync-orchestrator's _load_podcast_feeds() can't reliably re-resolve
+    # later (it joins onto its own library_root, silently producing a
+    # wrong doubled path if the stored value is relative to something
+    # else, e.g. the CWD a much earlier invocation happened to have) —
+    # confirmed live: 11 of 12 subscribed shows' episodes were silently
+    # missing from every real device sync as a result, despite being
+    # fully downloaded and recorded, because their (relative) local_path
+    # values never resolved correctly downstream. Same bug class as
+    # fetcher-apple/fetcher-ytmusic's library_root handling — see
+    # CLAUDE.md and notes.md.
+    library_root = Path(library_root).resolve()
     result = SyncResult()
 
     full_episodes = list_full_episodes(token, podcast.uuid)
@@ -137,8 +150,19 @@ def sync_podcast(
             local = local_by_uuid.get(episode_uuid)
             return bool(remote and remote.played) or bool(local and local.played)
 
+        def _is_archived(episode_uuid: str) -> bool:
+            # Archive is purely a Pocket Casts app/user action — unlike
+            # played state, there's no device-side equivalent to merge in
+            # (sync-orchestrator's M8 read-back only ever knows play
+            # counts/position, not archive status), so this only ever
+            # checks the remote state.
+            remote = states_by_uuid.get(episode_uuid)
+            return bool(remote and remote.archived)
+
+        _is_done = _is_archived if episode_filter == "archived" else _is_played
+
         if sync_unplayed_only:
-            candidates = [e for e in candidates if not _is_played(e.uuid)]
+            candidates = [e for e in candidates if not _is_done(e.uuid)]
 
         candidates = candidates[:max_episodes_per_show]
         if not candidates:
@@ -217,6 +241,7 @@ def sync_shows(
     sync_unplayed_only: bool = True,
     max_episodes_per_show: int = 5,
     fill_modes: dict[str, str] | None = None,
+    episode_filter: str = "played",
 ) -> list[ShowSyncOutcome]:
     """Sync each show in turn, same as calling sync_podcast() once per show,
     except one show's failure doesn't stop the rest — e.g. a per-show API
@@ -234,6 +259,7 @@ def sync_shows(
                 sync_unplayed_only=sync_unplayed_only,
                 max_episodes_per_show=max_episodes_per_show,
                 fill_mode=fill_modes.get(podcast.uuid, "newest"),
+                episode_filter=episode_filter,
             )
         except (httpx.HTTPError, OSError) as e:
             outcomes.append(ShowSyncOutcome(podcast=podcast, result=None, error=str(e)))

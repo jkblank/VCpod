@@ -35,11 +35,22 @@ class EpisodeState:
     """Per-user play state. Confirmed against a real account: Pocket Casts
     only returns a row here for episodes the user has actually interacted
     with (played, started, etc.) — there is no row at all for an episode
-    still in its default/untouched (i.e. unplayed) state."""
+    still in its default/untouched (i.e. unplayed) state.
+
+    `archived` (Pocket Casts' own API field is confusingly named
+    `isDeleted` — it does not mean the episode/file was deleted, it's
+    their "Archive" feature) is a real, distinct signal from `played`,
+    confirmed against a real account: an episode can be played but not
+    yet archived (kept intentionally), or archived without being played
+    at all (explicitly dismissed/skipped by the user without listening).
+    Not a 1:1 mapping with `played`, even though most played episodes
+    also end up archived in practice (many users have "auto-archive
+    after playing" enabled) — see notes.md."""
 
     uuid: str
     played: bool
     played_up_to: int
+    archived: bool = False
 
 
 @dataclass
@@ -133,11 +144,13 @@ def list_episode_states(token: str, podcast_uuid: str) -> list[EpisodeState]:
     for item in data.get("episodes", []):
         status_value = _first_present(item, "playingStatus", "playing_status", default=0)
         played_up_to = _first_present(item, "playedUpTo", "played_up_to", default=0)
+        archived = bool(_first_present(item, "isDeleted", "is_deleted", default=False))
         states.append(
             EpisodeState(
                 uuid=item["uuid"],
                 played=status_value == PLAYED_STATUS,
                 played_up_to=played_up_to or 0,
+                archived=archived,
             )
         )
     return states

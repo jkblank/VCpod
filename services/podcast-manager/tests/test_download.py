@@ -120,6 +120,68 @@ def test_sync_podcast_includes_played_when_not_unplayed_only(monkeypatch, patche
     assert len(result.downloaded) == 3
 
 
+def test_sync_podcast_local_path_is_absolute_even_with_relative_library_root(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # Confirmed live: a relative library_root produced a relative
+    # local_path recorded in the state db, which sync-orchestrator's
+    # _load_podcast_feeds() silently failed to re-resolve correctly
+    # later (joining it onto its own already-absolute library_root
+    # produced a wrong, doubled path) — 11 of 12 real subscribed shows'
+    # episodes were missing from every real device sync as a result.
+    # Same bug class already fixed in fetcher-apple/fetcher-ytmusic.
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "library").mkdir()
+
+    result = _fetch(
+        library_root=Path("library"),  # relative, matching a real invocation
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    assert len(result.downloaded) == 1
+    assert Path(result.downloaded[0].local_path).is_absolute()
+
+
+def test_sync_podcast_episode_filter_archived_excludes_archived_not_played(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # ep-0 is archived but was never played — episode_filter="archived"
+    # should exclude it on that basis alone, unlike the default "played"
+    # filter which would have kept it (not played -> not excluded).
+    states = [EpisodeState(uuid="ep-0", played=False, played_up_to=0, archived=True)]
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: states)
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=10,
+        episode_filter="archived",
+    )
+
+    assert {r.episode_uuid for r in result.downloaded} == {"ep-1", "ep-2"}
+
+
+def test_sync_podcast_episode_filter_archived_includes_played_not_archived(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # ep-0 is played but NOT archived — episode_filter="archived" should
+    # still include it, unlike the default "played" filter which would
+    # have excluded it.
+    states = [EpisodeState(uuid="ep-0", played=True, played_up_to=100, archived=False)]
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: states)
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=10,
+        episode_filter="archived",
+    )
+
+    assert {r.episode_uuid for r in result.downloaded} == {"ep-0", "ep-1", "ep-2"}
+
+
 def test_sync_podcast_excludes_episode_played_locally_but_not_on_pocket_casts(
     monkeypatch, patched_pipeline, tmp_path
 ):

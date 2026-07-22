@@ -79,6 +79,33 @@ def test_list_episode_states_parses_snake_case_fields(monkeypatch):
     assert result[0].played_up_to == 50
 
 
+def test_list_episode_states_parses_archived_independently_of_played(monkeypatch):
+    # Confirmed against a real account: archived (Pocket Casts' isDeleted
+    # field) is not a 1:1 mapping with played — an episode can be played
+    # but not archived (kept intentionally), or archived without being
+    # played at all (dismissed without listening).
+    def fake_post(url, headers, json, timeout=None):
+        return FakeResponse(
+            {
+                "episodes": [
+                    {"uuid": "played-not-archived", "playingStatus": 3, "isDeleted": False},
+                    {"uuid": "archived-not-played", "playingStatus": 0, "isDeleted": True},
+                    {"uuid": "neither", "playingStatus": 0, "isDeleted": False},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(api_module.httpx, "post", fake_post)
+
+    result = {s.uuid: s for s in api_module.list_episode_states("tok", "podcast-1")}
+
+    assert result["played-not-archived"].played is True
+    assert result["played-not-archived"].archived is False
+    assert result["archived-not-played"].played is False
+    assert result["archived-not-played"].archived is True
+    assert result["neither"].archived is False
+
+
 def test_list_episode_states_empty_for_untouched_podcast(monkeypatch):
     # Confirmed against a real account: Pocket Casts returns no rows at all
     # for episodes still in their default (unplayed) state.

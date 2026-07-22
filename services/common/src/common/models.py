@@ -137,6 +137,15 @@ class ProfilePodcastsConfig(StrictModel):
     sync_unplayed_only: bool
     max_episodes_per_show: int = Field(gt=0)
     shows: Literal["all"] | list[str] = "all"
+    # "played" (default): an episode counts as done once played_up_to
+    # indicates playback, per Pocket Casts' own playingStatus (merged with
+    # local device read-back — see sync_podcast). "archived": use Pocket
+    # Casts' Archive feature instead (their API field is confusingly named
+    # isDeleted) — a distinct, user-driven signal that doesn't always match
+    # played status (an episode can be played but not archived, or archived
+    # without ever being played), and better reflects "I'm done with this"
+    # for accounts that use Archive deliberately. See notes.md.
+    episode_filter: Literal["played", "archived"] = "played"
     # Per-show episode selection order, keyed by Pocket Casts podcast
     # UUID (same convention `shows` already uses). Not listed = "newest":
     # sort newest-first, take the top max_episodes_per_show. "next":
