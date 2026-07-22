@@ -530,12 +530,284 @@ one whenever they textually differ, with no check for which is actually
 more specific — worth filing as an issue/PR against
 https://github.com/TheRealSavi/iOpenPod regardless of our local fix.
 
-**Status**: code shipped, unit-tested against the real
-`capabilities_for_family_gen`. **Not yet live-verified** — device wasn't
-physically connected this session (user was away from the machine).
-Next real sync should show real artwork format writes (`format 1028`/
-`1029` in the commit log) and, the actual proof, album art visible on
-the device's own screen for newly-synced tracks.
+**Correction #2 (2026-07-21, same day) — the fix above shipped but was
+a complete no-op on the real device.** First real `--execute` sync with
+the fix in place *looked* successful (logs showed 1077 images written,
+no fallback-format warning) and the user still reported "no album art."
+Deep investigation (reading the real on-device iTunesDB directly via
+`load_ipod_library()`) found 5555/5625 tracks *did* have valid non-zero
+`artwork_count`/`artwork_id_ref` — but tracing `.ithmb` file mtimes on
+the device proved every one of those valid links pointed at
+`F1028_1.ithmb`/`F1029_1.ithmb` **from the original iTunes sync
+(2025-12-28)**, untouched since. All of *this* project's new writes
+were landing in a growing pile of `F1060_*.ithmb` files (the
+`iOpenPod`-only 320×320 fallback format) instead — meaning
+`supports_artwork` was still resolving to `False` at write time despite
+the shipped fix.
+
+Root cause: `_capabilities_with_artwork_workaround()`'s own docstring
+already correctly said `enrich()` collapses this device's identity to
+the ambiguous placeholder `("iPod", "")` *before* the function ever
+runs (confirmed live, again: `enrich()`'s log line names the *live* USB
+family as `'iPod'`, not `'iPod Video'`) — but the actual `if` check
+below the docstring still read `if info.model_family == "iPod Video":`,
+a string that, per the docstring's own explanation, is never the value
+seen at that point. The condition simply never fired; every "verified"
+sync since the first fix silently fell straight through to the
+`supports_artwork=False` fallback, and the strong-looking log evidence
+("no fallback-format warning", "1077 images written") was consistent
+with that because format 1060 writes *also* produce that same shape of
+log output — the logs were never actually distinguishing the two cases.
+This is the same trap as before: log inference isn't proof, only
+on-device file state is.
+
+**Fix**: broadened the condition to
+`info.model_family == "iPod Video" or (info.model_family == "iPod" and
+not info.generation)` — the second clause is the one that actually
+matches in practice today; the first is kept only in case a future
+iopenpod version stops pre-collapsing the identity. Added a new test,
+`test_capabilities_workaround_corrects_real_enrich_output_ambiguous_placeholder`,
+using the exact `("iPod", "")` shape `enrich()` really produces — the
+existing test used `model_family="iPod Video"` directly and would have
+passed against the broken code too, which is exactly why this bug
+shipped unnoticed.
+
+Live-verified the capabilities resolution itself directly against the
+connected device post-fix: `supports_artwork=True`,
+`cover_art_formats=[1028, 1029]` (previously this same call returned
+`supports_artwork=False`). Re-ran a real `--execute` sync (after
+re-clearing `art_hash` in the on-device mapping again, since the
+previous wrong-format run had already re-populated it and hash-based
+diffing can't detect "same content, wrong format" — see the dedicated
+mapping-cache note elsewhere in this file if one exists, otherwise this
+is the second time this exact clearing step was needed). Result: 1089
+images written, and every one of the 37 existing `F1060_*.ithmb` files
+was logged as `encountered extra known artwork format 1060 ... preserving
+it because it is present on-device` — meaning 1060 was *not* in this
+run's `required_format_ids` set (indirect but strong evidence the
+required set was correctly `[1028, 1029]` this time; if the fallback
+had fired again, 1060 would be the required/target format, not an
+"extra" one).
+
+**Status**: root cause fixed and unit-tested against the real
+`capabilities_for_family_gen`; capabilities resolution independently
+live-verified against the connected device; a real `--execute` sync
+completed with indirect evidence (required-format-set behavior) of
+writing the correct native format this time. **Still not
+definitively proven** — the sync auto-ejected the device before
+`F1028_1.ithmb`/`F1029_1.ithmb` mtimes could be checked, and the only
+fully conclusive test is either those mtimes updating or album art
+actually visible on the device's own screen. Given two prior rounds of
+"logs look right" turning out to be wrong, do not update this status to
+"fixed" again without one of those two direct checks.
+
+**Correction #3 (2026-07-21, same day)**: both of the two direct checks
+named above were then done, and both came back positive —
+`F1028_2.ithmb`/`F1029_2/3/4.ithmb` were newly created by this sync
+(unlike `F1028_1`/`F1029_1`, untouched since the original Dec 28 2025
+iTunes sync), and one specific track's artwork (img_id 4497, RAT BOY —
+"CRASH!", format 1029) was extracted directly from the on-device
+`ArtworkDB`/`.ithmb` via `iopenpod.artworkdb_writer.artworkdb_chunks
+.read_existing_artwork`, decoded from raw RGB565, and rendered — a
+correct, genuine album cover, proving the write pipeline produces valid,
+correctly-linked artwork data at the byte level, not just "a file got
+written."
+
+**Despite that, the user directly reports album art is still not
+visible on the device's own screen** ("album art is not visible on
+device though") — checked live, same session, after the above. This is
+a real, unresolved discrepancy between provably-correct on-device data
+and what the device actually displays. Not yet checked: whether the
+user's spot check landed on one of the specific byte-verified-good
+tracks (RAT BOY — BROKEN; Less Than Jake — Just Let Me Know) versus one
+still in the "70 cleared"/`nimino`-style bucket (separately known-broken,
+`artwork_count: 0, has_artwork: 2` — a distinct issue, see elsewhere in
+this file), and whether a hard reset (Menu+Center held ~8 sec) changes
+anything — the device's on-screen artwork display may cache more
+aggressively than a script-driven sync refreshes.
+
+**Status: NOT fixed, despite every software/data-level layer checking
+out.** Do not treat file-mtime or byte-level decode evidence as
+sufficient again — this session already had two rounds of exactly that
+kind of evidence turn out to be necessary-but-not-sufficient. The only
+acceptable "fixed" signal from here is the user confirming album art
+visible on the device's own screen. Next step when picking this back
+up: check the two named tracks specifically, try the hard reset, and if
+still blank, treat the "70 cleared" bucket and/or a firmware-side
+display-cache issue as the live hypotheses (recall iOpenPod GitHub issue
+#81, "iPod Classic missing cover on play screen," closed with no
+documented fix, similar symptom on a different device family).
+
+**Correction #4 (2026-07-21, continued)**: checked both named tracks
+specifically — still blank. Went one layer deeper than before: parsed
+the real on-device iTunesDB directly (`iopenpod.itunesdb_parser.parser
+.parse_itunesdb`) and confirmed the per-track `artwork_id_ref` field
+(the iTunesDB↔ArtworkDB cross-reference, on-disk field name per
+`mhit_writer.py`) is correct for both — RAT BOY/BROKEN → img_id 4497
+(the exact id byte-decoded earlier), Less Than Jake/Just Let Me Know →
+img_id 4502, both with `artwork_count=1, has_artwork=1`. So the full
+chain — capabilities, native format, ArtworkDB bytes, iTunesDB link — is
+now confirmed correct end to end, for the *first* time in this
+investigation.
+
+**Decisive bisection test**: checked a track whose artwork lives
+entirely in the original `F1028_1`/`F1029_1.ithmb` files (untouched by
+any of this project's tooling — img_id 100, Blue Öyster Cult, from the
+Dec 28 2025 real-iTunes sync, found via `read_existing_artwork`).
+**Also shows no artwork.** This rules out "something specific to our
+new writes" — the ArtworkDB's index/metadata chunks (`mhli`/`mhii`/
+`mhod`) are rewritten wholesale by iOpenPod on every sync regardless of
+whether the underlying pixel `.ithmb` blob changed, so this old track's
+index entry was regenerated by iOpenPod this session too, even though
+its pixel bytes weren't. Confirmed with the user this device's artwork
+*did* display correctly under real iTunes before this project ever
+touched it — so the device/screen/data are provably capable, and this
+is conclusively a software regression somewhere between "real iTunes'
+writer" and "iOpenPod's writer," not a device limitation.
+
+**Independent corroboration**: the user separately tried a sync via
+iOpenPod's own native GUI (not our headless wrapper) — it also fails to
+identify this device's model (the same `enrich()` bug this project
+worked around in `_capabilities_with_artwork_workaround`). Reported
+upstream to `TheRealSavi/iOpenPod` as a bug. **Crucially, the GUI has no
+manual override — it refuses to mount the device at all when identity
+resolution fails**, unlike our headless wrapper which forces the
+identity and proceeds. This means our patched headless path is the
+*only* thing that has ever gotten this exact device to sync via
+iOpenPod at all — there is no independently-completed GUI sync to
+compare against, and never has been.
+
+**Root-caused why the identity is ambiguous, definitively**: confirmed
+via `lsusb -v` that the real device reports `idVendor 0x05ac`
+(Apple)/`idProduct 0x1209`, which even the Linux kernel's own USB
+database resolves unambiguously as "Apple, Inc. iPod Video" — this part
+is not a misread. Apple simply reused the same USB PID across 5th and
+5.5th gen, so PID alone can never disambiguate them; that's a real
+protocol-level limitation, not a bug. Checked the device's own
+`iPod_Control/Device/SysInfo` directly — it contains only `ModelFamily:
+iPod Video`, no generation field at all. Checked iOpenPod's own
+`iPod_Control/Device/iOpenPodSysInfoAuthority` tracking file — it
+records `ModelFamily`'s source as `usb_pid`, i.e. iOpenPod itself
+derived "iPod Video" from the same ambiguous USB PID, not from any
+richer cached source. **There has never been an on-device signal
+anywhere that says "5.5th Gen" specifically — that fact is purely this
+project's own external knowledge (confirmed by the user, unreadable
+from the device itself), hardcoded into the workaround.** This closes
+out the identity-resolution branch of the investigation: it's evidently
+correct as far as it can be checked, and there's no deeper on-device
+truth to compare it against.
+
+**Root cause found (2026-07-22).** The user reconsidered the "redo an
+iTunes resync" tradeoff above — since iTunes draws from the same
+underlying library, the real risk is low (recoverable via a normal
+resync afterward) and the diagnostic value was worth it, especially to
+produce something concrete for the upstream bug report. Did a fresh
+iTunes resync in a new Windows VM (the original one is gone; this is a
+different VM/install, device now shows as "VBOXUSER'S iPod" — same
+physical unit, confirmed by FireWire GUID `000A270015AE6188` matching
+throughout). iTunes only imported ~1159 of the ~5625 tracks (partial —
+cause not investigated, not relevant to this bug), but that's enough of
+a sample. Copied the resulting real-iTunes-written `ArtworkDB` +
+`iTunesDB` off the device immediately after.
+
+For the *previous*, iOpenPod-written state (the one this whole
+investigation has been checking), the device itself no longer has it
+(overwritten by the iTunes resync) — but `sync-orchestrator`'s own
+content-addressed backup (`state/device_backups/000A270015AE6188/
+snapshots/`, blobs in `state/device_backups/blobs/`) had the exact
+pre-resync snapshot, letting us recover both files byte-for-byte from
+the last real `--execute` sync.
+
+**Byte-diffed the two `ArtworkDB`s directly** using
+`iopenpod.artworkdb_parser.parser.parse_artworkdb` against both, for
+the same tracks present in both datasets (RAT BOY/BROKEN, Blue Öyster
+Cult/"(Don't Fear) The Reaper"). Found a systematic, universal
+structural difference: **every `mhii` (artwork index) entry real
+iTunes writes has a third child chunk — an `mhod` of type 6 (iOpenPod's
+own constants already name this `UNKNOWN_CONTAINER_6 = 6`, so the
+authors know it exists), wrapping a fixed 96-byte all-zero `mhaf`
+sub-chunk — that iOpenPod's `_write_mhii()`
+(`artworkdb_writer/artworkdb_chunks.py`) never writes at all.** Verified
+across every entry in both files, not just the two spot-checked tracks:
+1141/1141 entries in the iTunes-fresh `ArtworkDB` have this child;
+0/5555 entries in the iOpenPod-written one do. iOpenPod's `childCount`
+field (offset 12 in the `mhii` header) is written as 2 accordingly,
+where real iTunes always writes 3.
+
+The chunk's payload is all zero bytes, so this isn't a missing *data*
+field — every actual value (pixel data, `img_id`, `db_track_id`/
+`songId`, `src_img_size`) has already been confirmed correct earlier in
+this investigation. It's a missing *structural* element: the on-disk
+shape of every entry differs from what real iTunes produces. This is
+consistent with every symptom seen throughout this investigation —
+firmware plausibly validates the entry's structure (child count,
+expected chunk layout) and silently declines to render an
+unrecognized/incomplete-looking shape without erroring or refusing to
+store it, which is exactly "byte-correct data everywhere, nothing ever
+displays."
+
+**Fix implemented locally (2026-07-22).** Added
+`_apply_missing_artwork_index_chunk_workaround()` to
+`sync_orchestrator/sync.py`, same monkeypatch pattern as
+`_capabilities_with_artwork_workaround`: wraps
+`iopenpod.artworkdb_writer.artworkdb_chunks._write_mhii` to append the
+exact 120-byte missing chunk (hardcoded — confirmed byte-identical
+across all 1141 real-iTunes entries, so it's static, not per-track
+computed) and correctly bump `total_len`/`childCount` in the `mhii`
+header. Wired into `plan_sync` right alongside the capabilities
+workaround (persists into `execute_sync` since both run in the same
+process against the same `PlannedSync`). Idempotent by construction —
+the wrapper always delegates to `_write_mhii_original`, captured once
+at module-import time, so calling the setup function more than once in
+a process can't double-append the chunk. 3 new tests in `test_sync.py`
+(exact byte-shape match against the real original, module-patching,
+idempotency) — full suite (44 in sync-orchestrator, 127 root workspace)
+passing.
+
+Wrote up the finding for the upstream bug report at
+`docs/iopenpod-artworkdb-missing-mhii-chunk.md` (committed
+`0502ca4`) with the full byte-diff evidence, the exact missing-chunk
+hex, and the suggested fix — far more actionable than the original
+"doesn't identify the model" report alone. Not yet posted to GitHub as
+of this writing (the user's call on timing).
+
+**Live-verified end to end (2026-07-22).** Relabeled the device back to
+`JOHN'S IPOD` (iTunes' resync had renamed the volume to `VBOXUSER'S`,
+breaking `config/profiles/john.yaml`'s volume-label device match — same
+physical unit throughout, confirmed via FireWire GUID). Ran a real
+`sync-orchestrator sync --execute --allow-removals --skip-eject`
+against the real device to restore this project's full managed library
+over iTunes' partial (1159-track) resync: 4470 tracks added, 95 removed
+(iTunes-imported tracks not recognized by our own PC-side library
+index), 5534 tracks total, ~164 minutes elapsed. Verified internally
+immediately after (device left mounted via `--skip-eject` specifically
+for this): every one of 5073/5073 `ArtworkDB` entries now has the
+previously-missing type-6 `mhod` child, matching real iTunes' shape
+exactly (spot-checked RAT BOY/BROKEN: child types `[2, 2, 6]`, correctly
+linked via `artwork_id_ref`).
+
+**The user then physically confirmed on the device's own screen: album
+art displays correctly for all pre-existing music and everything synced
+via Apple Music.** This is the first time in this project's history
+album art has displayed on this device via any of our own tooling —
+genuinely fixed, not just byte-correct. Status upgraded from "not yet
+fixed" to **FIXED** for the Apple Music / pre-existing-library case.
+
+**New, separate finding**: the `Semaphore` playlist (YouTube Music,
+`fetcher-ytmusic`) shows no album art at all. Confirmed via `mutagen` —
+these `.m4a` files have no embedded `covr` atom whatsoever (checked
+`nimino - Nothing Perfect` and `Franz Ferdinand - Curious`), whereas an
+Apple-Music-sourced file (`RAT BOY - BROKEN`) has a real 661KB embedded
+cover. Root cause: `fetcher-ytmusic`'s `yt-dlp` invocation
+(`download.py`'s `_run_ytdlp_single_track`) has no `--embed-thumbnail`
+flag, and nothing in its own `tag.py` adds artwork afterward — unlike
+`gamdl`, which embeds real Apple Music artwork automatically as part of
+a normal download. This is **not** the same bug as the one just fixed
+above (that was about entries that *had* artwork not displaying; this
+is tracks that never had artwork data to begin with) — a distinct,
+not-yet-fixed gap in `fetcher-ytmusic`'s own tagging pipeline. `TrackMeta`
+(`fetcher_ytmusic/api.py`) doesn't currently carry a thumbnail URL field
+at all. **Status: not started** — real fix, not yet scoped/built.
 
 ## podcast-manager: Pocket Casts credentials need reversible encryption before production
 

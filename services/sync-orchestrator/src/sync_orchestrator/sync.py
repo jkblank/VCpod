@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import shutil
 import sqlite3
+import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from typing import Any
 import iopenpod.device as _iopenpod_device
 from common.models import ProfileConfig
 from common.state import StateDB
+from iopenpod.artworkdb_writer import artworkdb_chunks as _artworkdb_chunks
 from iopenpod.device.info import DeviceInfo, resolve_itdb_path
 from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
 from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
@@ -165,6 +167,56 @@ def _load_podcast_feeds(db_path: str, library_root: Path) -> list[PodcastFeed]:
     return list(feeds_by_show.values())
 
 
+# Every mhii (ArtworkDB image-index) entry real iTunes writes has a third
+# child chunk beyond the two per-format THUMBNAIL_IMAGE containers: an mhod
+# of type 6 (iopenpod's own artworkdb_shared/constants.py already names this
+# ArtworkMhodType.UNKNOWN_CONTAINER_6 = 6, so it's a recognized-but-unwritten
+# format element, not a guess), wrapping a fixed 96-byte all-zero "mhaf"
+# sub-chunk. iopenpod's own _write_mhii() never emits it.
+#
+# Confirmed live and exhaustively, not just spot-checked: byte-diffed a
+# freshly iTunes-written ArtworkDB (1141 tracks) against the ArtworkDB this
+# project's own sync-orchestrator had written for the same device
+# (recovered from its own backup snapshot, since the iTunes resync had
+# since overwritten the device) — every single one of 1141/1141 real-iTunes
+# entries has this chunk; 0/5555 of iopenpod's entries do. Identical bytes
+# across every entry checked, confirming it's static boilerplate, not
+# per-track computed data. See notes.md's "iopenpod ... ArtworkDB" section.
+#
+# This was the actual remaining root cause behind album art never
+# displaying on-device despite every other layer (capabilities/format
+# resolution, pixel data, iTunesDB<->ArtworkDB link) already being
+# confirmed correct: the *data* was always right, but the on-disk *shape*
+# of every entry didn't match what real firmware expects, which is
+# consistent with firmware silently declining to render a
+# structurally-incomplete-looking entry instead of erroring.
+_MHII_MISSING_INDEX_CHUNK = bytes.fromhex(
+    "6d686f6418000000780000000600000000000000000000006d686166600000003c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+)
+
+# Captured once at import time so repeated calls to
+# _apply_missing_artwork_index_chunk_workaround() stay idempotent — each
+# wrapped call always delegates to this untouched original, rather than
+# wrapping whatever iopenpod.artworkdb_writer.artworkdb_chunks._write_mhii
+# happens to currently point at (which would double-append the chunk on a
+# second call in the same process, e.g. plan_sync running more than once).
+_write_mhii_original = _artworkdb_chunks._write_mhii
+
+
+def _write_mhii_with_missing_index_chunk(entry: Any, format_locations: Any) -> bytes:
+    data = bytearray(_write_mhii_original(entry, format_locations))
+    total_len, child_count = struct.unpack_from("<II", data, 8)
+    struct.pack_into("<I", data, 8, total_len + len(_MHII_MISSING_INDEX_CHUNK))
+    struct.pack_into("<I", data, 12, child_count + 1)
+    return bytes(data) + _MHII_MISSING_INDEX_CHUNK
+
+
+def _apply_missing_artwork_index_chunk_workaround() -> None:
+    """Patch iopenpod's ArtworkDB mhii writer to match real iTunes' entry
+    shape — see _MHII_MISSING_INDEX_CHUNK above for the full writeup."""
+    _artworkdb_chunks._write_mhii = _write_mhii_with_missing_index_chunk
+
+
 def _capabilities_with_artwork_workaround(info: DeviceInfo) -> Any:
     """EngineRequest.device_capabilities doesn't reach the actual
     write-time decision: iopenpod.sync._db_io and the real ArtworkDB
@@ -195,7 +247,15 @@ def _capabilities_with_artwork_workaround(info: DeviceInfo) -> Any:
     enough; no capabilities data is actually missing. See notes.md."""
     _iopenpod_device.get_current_device_for_path = lambda path: info
 
-    if info.model_family == "iPod Video":
+    if info.model_family == "iPod Video" or (
+        info.model_family == "iPod" and not info.generation
+    ):
+        # The literal "iPod Video" check is a defensive no-op today:
+        # enrich() already collapses this device down to the ambiguous
+        # ("iPod", "") placeholder before this function ever sees it
+        # (confirmed live — see docstring above), so it's the second
+        # clause that actually fires in practice. Kept in case a future
+        # iopenpod version stops doing that collapsing.
         info.model_family = "iPod"
         info.generation = "5.5th Gen"
 
@@ -329,6 +389,7 @@ def plan_sync(
         raise SyncError("fpcalc not found on PATH (chromaprint not installed)")
 
     capabilities = _capabilities_with_artwork_workaround(device_info)
+    _apply_missing_artwork_index_chunk_workaround()
     storage = _DeviceStorage.from_device_info(device_info)
     options = EngineOptions(
         supports_video=capabilities.supports_video,

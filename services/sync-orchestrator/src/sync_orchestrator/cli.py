@@ -27,8 +27,15 @@ def _print_plan(plan) -> None:
     print(
         f"  to_add={len(plan.to_add)} to_remove={len(plan.to_remove)} "
         f"to_update_metadata={len(plan.to_update_metadata)} "
-        f"to_update_file={len(plan.to_update_file)}"
+        f"to_update_file={len(plan.to_update_file)} "
+        f"to_update_artwork={len(plan.to_update_artwork)}"
     )
+    if plan.to_update_artwork:
+        print("  artwork changes:")
+        for item in plan.to_update_artwork[:10]:
+            print(f"    {item.description}")
+        if len(plan.to_update_artwork) > 10:
+            print(f"    ... and {len(plan.to_update_artwork) - 10} more")
     if plan.duplicates:
         # library-manager's own dedup only scans its own --library-root,
         # with no awareness of other PC folders passed via --pc-folder —

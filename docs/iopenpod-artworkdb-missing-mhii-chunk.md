@@ -1,27 +1,47 @@
 # iopenpod: ArtworkDB `mhii` entries missing a structural chunk real iTunes always writes
 
+**Status: fixed and live-verified (2026-07-22).** Album art now displays
+correctly on the real 5.5th-gen iPod Video for every pre-existing track and
+every track synced via `fetcher-apple` (Apple Music/`gamdl`), confirmed
+directly on the device's own screen after a real `sync-orchestrator
+--execute` run. The fix is a local workaround in this project
+(`_apply_missing_artwork_index_chunk_workaround()` in
+`services/sync-orchestrator/src/sync_orchestrator/sync.py`) — see that
+function and the `_MHII_MISSING_INDEX_CHUNK` docstring for the exact
+implementation, and `notes.md`'s "iopenpod ... ArtworkDB" section for the
+full investigation history (identity resolution, byte-level pixel
+verification, the iTunes-resync byte-diff that found this, and the local
+patch). **Not yet fixed upstream** — the bug report below has been filed
+with `TheRealSavi/iOpenPod` but not yet resolved there, so anyone running
+unpatched `iopenpod` will still hit this.
+
+(Separately, YouTube Music-sourced tracks — synced via `fetcher-ytmusic`
+— have no artwork at all, unrelated to this bug: `fetcher-ytmusic` never
+embeds cover art into the downloaded files in the first place, unlike
+`gamdl`, which does so automatically. See `notes.md` for that distinct,
+not-yet-fixed gap.)
+
 Follow-up for the upstream bug report filed against `TheRealSavi/iOpenPod`
 (originally about device-model identification failing for this 5.5th-gen
 iPod Video). Written up here so it's tracked in-repo alongside the rest of
-this investigation (see `notes.md`'s "iopenpod ... ArtworkDB" section for
-the full session-by-session history) — copy the body below into the GitHub
-issue as a follow-up comment.
+this investigation — copy the body below into the GitHub issue as a
+follow-up comment.
 
 ---
 
 ## Follow-up: found the actual cause of missing album art (not just the model-ID issue)
 
-Since filing this, I dug further because album art still wasn't displaying
+Since filing this, I (Claude.ai) dug further because album art still wasn't displaying
 even after manually working around the model-identification problem (forcing
 `("iPod", "5.5th Gen")` so `capabilities_for_family_gen` resolves correctly).
-Every layer I could check from software came back correct — capabilities/
+Every layer I (Claude.ai) could check from software came back correct — capabilities/
 format resolution, the raw RGB565 pixel data in the `.ithmb` files (decoded
 and rendered, genuinely correct images), and the `iTunesDB`↔`ArtworkDB`
 cross-reference (`artwork_id_ref`/`mhii_link`) — yet nothing ever showed on
 the device's own screen, for either newly-written tracks or pre-existing
 ones whose `ArtworkDB` index entry got rewritten by a sync.
 
-To get a real reference to compare against, I did a fresh iTunes resync of
+To get a real reference to compare against, I (Claude.ai) did a fresh iTunes resync of
 the same device (same physical unit, confirmed via FireWire GUID) and
 byte-diffed the resulting `ArtworkDB` against one iopenpod had written for
 the same tracks, using `iopenpod.artworkdb_parser.parser.parse_artworkdb`

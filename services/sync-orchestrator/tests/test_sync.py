@@ -1,3 +1,4 @@
+import struct
 from pathlib import Path
 
 import pytest
@@ -10,15 +11,20 @@ from common.models import (
     SyncSettings,
 )
 
+from iopenpod.artworkdb_writer import artworkdb_chunks as artworkdb_chunks_module
+from iopenpod.artworkdb_writer.artwork_types import ArtworkEntry, EncodedFormatPayload
 from iopenpod.device.info import DeviceInfo
 
 from sync_orchestrator import sync as sync_module
 from sync_orchestrator.sync import (
     SyncError,
+    _apply_missing_artwork_index_chunk_workaround,
     _backup_progress_adapter,
     _capabilities_with_artwork_workaround,
     _engine_progress_adapter,
+    _MHII_MISSING_INDEX_CHUNK,
     _ThrottledProgressPrinter,
+    _write_mhii_original,
     plan_sync,
 )
 
@@ -170,6 +176,27 @@ def test_capabilities_workaround_corrects_ipod_video_identity_and_finds_real_art
     assert len(capabilities.cover_art_formats) > 0
 
 
+def test_capabilities_workaround_corrects_real_enrich_output_ambiguous_placeholder():
+    # This is the actual shape enrich() produces for this real device
+    # (confirmed live: "cached family 'iPod Video' conflicts with live USB
+    # PID 0x1209 family 'iPod'; using live USB identity") — model_family
+    # is already collapsed to "iPod" with an EMPTY generation by the time
+    # this function runs, never the literal "iPod Video" string. The
+    # sibling test above using model_family="iPod Video" passed even
+    # against the old buggy code (which only checked for that literal
+    # string) and never caught this — this test would have failed on it.
+    info = DeviceInfo(path="/fake/mount")
+    info.model_family = "iPod"
+    info.generation = ""
+
+    capabilities = _capabilities_with_artwork_workaround(info)
+
+    assert info.model_family == "iPod"
+    assert info.generation == "5.5th Gen"
+    assert capabilities.supports_artwork is True
+    assert len(capabilities.cover_art_formats) > 0
+
+
 def test_capabilities_workaround_falls_back_for_unrecognized_family():
     info = DeviceInfo(path="/fake/mount")
     info.model_family = "Some Unknown Device"
@@ -181,3 +208,66 @@ def test_capabilities_workaround_falls_back_for_unrecognized_family():
     # Identity is left alone for families this workaround doesn't know
     # anything special about.
     assert info.model_family == "Some Unknown Device"
+
+
+# --- missing ArtworkDB index chunk workaround --------------------------------
+
+
+def _make_artwork_entry() -> ArtworkEntry:
+    payload = EncodedFormatPayload(
+        data=b"\x00" * 20000, width=100, height=100, size=20000, stride_pixels=100
+    )
+    return ArtworkEntry(
+        img_id=1, db_track_id=2, art_hash=None, src_img_size=20000, formats={1028: payload}
+    )
+
+
+def test_write_mhii_with_missing_index_chunk_matches_real_itunes_shape():
+    # Real iTunes writes a third mhii child (an mhod type 6 wrapping a
+    # fixed all-zero mhaf sub-chunk) that iopenpod's own _write_mhii()
+    # never emits — confirmed live by byte-diffing a real-iTunes-written
+    # ArtworkDB against one this project wrote for the same device: every
+    # one of 1141/1141 real entries has it, 0/5555 of iopenpod's do. See
+    # notes.md and the _MHII_MISSING_INDEX_CHUNK docstring in sync.py.
+    entry = _make_artwork_entry()
+    format_locations = {1028: 0}
+
+    original_bytes = _write_mhii_original(entry, format_locations)
+    patched_bytes = sync_module._write_mhii_with_missing_index_chunk(entry, format_locations)
+
+    # Header (magic + header_size) and every child byte are unchanged;
+    # only total_len/child_count (both inside the header) are bumped, and
+    # the missing chunk is appended after the original children.
+    assert patched_bytes[:8] == original_bytes[:8]
+    assert patched_bytes[16:len(original_bytes)] == original_bytes[16:]
+    assert patched_bytes[len(original_bytes):] == _MHII_MISSING_INDEX_CHUNK
+
+    orig_total_len, orig_child_count = struct.unpack_from("<II", original_bytes, 8)
+    new_total_len, new_child_count = struct.unpack_from("<II", patched_bytes, 8)
+    assert new_total_len == orig_total_len + len(_MHII_MISSING_INDEX_CHUNK)
+    assert new_child_count == orig_child_count + 1
+
+
+def test_apply_missing_artwork_index_chunk_workaround_patches_module(monkeypatch):
+    monkeypatch.setattr(artworkdb_chunks_module, "_write_mhii", _write_mhii_original)
+
+    _apply_missing_artwork_index_chunk_workaround()
+
+    assert artworkdb_chunks_module._write_mhii is sync_module._write_mhii_with_missing_index_chunk
+
+
+def test_apply_missing_artwork_index_chunk_workaround_is_idempotent(monkeypatch):
+    monkeypatch.setattr(artworkdb_chunks_module, "_write_mhii", _write_mhii_original)
+    entry = _make_artwork_entry()
+    format_locations = {1028: 0}
+
+    _apply_missing_artwork_index_chunk_workaround()
+    _apply_missing_artwork_index_chunk_workaround()
+
+    # Calling the setup twice must not double-append the chunk — each
+    # wrapped call always delegates to the untouched original captured at
+    # import time, not whatever the module attribute currently points at.
+    result = artworkdb_chunks_module._write_mhii(entry, format_locations)
+    expected = sync_module._write_mhii_with_missing_index_chunk(entry, format_locations)
+    assert result == expected
+    assert result.count(_MHII_MISSING_INDEX_CHUNK) == 1
