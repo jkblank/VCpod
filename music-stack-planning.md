@@ -300,6 +300,54 @@ config.
 
 ---
 
+## 7a. Phase 5 — Audiobooks via Libby/OverDrive (spike first)
+
+A new content type alongside music/podcasts: audiobooks borrowed through
+Libby (the consumer app for OverDrive, used by public libraries). Unlike
+Phases 1–4, **the risky unknown here is acquisition, not the device
+side** — a 2026-07-21 spike (see `notes.md`) found this inverted from
+the initial assumption:
+
+- **iOpenPod already has real audiobook support**, more mature than
+  expected: a distinct `MEDIA_TYPE_AUDIOBOOK` type, `bookmark_time` +
+  `remember_position` wired end-to-end (auto-enabled for
+  audiobooks/podcasts, same as this project's existing podcast sync),
+  automatic `.m4b`/`stik`-atom classification during library scan, and
+  an `album_chapters.py` module purpose-built for merging multi-file
+  audiobooks into one chaptered track.
+- **The acquisition tooling this would wrap is not viable today.**
+  `odmpy` (the natural equivalent to `gamdl`/`zotify`/`yt-dlp` for this
+  source) is dead against OverDrive's current backend — OverDrive killed
+  the `.odm`/legacy API it depends on (Nov 2024 / Jan 2025 sunset), and
+  its repo has an unanswered "is this still active?" issue from mid-2024.
+  The only living alternative, `bookbonobo/libby-download-extension`, is
+  a Firefox-only browser extension (UI-scraping, not an API client) with
+  no CLI/headless story — a poor fit for a service meant to run
+  unattended in Docker like the existing fetchers.
+- **Metadata tagging has a real answer**: `beets-audible` (an existing,
+  real beets plugin — author→artist, narrator, series via
+  Audible/Audnex) is directly reusable by `library-manager` rather than
+  needing bespoke non-music handling.
+
+**Spike task (blocks any `fetcher-audiobooks` scoping)**: determine
+whether the Libby web extension's approach (or a fresh reverse-engineering
+of Libby's current web sync protocol) can be driven headlessly (e.g. a
+scripted browser) reliably enough for unattended fetches. If not, the
+realistic scope shrinks to a manual step — export via the browser
+extension, drop into `library/audiobooks/{Author}/{Title}/`, let
+`library-manager` (via `beets-audible`) and `sync-orchestrator` handle
+the rest — still worthwhile given how ready the iPod side already is,
+just not a fully automated fetcher like the music sources.
+
+**Shape once spiked**: `library/audiobooks/` as a sibling to
+`library/music/`/`library/podcasts/`; no `.m3u8` needed (iOpenPod's
+Audiobooks section is inherently one-item-per-book with its own resume
+state, not a playlist construct); loans map to `list_loans`/`fetch_loan`
+rather than `list_playlists`/`fetch_playlist` since they're a
+"currently checked out" set with due dates, not user-curated playlists.
+
+---
+
 ## 8. Cross-cutting risks to flag early
 
 1. **iOpenPod headless usability** — see above, validate before Phase 3 work.
@@ -317,6 +365,10 @@ config.
    worth a manual-review escape hatch.
 6. **Legal/ToS posture** — gamdl and similar tools operate in a gray area;
    this is a personal-use tool, not something to expose or distribute.
+7. **Libby/OverDrive acquisition tooling viability** — the natural tool to
+   wrap (`odmpy`) is dead against OverDrive's current API; the only living
+   alternative is a browser extension with no headless story. Spike this
+   before scoping Phase 5 (audiobooks) work — see 7a.
 
 ---
 
@@ -338,6 +390,7 @@ config.
 | M12 | Web GUI frontend — profiles & playlists | Create/edit/delete profiles; add playlists via the source picker (list_playlists) or manual URL paste fallback; changes are reflected correctly in the underlying YAML files |
 | M13 | Web GUI — podcasts & sources | Manage per-profile podcast settings and global source enable/disable + credential status through the UI |
 | M14 | Web GUI — sync visibility | Trigger a manual sync from the UI, view live/last sync plan and result, see health-check alerts (cookie expiry, API failures) |
+| M15 | Audiobooks via Libby/OverDrive | Spike: headless-viable acquisition path confirmed (automated) or a documented manual-drop-in workflow (fallback); at least one real audiobook acquired, tagged via `beets-audible`, and synced to a real device with correct chapter/resume behavior on-device |
 
 ---
 
