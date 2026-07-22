@@ -793,21 +793,41 @@ album art has displayed on this device via any of our own tooling —
 genuinely fixed, not just byte-correct. Status upgraded from "not yet
 fixed" to **FIXED** for the Apple Music / pre-existing-library case.
 
-**New, separate finding**: the `Semaphore` playlist (YouTube Music,
-`fetcher-ytmusic`) shows no album art at all. Confirmed via `mutagen` —
-these `.m4a` files have no embedded `covr` atom whatsoever (checked
-`nimino - Nothing Perfect` and `Franz Ferdinand - Curious`), whereas an
-Apple-Music-sourced file (`RAT BOY - BROKEN`) has a real 661KB embedded
-cover. Root cause: `fetcher-ytmusic`'s `yt-dlp` invocation
-(`download.py`'s `_run_ytdlp_single_track`) has no `--embed-thumbnail`
-flag, and nothing in its own `tag.py` adds artwork afterward — unlike
+**New, separate finding, since fixed**: the `Semaphore` playlist
+(YouTube Music, `fetcher-ytmusic`) showed no album art at all. Confirmed
+via `mutagen` — these `.m4a` files had no embedded `covr` atom whatsoever
+(checked `nimino - Nothing Perfect` and `Franz Ferdinand - Curious`),
+whereas an Apple-Music-sourced file (`RAT BOY - BROKEN`) has a real
+661KB embedded cover. Root cause: `fetcher-ytmusic`'s `yt-dlp` invocation
+(`download.py`'s `_run_ytdlp_single_track`) had no `--embed-thumbnail`
+flag, and nothing in its own `tag.py` added artwork afterward — unlike
 `gamdl`, which embeds real Apple Music artwork automatically as part of
-a normal download. This is **not** the same bug as the one just fixed
-above (that was about entries that *had* artwork not displaying; this
-is tracks that never had artwork data to begin with) — a distinct,
-not-yet-fixed gap in `fetcher-ytmusic`'s own tagging pipeline. `TrackMeta`
-(`fetcher_ytmusic/api.py`) doesn't currently carry a thumbnail URL field
-at all. **Status: not started** — real fix, not yet scoped/built.
+a normal download. Not the same bug as the one fixed above (that was
+about entries that *had* artwork not displaying; this was tracks that
+never had artwork data to begin with).
+
+Fixed 2026-07-22 (commit `df9b147`): `TrackMeta` now carries a
+`thumbnail_url` populated from `ytmusicapi`'s thumbnails, upscaled from
+YouTube's default 60x60/120x120 to 1200x1200 via the same Google
+image-proxy URL scheme (confirmed live — accepts arbitrary sizes, not
+just a re-scaled blur); downloaded and embedded via a new `set_artwork()`
+in `tag.py`. While investigating this, also found and fixed a real
+playback bug in the same tracks: they reported correct full duration but
+only played ~15-30s on the real device before skipping — root cause was
+YouTube serving audio at 48kHz (its platform-native rate) vs. the
+44.1kHz click-wheel iPod hardware AAC decoders were designed/tested
+against; fixed by forcing yt-dlp's own ffmpeg extraction pass to
+resample to 44100Hz. Forced a full redownload of all 31 Semaphore
+tracks (old 48kHz/no-artwork files deleted from state db + disk first)
+and synced to the real device (2m20s — the `FingerprintCache` workaround
+below was warm since nothing had wholesale-rewritten the device since
+the prior sync, confirming that optimization holds up under normal
+repeat use, not just after a big rewrite).
+
+**Status: FIXED, live-confirmed** — the user directly confirmed album
+art visible on the device's own screen after this sync, covering both
+the pre-existing/Apple-Music case (the `mhii`-chunk fix above) and now
+YouTube Music tracks too.
 
 ## podcast-manager: Pocket Casts credentials need reversible encryption before production
 
