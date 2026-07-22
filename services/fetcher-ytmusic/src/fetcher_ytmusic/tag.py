@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mutagen.mp4 import MP4, MP4FreeForm
+from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 
 SOURCE_TAG = "----:com.apple.iTunes:source"
 SOURCE_ID_TAG = "----:com.apple.iTunes:source_id"
@@ -41,4 +41,17 @@ def set_basic_tags(path: Path | str, *, title: str, artist: str, album: str) -> 
     audio["\xa9nam"] = [title]
     audio["\xa9ART"] = [artist]
     audio["\xa9alb"] = [album]
+    audio.save()
+
+
+def set_artwork(path: Path | str, image_data: bytes) -> None:
+    """Embeds cover art directly (the covr atom) — unlike gamdl, yt-dlp
+    doesn't embed a track's thumbnail on its own, so ytmusic-sourced files
+    had no artwork at all for iOpenPod's sync-time extraction to find.
+    See notes.md."""
+    image_format = (
+        MP4Cover.FORMAT_PNG if image_data.startswith(b"\x89PNG") else MP4Cover.FORMAT_JPEG
+    )
+    audio = MP4(path)
+    audio["covr"] = [MP4Cover(image_data, imageformat=image_format)]
     audio.save()

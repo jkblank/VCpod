@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from ytmusicapi import YTMusic
+
+# YouTube's own thumbnail API only ever returns small (60x60/120x120)
+# images from ytmusicapi — but the URLs are a Google image-proxy scheme
+# that accepts an arbitrary requested size via this w/h suffix, confirmed
+# live: rewriting e.g. "...=w120-h120-l90-rj" to "...=w1200-h1200-l90-rj"
+# against the same URL returns a real, much larger image (~190KB vs a few
+# KB), not an error or a re-scaled-up blurry copy. 1200 matches roughly
+# what real Apple Music embedded covers look like (a few hundred KB to ~1MB).
+_THUMBNAIL_SIZE_RE = re.compile(r"=w\d+-h\d+")
+_TARGET_THUMBNAIL_SIZE = 1200
+
+
+def _best_thumbnail_url(thumbnails: list[dict] | None) -> str | None:
+    if not thumbnails:
+        return None
+    largest = max(thumbnails, key=lambda t: t.get("width", 0))
+    url = largest.get("url")
+    if not url:
+        return None
+    upscaled, count = _THUMBNAIL_SIZE_RE.subn(
+        f"=w{_TARGET_THUMBNAIL_SIZE}-h{_TARGET_THUMBNAIL_SIZE}", url, count=1
+    )
+    return upscaled if count else url
 
 
 @dataclass
@@ -19,6 +43,7 @@ class TrackMeta:
     title: str
     artist: str
     album: str
+    thumbnail_url: str | None = None
 
 
 def list_playlists(oauth_path: str, limit: int | None = None) -> list[PlaylistSummary]:
@@ -65,6 +90,7 @@ def get_playlist_tracks(playlist_id: str, oauth_path: str | None = None) -> list
                 # library folder — mirrors gamdl's own "{title} - Single"
                 # convention already seen throughout the real library.
                 album=album or f"{track.get('title', '')} - Single",
+                thumbnail_url=_best_thumbnail_url(track.get("thumbnails")),
             )
         )
     return tracks

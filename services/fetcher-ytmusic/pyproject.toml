@@ -7,6 +7,7 @@ dependencies = [
     "ytmusicapi>=1.12,<2",
     "yt-dlp",
     "mutagen>=1.47.0",
+    "httpx>=0.27",
 ]
 
 [project.scripts]

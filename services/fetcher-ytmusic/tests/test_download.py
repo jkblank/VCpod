@@ -2,6 +2,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import httpx
 import pytest
 
 from common.lock import FileLock
@@ -10,6 +11,8 @@ from common.state import StateDB
 from fetcher_ytmusic import download as download_module
 from fetcher_ytmusic.api import TrackMeta
 from fetcher_ytmusic.tag import read_basic_tags, read_dedup_tags
+
+from mutagen.mp4 import MP4
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -278,3 +281,126 @@ def test_fetch_playlists_lock_timeout_on_one_entry_does_not_abort_the_rest(
 
     assert outcomes[0].result is None
     assert outcomes[0].error is not None
+
+
+# --- artwork embedding --------------------------------------------------------
+
+FAKE_JPEG = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+
+
+def test_fetch_per_track_embeds_artwork_when_thumbnail_url_present(monkeypatch, tmp_path):
+    track = TrackMeta(
+        source_id="vid-1",
+        title="Track One",
+        artist="Artist One",
+        album="Album One",
+        thumbnail_url="https://yt3.googleusercontent.com/abc=w1200-h1200-l90-rj",
+    )
+    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: [track])
+    monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
+
+    def fake_get(url, timeout=None, follow_redirects=None):
+        assert url == track.thumbnail_url
+        return httpx.Response(200, content=FAKE_JPEG, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(download_module.httpx, "get", fake_get)
+
+    result = download_module.fetch_playlist(
+        playlist_name="Semaphore",
+        playlist_source_id="PLxxxxxxxxxxxxxxxxxxxx",
+        profile="john",
+        cookies_path="cookies.txt",
+        library_root=tmp_path / "library",
+        playlists_root=tmp_path / "playlists",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    assert len(result.new_tracks) == 1
+    audio = MP4(result.new_tracks[0].local_path)
+    covr = audio.get("covr")
+    assert covr is not None
+    assert bytes(covr[0]) == FAKE_JPEG
+
+
+def test_fetch_per_track_skips_artwork_when_no_thumbnail_url(monkeypatch, tmp_path):
+    track = TrackMeta(
+        source_id="vid-1", title="Track One", artist="Artist One", album="Album One"
+    )
+    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: [track])
+    monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("should not attempt a thumbnail download with no thumbnail_url")
+
+    monkeypatch.setattr(download_module.httpx, "get", _fail_if_called)
+
+    result = download_module.fetch_playlist(
+        playlist_name="Semaphore",
+        playlist_source_id="PLxxxxxxxxxxxxxxxxxxxx",
+        profile="john",
+        cookies_path="cookies.txt",
+        library_root=tmp_path / "library",
+        playlists_root=tmp_path / "playlists",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    assert len(result.new_tracks) == 1
+    audio = MP4(result.new_tracks[0].local_path)
+    assert audio.get("covr") is None
+
+
+def test_fetch_per_track_thumbnail_download_failure_does_not_fail_track(monkeypatch, tmp_path):
+    track = TrackMeta(
+        source_id="vid-1",
+        title="Track One",
+        artist="Artist One",
+        album="Album One",
+        thumbnail_url="https://yt3.googleusercontent.com/abc=w1200-h1200-l90-rj",
+    )
+    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: [track])
+    monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
+
+    def _raise(*args, **kwargs):
+        raise httpx.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(download_module.httpx, "get", _raise)
+
+    result = download_module.fetch_playlist(
+        playlist_name="Semaphore",
+        playlist_source_id="PLxxxxxxxxxxxxxxxxxxxx",
+        profile="john",
+        cookies_path="cookies.txt",
+        library_root=tmp_path / "library",
+        playlists_root=tmp_path / "playlists",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    assert len(result.new_tracks) == 1
+    audio = MP4(result.new_tracks[0].local_path)
+    assert audio.get("covr") is None
+
+
+# --- sample-rate resampling for iPod hardware compatibility ------------------
+
+
+def test_run_ytdlp_single_track_forces_44100hz_resample(monkeypatch, tmp_path):
+    # Confirmed live: YouTube serves audio at 48kHz (its platform-native
+    # rate); click-wheel iPod hardware AAC decoders were designed/tested
+    # against 44.1kHz (what Apple Music/gamdl output already is) and lose
+    # sync partway through 48kHz content — reports the correct duration
+    # but skips to the next track after ~15-30s of real playback.
+    captured_cmd = {}
+
+    def _capture_run(cmd, capture_output, text):
+        captured_cmd["cmd"] = cmd
+        return _fake_ytdlp_run()(cmd, capture_output, text)
+
+    monkeypatch.setattr(subprocess, "run", _capture_run)
+
+    download_module._run_ytdlp_single_track(
+        video_id="vid-1", cookies_path=Path("cookies.txt"), scratch_dir=tmp_path / "scratch"
+    )
+
+    cmd = captured_cmd["cmd"]
+    idx = cmd.index("--postprocessor-args")
+    assert cmd[idx + 1] == "ffmpeg:-ar 44100"

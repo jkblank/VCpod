@@ -7,13 +7,29 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
+
 from common.lock import FileLock, LockTimeoutError
 from common.models import PlaylistEntry
 from common.playlist import write_m3u8
 from common.state import StateDB, TrackRecord
 
 from fetcher_ytmusic.api import TrackMeta, get_playlist_tracks
-from fetcher_ytmusic.tag import add_dedup_tags, set_basic_tags
+from fetcher_ytmusic.tag import add_dedup_tags, set_artwork, set_basic_tags
+
+# Artwork is a nice-to-have, not a reason to fail an otherwise-successful
+# track download — a slow/unreachable thumbnail host shouldn't turn into a
+# DownloadError. Kept short since this blocks the per-track loop either way.
+_THUMBNAIL_TIMEOUT = httpx.Timeout(10.0, connect=10.0)
+
+
+def _fetch_thumbnail(url: str) -> bytes | None:
+    try:
+        resp = httpx.get(url, timeout=_THUMBNAIL_TIMEOUT, follow_redirects=True)
+        resp.raise_for_status()
+        return resp.content
+    except httpx.HTTPError:
+        return None
 
 SOURCE = "ytmusic"
 _SCRATCH_DIRNAME = "_ytdlp_scratch"
@@ -53,12 +69,24 @@ def _run_ytdlp_single_track(
     # installed — no explicit flag needed). Without both, every track
     # fails identically: YouTube's bot-check blocks every real audio
     # format, only thumbnail storyboards resolve. See notes.md.
+    #
+    # --postprocessor-args forces ffmpeg to resample to 44100Hz during
+    # yt-dlp's own extraction pass (not a separate re-encode — no extra
+    # quality loss). YouTube serves audio at 48kHz (its platform-native
+    # rate); Apple Music/gamdl output is 44.1kHz, which is what
+    # click-wheel iPod hardware AAC decoders were designed and tested
+    # against. Confirmed live: 48kHz ytmusic tracks reported the correct
+    # full duration but the device's hardware decoder lost sync and
+    # skipped to the next track after ~15-30s of real playback — a
+    # documented class of iPod hardware/48kHz incompatibility, not a
+    # container or tagging bug. See notes.md.
     result = subprocess.run(
         [
             "yt-dlp",
             "-x",
             "--audio-format", "m4a",
             "--audio-quality", "0",
+            "--postprocessor-args", "ffmpeg:-ar 44100",
             "--cookies", str(cookies_path),
             "--remote-components", "ejs:github",
             "-o", str(scratch_dir / "%(id)s.%(ext)s"),
@@ -139,6 +167,10 @@ def _fetch_per_track(
             continue
 
         set_basic_tags(dest, title=meta.title, artist=meta.artist, album=meta.album)
+        if meta.thumbnail_url:
+            image_data = _fetch_thumbnail(meta.thumbnail_url)
+            if image_data:
+                set_artwork(dest, image_data)
         add_dedup_tags(dest, SOURCE, meta.source_id)
         record = TrackRecord(
             source=SOURCE,

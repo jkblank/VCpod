@@ -200,6 +200,7 @@ version = "0.1.0"
 source = { editable = "services/fetcher-ytmusic" }
 dependencies = [
     { name = "common" },
+    { name = "httpx" },
     { name = "mutagen" },
     { name = "yt-dlp" },
     { name = "ytmusicapi" },
@@ -208,6 +209,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "common", editable = "services/common" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "mutagen", specifier = ">=1.47.0" },
     { name = "yt-dlp" },
     { name = "ytmusicapi", specifier = ">=1.12,<2" },

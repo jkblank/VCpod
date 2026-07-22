@@ -138,9 +138,18 @@ def run_sync(
             cookies_path = resolve_config_path(
                 global_config.sources.ytmusic.cookies_file, config_root
             )
-            oauth_path = resolve_config_path(
+            # oauth is genuinely optional (get_playlist_tracks works fine
+            # unauthenticated against public playlists — see
+            # fetcher_ytmusic/api.py) — only pass a path that actually
+            # exists, otherwise ytmusicapi's YTMusic(auth=...) tries to
+            # parse a nonexistent path as an auth string/JSON and raises
+            # YTMusicUserError instead of just skipping auth. Confirmed
+            # live: this crashed a real sync when no oauth file had ever
+            # been exported.
+            candidate_oauth_path = resolve_config_path(
                 global_config.sources.ytmusic.oauth_file, config_root
             )
+            oauth_path = candidate_oauth_path if candidate_oauth_path.is_file() else None
             try:
                 result.ytmusic_outcomes = fetch_ytmusic_playlists(
                     ytmusic_entries,
