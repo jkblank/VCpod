@@ -118,6 +118,10 @@ device:
   match_by: serial          # serial | volume_label
   match_value: "AA11BB22"
 
+fetch:
+  schedule: "0 3 * * *"     # profile-default fetch schedule (cron expression) —
+                             # applies to every playlist/show below unless overridden
+
 playlists:
   - name: "Workout Mix"
     source: apple_music
@@ -125,13 +129,20 @@ playlists:
   - name: "Chill"
     source: spotify
     source_id: "37i9dQZF1DX..."
+    fetch_schedule: "0 */6 * * *"   # overrides fetch.schedule for this playlist only
 
 podcasts:
   pocketcasts:
     credentials_file: /config/secrets/pocketcasts/alice.json   # this user's own account
   sync_unplayed_only: true
   max_episodes_per_show: 5
-  shows: all               # all | explicit list of Pocket Casts UUIDs
+  fetch_schedule: "0 * * * *"       # overrides fetch.schedule for all shows below
+  shows:
+    - "Daily News"                  # uses podcasts.fetch_schedule (or profile default)
+    - "Weekly Deep Dive":
+        fetch_schedule: "0 6 * * 1" # per-show override, same string/mapping mix
+                                     # already used by external_library.selections
+    # shows: all                    # (still supported as a shorthand for "every subscription")
 
 sync:
   trigger: on_connect       # on_connect | manual | cron
@@ -141,6 +152,17 @@ sync:
 
 Each profile is self-contained; adding a user/iPod is "drop in a new YAML
 file," no code changes.
+
+**Two independent schedules, not one:** `fetch.schedule` (and its
+per-playlist/`podcasts.fetch_schedule`/per-show overrides) controls when
+data is *acquired* into `library/` — this runs regardless of whether any
+iPod is connected, so the moment a device shows up, the freshest data is
+already sitting there ready to write. `sync.trigger` controls when that
+already-acquired data gets *written to the device* — still fired by
+`on_connect` (or `manual`/`cron`) as before. Resolution precedence for the
+fetch schedule is most-specific-wins: a playlist's own `fetch_schedule` >
+`podcasts.fetch_schedule` for that show > the profile-level `fetch.schedule`
+default.
 
 ---
 
@@ -231,6 +253,11 @@ current "what should be on the device" list plus the files themselves.
 ## 6. Phase 3 — Sync orchestration (iOpenPod-based)
 
 - Runs on the bare-metal host (has USB access).
+- A separate, always-running scheduler (not gated on device presence) fires
+  Phase 1/2 fetches per each playlist's/show's/profile's `fetch_schedule` —
+  see §3's "two independent schedules" note. This is what makes
+  `on_connect` sync fast/correct: the device-write step never blocks on a
+  fetch, it just diffs against whatever's already in `library/`.
 - Detects iPod on connect (via udev rule → triggers script, or manual run).
 - Matches the connected device to a profile by serial/volume label.
 - Builds a sync plan: profile's playlists (from `library/playlists/`) +
@@ -384,7 +411,7 @@ rather than `list_playlists`/`fetch_playlist` since they're a
 | M6 | iOpenPod headless spike | Written recommendation: use-as-library vs fork, with a working proof-of-concept script that writes at least one track to a real device without the GUI |
 | M7 | Sync orchestrator core | Given a profile + connected device, produces and executes a correct sync plan (music + podcasts) |
 | M8 | Play-status round trip | Episodes played on-device are correctly marked played in Pocket Casts after next sync |
-| M9 | Automation | udev-triggered sync on device connect, multi-profile device matching working |
+| M9 | Automation | udev-triggered sync on device connect, multi-profile device matching working, **and** profile data (playlists + podcasts) fetched/updated on each's configured schedule independently of device presence, so the latest data is already in `library/` by the time the device is plugged in |
 | M10 | Hardening | Secrets handling reviewed, health checks/alerts for auth expiry and API failures, basic docs |
 | M11 | Web GUI backend | FastAPI service reads/writes profiles and global config through the shared `common/config.py` loader; validation errors surface to the caller |
 | M12 | Web GUI frontend — profiles & playlists | Create/edit/delete profiles; add playlists via the source picker (list_playlists) or manual URL paste fallback; changes are reflected correctly in the underlying YAML files |
