@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 from common.state import EpisodeRecord, StateDB, TrackRecord
@@ -255,3 +256,38 @@ def test_pre_existing_episodes_table_migrates_new_columns_in_place(tmp_path: Pat
         assert fetched.audio_url == ""
         assert fetched.duration_seconds == 0
         assert fetched.pending_push is False
+
+
+def test_get_last_fetched_returns_none_for_unseen_target(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        assert db.get_last_fetched("playlist", "Chill") is None
+
+
+def test_record_fetch_and_get_last_fetched_round_trip(tmp_path: Path):
+    when = datetime(2026, 7, 25, 3, 0, tzinfo=timezone.utc)
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_fetch("playlist", "Chill", when)
+        assert db.get_last_fetched("playlist", "Chill") == when
+
+
+def test_record_fetch_updates_in_place_not_duplicated(tmp_path: Path):
+    first = datetime(2026, 7, 25, 3, 0, tzinfo=timezone.utc)
+    second = datetime(2026, 7, 25, 9, 0, tzinfo=timezone.utc)
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_fetch("playlist", "Chill", first)
+        db.record_fetch("playlist", "Chill", second)
+
+        assert db.get_last_fetched("playlist", "Chill") == second
+        rows = db._conn.execute(
+            "SELECT COUNT(*) FROM fetch_runs WHERE target_type = 'playlist' AND target_id = 'Chill'"
+        ).fetchone()
+        assert rows[0] == 1
+
+
+def test_fetch_runs_scoped_independently_by_target_type_and_id(tmp_path: Path):
+    when = datetime(2026, 7, 25, 3, 0, tzinfo=timezone.utc)
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_fetch("playlist", "Chill", when)
+
+        assert db.get_last_fetched("podcast_show", "Chill") is None
+        assert db.get_last_fetched("playlist", "Elevate") is None

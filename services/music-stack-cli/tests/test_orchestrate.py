@@ -11,6 +11,7 @@ from common.models import (
     ProfileConfig,
     ProfilePocketCastsConfig,
     ProfilePodcastsConfig,
+    ShowOverride,
     SourcesConfig,
     SpotifySource,
     SyncSettings,
@@ -192,3 +193,58 @@ def test_run_sync_ytmusic_passes_oauth_path_when_file_exists(monkeypatch, tmp_pa
     )
 
     assert captured["oauth_path"] == oauth_path_on_disk
+
+
+def test_run_sync_podcasts_uses_show_names_not_raw_shows_entries(monkeypatch, tmp_path):
+    # profile.podcasts.shows can now contain ShowOverride objects (see
+    # common.models); resolve_show_selection only understands plain
+    # strings, so run_sync must filter through show_names, not shows.
+    config_root = tmp_path / "config"
+    (config_root / "secrets").mkdir(parents=True)
+    credentials_path = config_root / "secrets" / "pocketcasts.json"
+    credentials_path.write_text('{"email": "a@example.com", "password": "x"}')
+
+    global_config = _global_config(tmp_path, oauth_file="/config/secrets/ytmusic_oauth.json")
+    profile = ProfileConfig(
+        profile="john",
+        device=DeviceMatch(match_by="volume_label", match_value="TEST"),
+        playlists=[],
+        podcasts=ProfilePodcastsConfig(
+            pocketcasts=ProfilePocketCastsConfig(
+                credentials_file="/config/secrets/pocketcasts.json"
+            ),
+            sync_unplayed_only=True,
+            max_episodes_per_show=5,
+            shows=["Daily News", ShowOverride(name="Weekly Deep Dive", fetch_schedule=None)],
+        ),
+        sync=SyncSettings(trigger="manual", transcode_format="alac", push_play_status_back=False),
+    )
+    roots = resolve_roots(tmp_path / "library", tmp_path / "state", "john")
+
+    captured = {}
+
+    monkeypatch.setattr(
+        orchestrate_module, "load_credentials", lambda path: ("a@example.com", "x")
+    )
+    monkeypatch.setattr(orchestrate_module, "login", lambda email, password: "token")
+    monkeypatch.setattr(orchestrate_module, "list_subscriptions", lambda token: [])
+
+    def fake_resolve_show_selection(subscriptions, wanted):
+        captured["wanted"] = wanted
+        return [], list(wanted)
+
+    monkeypatch.setattr(
+        orchestrate_module, "resolve_show_selection", fake_resolve_show_selection
+    )
+
+    run_sync(
+        profile=profile,
+        global_config=global_config,
+        config_root=config_root,
+        roots=roots,
+        sources={"podcasts"},
+        playlist_names=None,
+        show_selectors=None,
+    )
+
+    assert captured["wanted"] == ["Daily News", "Weekly Deep Dive"]

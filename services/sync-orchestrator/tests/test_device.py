@@ -4,15 +4,24 @@ import pytest
 
 import subprocess
 
-from common.models import DeviceMatch
+from common.models import (
+    DeviceMatch,
+    ProfileConfig,
+    ProfilePocketCastsConfig,
+    ProfilePodcastsConfig,
+    SyncSettings,
+)
 from sync_orchestrator import device as device_module
 from sync_orchestrator.device import (
+    AmbiguousDeviceMatchError,
     DeviceNotFoundError,
     EjectError,
     eject_device,
     find_matching_device,
+    find_matching_profile,
     is_ipod_mount,
     iter_candidate_mounts,
+    mount_candidate_devices,
 )
 
 
@@ -197,7 +206,7 @@ def test_eject_device_unmounts_then_powers_off_parent_drive(monkeypatch):
     )
     calls = []
 
-    def _fake_run(cmd, capture_output, text):
+    def _fake_run(cmd, capture_output, text, check=False):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -225,7 +234,7 @@ def test_eject_device_raises_on_unmount_failure(monkeypatch):
         lambda: [("/dev/sdc2", "/run/media/john/JOHN_S IPOD", "vfat")],
     )
 
-    def _fake_run(cmd, capture_output, text):
+    def _fake_run(cmd, capture_output, text, check=False):
         if "unmount" in cmd:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="target is busy")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -243,7 +252,7 @@ def test_eject_device_raises_on_power_off_failure(monkeypatch):
         lambda: [("/dev/sdc2", "/run/media/john/JOHN_S IPOD", "vfat")],
     )
 
-    def _fake_run(cmd, capture_output, text):
+    def _fake_run(cmd, capture_output, text, check=False):
         if "power-off" in cmd:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="device busy")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -252,3 +261,126 @@ def test_eject_device_raises_on_power_off_failure(monkeypatch):
 
     with pytest.raises(EjectError, match="power-off failed"):
         eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
+
+
+# --- find_matching_profile ---------------------------------------------------
+
+
+def _profile(name: str, match_value: str) -> ProfileConfig:
+    return ProfileConfig(
+        profile=name,
+        device=DeviceMatch(match_by="volume_label", match_value=match_value),
+        playlists=[],
+        podcasts=ProfilePodcastsConfig(
+            pocketcasts=ProfilePocketCastsConfig(credentials_file="creds.json"),
+            sync_unplayed_only=True,
+            max_episodes_per_show=5,
+        ),
+        sync=SyncSettings(trigger="manual", transcode_format="alac", push_play_status_back=False),
+    )
+
+
+def test_find_matching_profile_returns_the_one_matching_profile(monkeypatch):
+    alice = _profile("alice", "ALICE_IPOD")
+    bob = _profile("bob", "BOB_IPOD")
+
+    def _fake_find(match):
+        if match.match_value != "BOB_IPOD":
+            raise DeviceNotFoundError(f"no match for {match.match_value!r}")
+        return object()
+
+    monkeypatch.setattr(device_module, "find_matching_device", _fake_find)
+
+    assert find_matching_profile([alice, bob]) is bob
+
+
+def test_find_matching_profile_raises_device_not_found_when_none_match(monkeypatch):
+    monkeypatch.setattr(
+        device_module,
+        "find_matching_device",
+        lambda match: (_ for _ in ()).throw(DeviceNotFoundError("nope")),
+    )
+
+    with pytest.raises(DeviceNotFoundError):
+        find_matching_profile([_profile("alice", "ALICE_IPOD"), _profile("bob", "BOB_IPOD")])
+
+
+def test_find_matching_profile_raises_device_not_found_for_empty_profile_list():
+    with pytest.raises(DeviceNotFoundError, match="no profiles configured"):
+        find_matching_profile([])
+
+
+def test_find_matching_profile_raises_ambiguous_when_two_profiles_both_match(monkeypatch):
+    monkeypatch.setattr(device_module, "find_matching_device", lambda match: object())
+
+    with pytest.raises(AmbiguousDeviceMatchError, match="alice, bob"):
+        find_matching_profile([_profile("alice", "SAME"), _profile("bob", "SAME")])
+
+
+# --- mount_candidate_devices --------------------------------------------------
+
+
+def test_mount_candidate_devices_mounts_each_unmounted_vfat_hfsplus_partition(monkeypatch):
+    monkeypatch.setattr(device_module, "iter_candidate_mounts", lambda: [])
+
+    def _fake_run(cmd, capture_output, text, check=False):
+        if cmd[0] == "lsblk":
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="/dev/sda \n/dev/sdb1 vfat\n/dev/sdb2 btrfs\n/dev/sdc1 hfsplus\n",
+                stderr="",
+            )
+        assert cmd[:2] == ["udisksctl", "mount"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="Mounted", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    mounted = mount_candidate_devices()
+
+    # /dev/sda (no fstype) and /dev/sdb2 (btrfs) are correctly excluded —
+    # only real iPod-shaped filesystems get auto-mounted.
+    assert sorted(mounted) == ["/dev/sdb1", "/dev/sdc1"]
+
+
+def test_mount_candidate_devices_skips_already_mounted_partitions(monkeypatch):
+    monkeypatch.setattr(
+        device_module,
+        "iter_candidate_mounts",
+        lambda: [("/dev/sdb1", "/run/media/john/IPOD", "vfat")],
+    )
+    calls = []
+
+    def _fake_run(cmd, capture_output, text, check=False):
+        if cmd[0] == "lsblk":
+            return subprocess.CompletedProcess(cmd, 0, stdout="/dev/sdb1 vfat\n", stderr="")
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    mounted = mount_candidate_devices()
+
+    assert calls == []  # udisksctl never invoked — already mounted
+    assert mounted == []
+
+
+def test_mount_candidate_devices_swallows_failure_for_one_device(monkeypatch):
+    monkeypatch.setattr(device_module, "iter_candidate_mounts", lambda: [])
+
+    def _fake_run(cmd, capture_output, text, check=False):
+        if cmd[0] == "lsblk":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="/dev/sdb1 vfat\n/dev/sdc1 hfsplus\n", stderr=""
+            )
+        if cmd[3] == "/dev/sdb1":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not authorized")
+        return subprocess.CompletedProcess(cmd, 0, stdout="Mounted", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    mounted = mount_candidate_devices()
+
+    # sdb1 failed to mount — swallowed, not raised — but sdc1 still
+    # succeeds; a stuck/unrelated device must never block the real iPod.
+    assert mounted == ["/dev/sdc1"]

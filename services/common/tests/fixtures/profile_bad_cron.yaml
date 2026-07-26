@@ -1,0 +1,17 @@
+profile: broken_bad_cron
+device:
+  match_by: serial
+  match_value: "AA11BB22"
+fetch:
+  schedule: "not a cron"
+playlists: []
+podcasts:
+  pocketcasts:
+    credentials_file: /config/secrets/pocketcasts/broken.json
+  sync_unplayed_only: true
+  max_episodes_per_show: 5
+  shows: all
+sync:
+  trigger: on_connect
+  transcode_format: alac
+  push_play_status_back: true

@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from common.lock import FileLock, LockTimeoutError
 from common.state import EpisodeRecord, StateDB
 from podcast_manager import download as download_module
 from podcast_manager.api import EpisodeState, FullEpisode, PodcastSummary
@@ -533,3 +534,60 @@ def test_sync_shows_uses_per_show_fill_mode(monkeypatch, patched_pipeline, tmp_p
     )
 
     assert outcomes[0].result.downloaded[0].episode_uuid == "ep-2"  # oldest, per "next" fill mode
+
+
+# --- Podcast sync lock -------------------------------------------------------
+
+
+def test_sync_podcast_raises_lock_timeout_when_another_session_active(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    lock_path = tmp_path / ".podcasts.lock"
+
+    holder = FileLock(lock_path, timeout=5)
+    holder.acquire()
+    try:
+        with pytest.raises(LockTimeoutError):
+            _fetch(
+                library_root=tmp_path / "library",
+                state_db_path=tmp_path / "state.sqlite",
+                lock_path=lock_path,
+                lock_timeout=0.2,
+            )
+    finally:
+        holder.release()
+
+
+def test_sync_podcast_default_lock_path_derived_from_state_path(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    _fetch(library_root=tmp_path / "library", state_db_path=tmp_path / "state" / "state.sqlite")
+
+    assert (tmp_path / "state" / ".podcasts.lock").exists()
+
+
+def test_sync_shows_captures_lock_timeout_as_error_outcome(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    lock_path = tmp_path / ".podcasts.lock"
+
+    holder = FileLock(lock_path, timeout=5)
+    holder.acquire()
+    try:
+        outcomes = download_module.sync_shows(
+            [PODCAST],
+            token="tok",
+            library_root=tmp_path / "library",
+            state_db_path=tmp_path / "state.sqlite",
+            lock_path=lock_path,
+            lock_timeout=0.2,
+        )
+    finally:
+        holder.release()
+
+    assert outcomes[0].error is not None
+    assert outcomes[0].result is None

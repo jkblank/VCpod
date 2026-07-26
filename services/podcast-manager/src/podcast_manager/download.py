@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from common.lock import FileLock, LockTimeoutError
 from common.state import EpisodeRecord, StateDB
 
 from podcast_manager.api import (
@@ -102,6 +103,8 @@ def sync_podcast(
     max_episodes_per_show: int = 5,
     fill_mode: str = "newest",
     episode_filter: str = "played",
+    lock_path: Path | str | None = None,
+    lock_timeout: float = 1800,
 ) -> SyncResult:
     # Must be resolved to absolute: a relative library_root here produces
     # a relative local_path recorded in the state db, which
@@ -116,6 +119,8 @@ def sync_podcast(
     # fetcher-apple/fetcher-ytmusic's library_root handling — see
     # CLAUDE.md and notes.md.
     library_root = Path(library_root).resolve()
+    if lock_path is None:
+        lock_path = Path(state_db_path).parent / ".podcasts.lock"
     result = SyncResult()
 
     full_episodes = list_full_episodes(token, podcast.uuid)
@@ -132,7 +137,7 @@ def sync_podcast(
 
     show_dir = library_root / _sanitize(podcast.title)
 
-    with StateDB(state_db_path) as db:
+    with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
         # Pocket Casts' own EpisodeState only has a row for episodes the
         # user interacted with through a Pocket Casts client — a real
         # listen elsewhere (or sync lag) can leave no row at all, wrongly
@@ -242,6 +247,8 @@ def sync_shows(
     max_episodes_per_show: int = 5,
     fill_modes: dict[str, str] | None = None,
     episode_filter: str = "played",
+    lock_path: Path | str | None = None,
+    lock_timeout: float = 1800,
 ) -> list[ShowSyncOutcome]:
     """Sync each show in turn, same as calling sync_podcast() once per show,
     except one show's failure doesn't stop the rest — e.g. a per-show API
@@ -260,8 +267,10 @@ def sync_shows(
                 max_episodes_per_show=max_episodes_per_show,
                 fill_mode=fill_modes.get(podcast.uuid, "newest"),
                 episode_filter=episode_filter,
+                lock_path=lock_path,
+                lock_timeout=lock_timeout,
             )
-        except (httpx.HTTPError, OSError) as e:
+        except (LockTimeoutError, httpx.HTTPError, OSError) as e:
             outcomes.append(ShowSyncOutcome(podcast=podcast, result=None, error=str(e)))
             continue
         outcomes.append(ShowSyncOutcome(podcast=podcast, result=result, error=None))

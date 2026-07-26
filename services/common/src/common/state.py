@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -70,6 +71,16 @@ class StateDB:
             """
         )
         self._migrate_episodes_columns()
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fetch_runs (
+                target_type TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                last_fetched_at TEXT NOT NULL,
+                PRIMARY KEY (target_type, target_id)
+            )
+            """
+        )
         self._conn.commit()
 
     def _migrate_episodes_columns(self) -> None:
@@ -229,5 +240,31 @@ class StateDB:
     def clear_pending_push(self, episode_uuid: str) -> None:
         self._conn.execute(
             "UPDATE episodes SET pending_push = 0 WHERE episode_uuid = ?", (episode_uuid,)
+        )
+        self._conn.commit()
+
+    def get_last_fetched(self, target_type: str, target_id: str) -> datetime | None:
+        """target_type is "playlist" | "podcast_show"; target_id is a
+        playlist name, a show name/UUID, or the "__all__" sentinel used
+        when podcasts.shows == "all". No `profile` column: this db is
+        already one-file-per-profile (see resolve_roots), so scoping by
+        profile here would be redundant. Used by common.schedule's
+        is_due/is_due_within to decide whether a target's cron schedule
+        has come due."""
+        row = self._conn.execute(
+            "SELECT last_fetched_at FROM fetch_runs WHERE target_type = ? AND target_id = ?",
+            (target_type, target_id),
+        ).fetchone()
+        return datetime.fromisoformat(row[0]) if row else None
+
+    def record_fetch(self, target_type: str, target_id: str, when: datetime) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO fetch_runs (target_type, target_id, last_fetched_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (target_type, target_id) DO UPDATE SET
+                last_fetched_at = excluded.last_fetched_at
+            """,
+            (target_type, target_id, when.isoformat()),
         )
         self._conn.commit()

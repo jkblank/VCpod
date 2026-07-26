@@ -30,6 +30,10 @@ def test_example_profiles_load():
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
     ]
+    assert profiles["alice"].fetch.schedule == "0 3 * * *"
+    assert profiles["alice"].playlists[1].fetch_schedule == "0 */6 * * *"
+    assert profiles["alice"].playlists[0].fetch_schedule is None
+    assert profiles["bob"].fetch.schedule is None
 
 
 def test_missing_file_raises():
@@ -55,6 +59,16 @@ def test_invalid_enum_value_raises():
 def test_wrong_field_type_raises():
     with pytest.raises(ConfigError, match="max_episodes_per_show"):
         load_profile_config(FIXTURES / "profile_wrong_type.yaml")
+
+
+def test_invalid_cron_expression_raises():
+    with pytest.raises(ConfigError, match="invalid cron expression"):
+        load_profile_config(FIXTURES / "profile_bad_cron.yaml")
+
+
+def test_invalid_shows_entry_raises():
+    with pytest.raises(ConfigError, match="invalid shows entry"):
+        load_profile_config(FIXTURES / "profile_bad_shows_entry.yaml")
 
 
 def test_duplicate_profile_name_raises():

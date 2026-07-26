@@ -175,7 +175,7 @@ def run_sync(
         except (OSError, ValueError, KeyError, httpx.HTTPError) as e:
             result.source_errors.append(f"podcasts: could not authenticate ({e})")
         else:
-            shows_filter = show_selectors or profile.podcasts.shows
+            shows_filter = show_selectors or profile.podcasts.show_names
             if shows_filter != "all":
                 subscriptions, unmatched = resolve_show_selection(subscriptions, shows_filter)
                 result.unmatched_shows.extend(unmatched)
@@ -189,6 +189,7 @@ def run_sync(
                     max_episodes_per_show=profile.podcasts.max_episodes_per_show,
                     fill_modes=profile.podcasts.fill_modes,
                     episode_filter=profile.podcasts.episode_filter,
+                    lock_timeout=lock_timeout,
                 )
 
     return result

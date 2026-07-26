@@ -12,7 +12,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from common.models import DeviceMatch
+from common.models import DeviceMatch, ProfileConfig
 from iopenpod.device.info import DeviceInfo, enrich
 
 _MOUNT_FSTYPES = ("vfat", "hfsplus")
@@ -60,6 +60,58 @@ def iter_candidate_mounts(mounts_path: str = _MOUNTS_PATH) -> list[tuple[str, st
             if fstype in _MOUNT_FSTYPES:
                 candidates.append((device_path, _unescape_mount_path(mount_point), fstype))
     return candidates
+
+
+def _iter_unmounted_removable_partitions() -> list[str]:
+    """Every vfat/hfsplus-formatted partition currently on the system
+    that ISN'T already in /proc/mounts — via `lsblk`, which (unlike
+    /proc/mounts) also sees partitions that exist but aren't mounted yet.
+    Used by mount_candidate_devices() to find things worth auto-mounting."""
+    result = subprocess.run(
+        ["lsblk", "-rno", "PATH,FSTYPE"], capture_output=True, text=True, check=False
+    )
+    already_mounted = {device_path for device_path, _mount_point, _fstype in iter_candidate_mounts()}
+    unmounted = []
+    for line in result.stdout.splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        device_path, fstype = parts
+        if fstype in _MOUNT_FSTYPES and device_path not in already_mounted:
+            unmounted.append(device_path)
+    return unmounted
+
+
+def mount_candidate_devices() -> list[str]:
+    """Best-effort auto-mount: mounts every currently-unmounted vfat/
+    hfsplus partition via `udisksctl mount`, which auto-picks a sensible
+    mount point (e.g. /run/media/<user>/<label>) — so find_matching_device
+    has something to scan even when nothing has auto-mounted it yet.
+
+    This exists for auto-sync specifically (confirmed live: a udev-
+    triggered run has no guarantee any desktop session's auto-mount
+    daemon actually mounts the device — unlike an interactive `sync`
+    invocation, where a human has typically already seen the device
+    appear in their file manager, mounted, by the time they run the
+    command). `find_matching_device` itself still just scans whatever's
+    mounted, same as before, for that reason — call this first if you
+    can't rely on it already being mounted.
+
+    Failures for individual devices are swallowed, not raised: an
+    unrelated USB drive that can't be mounted (permissions, no udisks2
+    policy for a headless/root context, corrupt filesystem, etc.) must
+    never block finding the actual iPod. Returns the block devices this
+    call actually mounted (for logging), not ones already mounted
+    before it ran.
+    """
+    mounted: list[str] = []
+    for block_device in _iter_unmounted_removable_partitions():
+        result = subprocess.run(
+            ["udisksctl", "mount", "-b", block_device], capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0:
+            mounted.append(block_device)
+    return mounted
 
 
 def is_ipod_mount(mount_point: str) -> bool:
@@ -118,6 +170,45 @@ def find_matching_device(match: DeviceMatch) -> DeviceInfo:
     raise DeviceNotFoundError(
         f"no connected, mounted iPod matches {match.match_by}={match.match_value!r}"
     )
+
+
+class AmbiguousDeviceMatchError(Exception):
+    pass
+
+
+def find_matching_profile(profiles: list[ProfileConfig]) -> ProfileConfig:
+    """M9's udev-triggered auto-sync doesn't know in advance which profile
+    a newly-connected device belongs to (unlike `sync-orchestrator sync`,
+    which always takes an explicit --profile) — this determines it by
+    trying find_matching_device(profile.device) per profile, reusing that
+    scan/match logic as-is rather than reimplementing it.
+
+    Raises DeviceNotFoundError if no profile's device config matches
+    whatever's currently connected. Raises AmbiguousDeviceMatchError if
+    more than one profile matches — almost certainly a config bug (e.g.
+    two profiles with the same device.match_value), which must be
+    surfaced loudly rather than silently syncing the wrong profile's data
+    onto someone's iPod.
+    """
+    matches: list[ProfileConfig] = []
+    last_error: DeviceNotFoundError | None = None
+    for profile in profiles:
+        try:
+            find_matching_device(profile.device)
+        except DeviceNotFoundError as e:
+            last_error = e
+            continue
+        matches.append(profile)
+
+    if not matches:
+        raise DeviceNotFoundError(str(last_error) if last_error else "no profiles configured")
+    if len(matches) > 1:
+        names = ", ".join(p.profile for p in matches)
+        raise AmbiguousDeviceMatchError(
+            f"connected device matches multiple profiles: {names} — check "
+            "config/profiles/*.yaml for a duplicate/incorrect device.match_value"
+        )
+    return matches[0]
 
 
 class EjectError(Exception):

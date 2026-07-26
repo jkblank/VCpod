@@ -1311,3 +1311,131 @@ problem — `{ workspace = true }` stays live automatically.
 **Status**: known workaround, not really "fixable" — just something to
 remember whenever `common` changes and a standalone project
 (`fetcher-spotify`, `sync-orchestrator`) needs to see it.
+
+## M9 (Automation) — shipped: scheduled fetch, multi-profile matching, udev auto-sync
+
+All three of M9's acceptance criteria implemented this session (see
+`music-stack-planning.md` §3/§9 for the design, added the same session
+before implementation):
+
+- **Scheduled fetch, independent of device presence.** `PlaylistEntry.
+  fetch_schedule`, `ProfilePodcastsConfig.fetch_schedule`/per-show
+  `ShowOverride.fetch_schedule`, and `ProfileConfig.fetch.schedule` (all
+  cron expressions, validated via `croniter` at config-load time —
+  `common/models.py`'s `CronSchedule` type). Resolution precedence:
+  per-playlist/per-show > podcasts-level > profile default
+  (`common/schedule.py`'s `iter_fetch_targets`/`resolve_fetch_scope`).
+  A new `fetch_runs` table in `state.sqlite` (`common/state.py`) tracks
+  `last_fetched_at` per playlist/show, keyed by `(target_type,
+  target_id)` — no `profile` column, since the db is already one-file-
+  per-profile. New `services/fetch-scheduler` service (containerizable —
+  no USB access needed) runs the actual tick loop, reusing `music_stack_
+  cli.orchestrate.run_sync` rather than reimplementing fetch
+  orchestration; supports both a long-running `docker-compose.yml`
+  service (`restart: unless-stopped`, the first in that file) and a
+  `--once` single-tick mode for cron/systemd-timer deployment instead.
+- **Multi-profile device matching.** `sync_orchestrator/device.py`'s
+  `find_matching_profile(profiles)` tries each profile's existing
+  `find_matching_device` in turn; raises `AmbiguousDeviceMatchError` (not
+  a silent pick) if a connected device matches more than one profile.
+- **udev-triggered sync.** New `sync-orchestrator auto-sync` subcommand:
+  polls for a matching profile (`--wait-seconds`, since udev's ADD event
+  fires before the filesystem is actually mounted), then syncs with
+  `--execute --allow-removals` **always on, no opt-out** — per explicit
+  instruction this session ("plug in your ipod before bed, wake up to
+  everything synced up as configured"), not a more cautious partial sync.
+  udev rule + trigger script in `services/sync-orchestrator/udev/`,
+  installation documented as a manual `sudo` step in that service's
+  README (never auto-installed).
+- **Opportunistic pre-fetch, added mid-session per a follow-up
+  instruction**: `auto-sync` normally never fetches (keeps device-plug-in
+  fast), but if any of the matched profile's targets have their next
+  scheduled fetch due within `--pre-fetch-horizon-hours` (default 4) of
+  the connection, it pre-fetches just those targets first — invoked as a
+  **subprocess** call to `music-stack sync` (not an in-process
+  `run_sync` import), deliberately: `sync-orchestrator` stays standalone
+  specifically to keep its `iopenpod`/PyQt6 dependency tree from merging
+  with `music-stack-cli`'s (gamdl, yt-dlp, etc.), same reasoning as
+  `fetcher-spotify`'s isolation. A failed pre-fetch only warns and falls
+  through to syncing whatever's already local.
+- **Found and fixed via live testing** (`fetch-scheduler --once` against
+  the real `alice.yaml` example profile): a target whose source kept
+  failing (bad Spotify support, fake Pocket Casts credentials) printed
+  nothing at all — `TickResult` only surfaced unexpected exceptions, not
+  `run_sync`'s own per-source `source_errors`. Fixed by adding `TickResult.
+  source_errors` and printing it, so a persistently-broken auth doesn't
+  go silently invisible forever (same "loud not silent" principle as the
+  gamdl cookie-expiry risk noted elsewhere in this file).
+
+**Status**: implemented and unit-tested (schema/state/schedule-resolution/
+scheduler-loop/device-matching/auto-sync all covered); live-verified
+`fetch-scheduler --once`/`--dry-run` against real config and `sync-
+orchestrator auto-sync` against a real (disconnected) device end-to-end.
+**Not yet live-verified**: the pre-fetch subprocess path and the full
+udev rule installation against a real connected device — both need an
+actual iPod plugged in to confirm end-to-end, left for the user to try
+next.
+
+**Follow-up found during real udev install/testing**: first live attempt
+to trigger the rule found the auto-mount assumption didn't hold — the
+device showed as connected (`lsusb`: `05ac:1209`) and the rule correctly
+matched (confirmed via `udevadm test`, which shows queued `RUN{program}`
+commands without executing them), but nothing had mounted its filesystem
+on the host (`/proc/mounts` had no vfat/hfsplus entry for it — only
+`/boot/efi`), so `auto-sync` had nothing to find regardless of whether
+the script itself ran correctly. (Separately also found and fixed two
+real install mistakes along the way: `REPO_ROOT` in the installed
+`/usr/local/bin/music-stack-auto-sync.sh` pointed at `/home/john/
+music-stack`, missing the `/Music` path segment, which made the log
+redirect target's parent directory not exist — a background/backgrounded
+`&` command failing this way is invisible, since `set -e` in the parent
+script doesn't propagate a backgrounded job's failure; and a fix applied
+to the repo's copy of the script wasn't re-copied to the installed
+`/usr/local/bin` location, which is the one udev actually executes.)
+
+**Fix**: `auto-sync` no longer assumes something else has mounted the
+device. `device.py` gained `mount_candidate_devices()` — best-effort
+`udisksctl mount` of every currently-unmounted vfat/hfsplus partition
+(discovered via `lsblk`, which sees unmounted partitions too, unlike
+`/proc/mounts`) — called every poll tick before `find_matching_profile`.
+Per-device mount failures are swallowed (an unrelated stuck USB drive
+must never block finding the real iPod). `find_matching_device` itself
+is unchanged — still assumes already-mounted, since that's still correct
+for the interactive `sync` command. 6 new tests
+(`test_device.py`/`test_cli.py`).
+
+**Second follow-up, same install session**: with auto-mount in place,
+`sudo udevadm trigger` was re-run — the device *did* get auto-mounted
+(confirmed: `/dev/sdb2` mounted under `/run/media/root/JOHN_S IPOD`, i.e.
+`mount_candidate_devices()` genuinely worked, called as root via udev's
+own execution context) — but `auto-sync.log` stayed a 0-byte file
+(`mtime == birth time`, zero bytes ever written) and no
+`sync-orchestrator`/python process was left running at all. Root cause:
+the `RUN+=` script (`music-stack-auto-sync.sh`, `setsid ... &`-detached)
+runs inside `systemd-udevd`'s own per-device **cgroup** — `setsid`
+detaches the process's *session*, but not systemd-udevd's cgroup
+tracking, and systemd kills that whole cgroup once it considers the
+device's event handling finished. The mount syscall (fast, happens
+early) completed before the kill; the real sync (which the project's own
+prior notes already establish can take 20-50+ minutes) never got the
+chance, and any buffered stdout never flushed.
+
+**Fix**: replaced the `RUN+=` shell-script approach entirely with
+systemd's documented pattern for exactly this situation — the udev rule
+now does `TAG+="systemd", ENV{SYSTEMD_WANTS}="music-stack-auto-sync.
+service"` instead of `RUN+=`, handing the device off to a real,
+independent systemd unit (`udev/music-stack-auto-sync.service`, `Type=
+oneshot`, `PYTHONUNBUFFERED=1`, `StandardOutput=append:.../auto-sync.
+log`) that's fully outside udev's own process/cgroup lifecycle. The old
+`music-stack-auto-sync.sh` wrapper script is deleted — no longer needed,
+`ExecStart=` calls the venv binary directly. Also worth noting for later:
+VirtualBox is separately queued to claim this same USB device per
+`udevadm test`'s own output on this machine — if a running VM has a USB
+filter for it, that could still intercept the device before either
+udev/systemd or the host ever gets to it; not yet an issue in this
+session's testing, but worth checking first if a future attempt sees the
+device disappear from the host entirely.
+
+**Status**: implemented, not yet live-confirmed end-to-end (needs a real
+install + re-trigger with the new `.service` file — left for the user to
+try next).

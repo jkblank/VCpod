@@ -1,7 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from common.models import ExternalLibraryConfig
+from common.models import (
+    ExternalLibraryConfig,
+    FetchSettings,
+    PlaylistEntry,
+    ProfilePodcastsConfig,
+    ShowOverride,
+)
 
 
 def test_external_library_flat_string_selections_unchanged():
@@ -41,3 +47,102 @@ def test_external_library_invalid_nested_selection_raises():
 def test_external_library_invalid_selection_type_raises():
     with pytest.raises(ValidationError, match="invalid selections entry"):
         ExternalLibraryConfig(path="/library", selections=[123])
+
+
+def _podcasts_config(**overrides):
+    base = dict(
+        pocketcasts={"credentials_file": "/config/secrets/pocketcasts/x.json"},
+        sync_unplayed_only=True,
+        max_episodes_per_show=5,
+    )
+    base.update(overrides)
+    return ProfilePodcastsConfig(**base)
+
+
+def test_fetch_settings_default_schedule_is_none():
+    assert FetchSettings().schedule is None
+
+
+def test_fetch_settings_accepts_valid_cron_expression():
+    assert FetchSettings(schedule="0 3 * * *").schedule == "0 3 * * *"
+
+
+def test_fetch_settings_rejects_invalid_cron_expression():
+    with pytest.raises(ValidationError, match="invalid cron expression"):
+        FetchSettings(schedule="not a cron")
+
+
+def test_playlist_entry_fetch_schedule_defaults_to_none():
+    entry = PlaylistEntry(name="Chill", source="apple_music", source_id="pl.1")
+    assert entry.fetch_schedule is None
+
+
+def test_playlist_entry_rejects_invalid_fetch_schedule():
+    with pytest.raises(ValidationError, match="invalid cron expression"):
+        PlaylistEntry(name="Chill", source="apple_music", source_id="pl.1", fetch_schedule="nope")
+
+
+def test_podcasts_shows_plain_string_list_unchanged():
+    cfg = _podcasts_config(shows=["Daily News", "Weekly Deep Dive"])
+    assert cfg.shows == ["Daily News", "Weekly Deep Dive"]
+    assert cfg.show_names == ["Daily News", "Weekly Deep Dive"]
+
+
+def test_podcasts_shows_all_shorthand_unchanged():
+    cfg = _podcasts_config(shows="all")
+    assert cfg.shows == "all"
+    assert cfg.show_names == "all"
+
+
+def test_podcasts_shows_mixed_string_and_override_entry():
+    cfg = _podcasts_config(
+        shows=["Daily News", {"Weekly Deep Dive": {"fetch_schedule": "0 6 * * 1"}}]
+    )
+    assert cfg.shows[0] == "Daily News"
+    assert isinstance(cfg.shows[1], ShowOverride)
+    assert cfg.shows[1].name == "Weekly Deep Dive"
+    assert cfg.shows[1].fetch_schedule == "0 6 * * 1"
+    assert cfg.show_names == ["Daily News", "Weekly Deep Dive"]
+
+
+def test_podcasts_shows_accepts_already_constructed_show_override_instance():
+    # Not just YAML-shaped dicts — code that builds ProfilePodcastsConfig
+    # directly (tests, other services) may pass an already-constructed
+    # ShowOverride in the list.
+    cfg = _podcasts_config(shows=["Daily News", ShowOverride(name="Weekly Deep Dive")])
+    assert cfg.shows[1] == ShowOverride(name="Weekly Deep Dive", fetch_schedule=None)
+    assert cfg.show_names == ["Daily News", "Weekly Deep Dive"]
+
+
+def test_podcasts_shows_override_entry_without_overrides():
+    cfg = _podcasts_config(shows=[{"Weekly Deep Dive": {}}])
+    assert cfg.shows[0] == ShowOverride(name="Weekly Deep Dive", fetch_schedule=None)
+
+
+def test_podcasts_shows_override_entry_with_null_overrides():
+    cfg = _podcasts_config(shows=[{"Weekly Deep Dive": None}])
+    assert cfg.shows[0] == ShowOverride(name="Weekly Deep Dive", fetch_schedule=None)
+
+
+def test_podcasts_shows_invalid_entry_multi_key_dict_raises():
+    with pytest.raises(ValidationError, match="invalid shows entry"):
+        _podcasts_config(shows=[{"A": {}, "B": {}}])
+
+
+def test_podcasts_shows_invalid_entry_non_dict_overrides_raises():
+    with pytest.raises(ValidationError, match="expected a mapping of overrides"):
+        _podcasts_config(shows=[{"Weekly Deep Dive": "not a mapping"}])
+
+
+def test_podcasts_shows_invalid_entry_type_raises():
+    with pytest.raises(ValidationError, match="invalid shows entry"):
+        _podcasts_config(shows=[123])
+
+
+def test_podcasts_fetch_schedule_defaults_to_none():
+    assert _podcasts_config().fetch_schedule is None
+
+
+def test_podcasts_fetch_schedule_rejects_invalid_cron():
+    with pytest.raises(ValidationError, match="invalid cron expression"):
+        _podcasts_config(fetch_schedule="nope")

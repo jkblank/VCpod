@@ -1,0 +1,22 @@
+[Unit]
+Description=music-stack: sync a connected iPod to its matching profile
+# Started on-demand by 99-ipod-music-stack.rules via
+# TAG+="systemd"/ENV{SYSTEMD_WANTS} — not enabled/started at boot, and
+# deliberately NOT installed as a udev RUN+= script (see the comment in
+# that .rules file for why: RUN+= processes run inside udev's own
+# per-device cgroup and can be killed once udev considers that device's
+# event handling done, even if detached via setsid — confirmed live).
+
+[Service]
+Type=oneshot
+# Fill in the two paths below at install time (see
+# services/sync-orchestrator/README.md's "Installing udev automation").
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/john/Music/music-stack/services/sync-orchestrator/.venv/bin/sync-orchestrator auto-sync --config-root /home/john/Music/music-stack/config --library-root /home/john/Music/music-stack/library --state-root /home/john/Music/music-stack/state
+StandardOutput=append:/home/john/Music/music-stack/state/auto-sync.log
+StandardError=append:/home/john/Music/music-stack/state/auto-sync.log
+# Runs as root: needed for mount_candidate_devices()'s `udisksctl mount`
+# to work reliably without an active graphical session/polkit prompt,
+# same as this already ran as (via udev's default RUN+= context) before
+# this file existed.
+User=root

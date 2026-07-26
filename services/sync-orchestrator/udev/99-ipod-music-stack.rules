@@ -1,0 +1,27 @@
+# Triggers music-stack-auto-sync.service whenever an iPod Video (5th/5.5th
+# gen) enumerates on the USB bus — idVendor/idProduct confirmed live
+# against a real device (see notes.md,
+# docs/iopenpod-artworkdb-missing-mhii-chunk.md).
+#
+# Matches the USB device ADD event itself, not the mounted block device —
+# this fires well before udisks2/the desktop environment has finished
+# auto-mounting the filesystem. Waiting for the mount to actually appear
+# (and auto-mounting it if nothing else does) is `sync-orchestrator
+# auto-sync`'s own job (--wait-seconds, mount_candidate_devices()), not
+# this rule's — see services/sync-orchestrator/README.md.
+#
+# TAG+="systemd" + ENV{SYSTEMD_WANTS}=... (not RUN+=) is deliberate: a
+# RUN+= script is executed inside systemd-udevd's own per-device cgroup,
+# which gets killed once udev considers that device's event handling
+# finished — confirmed live, a RUN+= + `setsid ... &` script visibly
+# started (it successfully auto-mounted the device) but vanished with
+# zero log output before the actual sync could run or flush anything.
+# TAG+="systemd" hands the device off to systemd instead, which starts
+# music-stack-auto-sync.service as a fully independent unit, immune to
+# udev's own process/cgroup lifecycle.
+#
+# If you sync a different iPod generation, add another ATTR{idProduct}=="..."
+# line for its PID (5th/5.5th gen share 0x1209; other generations use
+# different PIDs not yet catalogued by this project).
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="1209", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="music-stack-auto-sync.service"

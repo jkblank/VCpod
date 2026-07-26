@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    "croniter>=2.0",
 ]
 
 [project.scripts]

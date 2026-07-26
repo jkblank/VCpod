@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import time
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from common.config import ConfigError, load_profile_config
 from common.lock import FileLock, LockTimeoutError
+from common.models import ProfileConfig
+from common.schedule import is_due_within, iter_fetch_targets, resolve_fetch_scope
+from common.state import StateDB
 
-from sync_orchestrator.device import DeviceNotFoundError, EjectError, eject_device, find_matching_device
+from sync_orchestrator.device import (
+    AmbiguousDeviceMatchError,
+    DeviceNotFoundError,
+    EjectError,
+    eject_device,
+    find_matching_device,
+    find_matching_profile,
+    mount_candidate_devices,
+)
 from sync_orchestrator.sync import SyncError, execute_sync, plan_sync
 
 
@@ -214,6 +227,175 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
     return 0
 
 
+def _load_profiles_with_paths(directory: Path) -> list[tuple[Path, ProfileConfig]]:
+    """Like common.config.load_all_profiles, but keeps each profile's
+    source path alongside it — auto-sync needs the path to invoke
+    `music-stack sync --profile <path>` for its pre-fetch subprocess (see
+    _maybe_pre_fetch), which load_all_profiles' plain name-keyed dict
+    doesn't retain. Re-derives the same fail-fast duplicate-name check
+    load_all_profiles does, rather than depending on it directly, so this
+    doesn't need to parse every file twice."""
+    pairs: list[tuple[Path, ProfileConfig]] = []
+    seen: dict[str, Path] = {}
+    for path in sorted(directory.glob("*.yaml")):
+        profile = load_profile_config(path)
+        if profile.profile in seen:
+            raise ConfigError(
+                path,
+                [
+                    f"duplicate profile name '{profile.profile}' "
+                    f"(already defined in {seen[profile.profile]})"
+                ],
+            )
+        seen[profile.profile] = path
+        pairs.append((path, profile))
+    return pairs
+
+
+def _maybe_pre_fetch(
+    args: argparse.Namespace,
+    profile: ProfileConfig,
+    profile_path: Path,
+    config_root: Path,
+    now: datetime,
+) -> None:
+    """If any of the matched profile's fetch targets are due within
+    --pre-fetch-horizon-hours of right now, pre-fetch just those targets
+    before syncing to device — so "plug in before bed" doesn't miss data
+    that was about to refresh anyway. Otherwise (the common case) this is
+    a no-op: auto-sync syncs whatever fetch-scheduler already put in
+    library/, keeping device-plug-in fast.
+
+    Invokes `music-stack sync` as a subprocess rather than importing
+    music_stack_cli.orchestrate.run_sync in-process — deliberate: this
+    package is kept standalone specifically so its `iopenpod` dependency
+    tree never merges with anything else (same reason fetcher-spotify is
+    also standalone). music-stack-cli drags in fetcher-apple/gamdl,
+    fetcher-ytmusic/yt-dlp, podcast-manager — importing it here would
+    relitigate that isolation for the sake of one call.
+    """
+    state_db_path = Path(args.state_root) / f"{profile.profile}.sqlite"
+    horizon = timedelta(hours=args.pre_fetch_horizon_hours)
+    targets = iter_fetch_targets(profile)
+
+    with StateDB(state_db_path) as db:
+        due_soon = [
+            target
+            for target in targets
+            if is_due_within(
+                target.schedule,
+                db.get_last_fetched(target.target_type, target.target_id),
+                now,
+                horizon,
+            )
+        ]
+        if not due_soon:
+            return
+
+        scope = resolve_fetch_scope(due_soon)
+        print(
+            f"== Pre-fetching (due within {args.pre_fetch_horizon_hours}h): "
+            f"{', '.join(target.target_id for target in due_soon)} =="
+        )
+        cmd = [
+            "uv", "run", "--project", str(args.music_stack_project_dir),
+            "music-stack", "sync",
+            "--profile", str(profile_path),
+            "--global-config", str(config_root / "global.yaml"),
+            "--library-root", str(args.library_root),
+            "--state-root", str(args.state_root),
+        ]
+        for source in sorted(scope.sources):
+            cmd += ["--source", source]
+        for name in scope.playlist_names or []:
+            cmd += ["--playlist", name]
+        for name in scope.show_names or []:
+            cmd += ["--show", name]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.stdout:
+            print(proc.stdout, end="")
+        if proc.stderr:
+            print(proc.stderr, end="")
+
+        # Either way, fall through to the device sync below with whatever's
+        # already local — a flaky fetch must never block the "wake up
+        # synced" promise from at least syncing what's already there.
+        if proc.returncode != 0:
+            print(
+                f"WARNING: pre-fetch failed (exit {proc.returncode}); syncing with "
+                "whatever's already in library/, will retry next scheduled tick"
+            )
+            return
+
+        for target in due_soon:
+            db.record_fetch(target.target_type, target.target_id, now)
+
+
+def _cmd_auto_sync(args: argparse.Namespace) -> int:
+    config_root = Path(args.config_root)
+    try:
+        profiles_with_paths = _load_profiles_with_paths(config_root / "profiles")
+    except ConfigError as e:
+        print(f"ERROR {e.path}")
+        for line in e.errors:
+            print(f"  {line}")
+        return 1
+
+    profiles = [profile for _path, profile in profiles_with_paths]
+    path_by_name = {profile.profile: path for path, profile in profiles_with_paths}
+
+    print(f"== Waiting up to {args.wait_seconds}s for a known device to connect ==")
+    deadline = time.monotonic() + args.wait_seconds
+    matched_profile: ProfileConfig | None = None
+    last_error: Exception | None = None
+    while True:
+        # There's no guarantee anything has auto-mounted the device by
+        # the time this runs — unlike an interactive `sync` invocation,
+        # a udev-triggered run has no desktop session that's necessarily
+        # watching for it (confirmed live: udisks2's own auto-mount can
+        # simply not happen in this context). Best-effort every poll
+        # tick rather than once: the partition may not exist yet on the
+        # first tick right after the USB ADD event.
+        newly_mounted = mount_candidate_devices()
+        for block_device in newly_mounted:
+            print(f"  auto-mounted {block_device}")
+        try:
+            matched_profile = find_matching_profile(profiles)
+            break
+        except AmbiguousDeviceMatchError as e:
+            # A config bug (e.g. two profiles with the same device match)
+            # — don't keep polling, surface it immediately.
+            return _fail(str(e))
+        except DeviceNotFoundError as e:
+            last_error = e
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(args.poll_interval)
+
+    if matched_profile is None:
+        return _fail(f"no matching profile found within {args.wait_seconds}s: {last_error}")
+
+    print(f"== Matched profile {matched_profile.profile!r} ==")
+    now = datetime.now(timezone.utc)
+    _maybe_pre_fetch(args, matched_profile, path_by_name[matched_profile.profile], config_root, now)
+
+    # Unattended path: always behaves like a full `sync --execute
+    # --allow-removals` run, never a more cautious partial sync — the
+    # user explicitly wants "plug in before bed, wake up to everything
+    # synced up as configured," including removals. No opt-out flag;
+    # add one later if actually wanted, don't build it speculatively now.
+    args.execute = True
+    args.allow_removals = True
+
+    lock_path = Path(args.state_root) / f".sync_{matched_profile.profile}.lock"
+    try:
+        with FileLock(lock_path, timeout=args.lock_timeout):
+            return _run_sync(args, matched_profile)
+    except LockTimeoutError as e:
+        return _fail(str(e))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sync-orchestrator")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -286,6 +468,55 @@ def main() -> None:
         "finish (default 1800).",
     )
     sync_parser.set_defaults(func=_cmd_sync)
+
+    auto_sync_parser = subparsers.add_parser(
+        "auto-sync",
+        help="udev-triggered: detect which profile matches whatever iPod "
+        "just connected, then sync it. Always executes with removals "
+        "allowed (unattended/headless — see README). Never fetches on "
+        "its own, except a short pre-fetch window right before a "
+        "scheduled fetch would happen anyway.",
+    )
+    auto_sync_parser.add_argument(
+        "--config-root",
+        default="config",
+        help="Root containing global.yaml and profiles/*.yaml (default 'config').",
+    )
+    auto_sync_parser.add_argument("--library-root", required=True)
+    auto_sync_parser.add_argument("--state-root", required=True)
+    auto_sync_parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=30,
+        help="How long to poll for a known device to appear mounted before "
+        "giving up — udev's ADD event fires before udisks/desktop "
+        "auto-mount typically finishes (default 30).",
+    )
+    auto_sync_parser.add_argument("--poll-interval", type=float, default=1.0)
+    auto_sync_parser.add_argument(
+        "--pre-fetch-horizon-hours",
+        type=float,
+        default=4.0,
+        help="If any of the matched profile's fetch targets are due within "
+        "this many hours, pre-fetch just those targets before syncing to "
+        "device (default 4).",
+    )
+    auto_sync_parser.add_argument(
+        "--music-stack-project-dir",
+        default="services/music-stack-cli",
+        help="Path to the music-stack-cli project, used to invoke "
+        "`music-stack sync` as a subprocess for the pre-fetch step — kept "
+        "out-of-process deliberately (see README): sync-orchestrator stays "
+        "isolated from music-stack-cli's heavier dependency tree.",
+    )
+    auto_sync_parser.add_argument(
+        "--pc-folder", dest="pc_folders", action="append", default=None
+    )
+    auto_sync_parser.add_argument("--skip-backup", action="store_true")
+    auto_sync_parser.add_argument("--skip-eject", action="store_true")
+    auto_sync_parser.add_argument("--skip-podcasts", action="store_true")
+    auto_sync_parser.add_argument("--lock-timeout", type=float, default=1800)
+    auto_sync_parser.set_defaults(func=_cmd_auto_sync)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

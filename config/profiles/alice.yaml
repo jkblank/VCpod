@@ -3,6 +3,14 @@ device:
   match_by: serial
   match_value: "AA11BB22"
 
+# Profile-default fetch schedule (cron expression) — used by any
+# playlist/show below that doesn't set its own fetch_schedule. This runs
+# independently of whether alice's iPod is connected, via fetch-scheduler;
+# auto-sync (the udev-triggered device sync) never fetches on its own,
+# it just writes whatever's already here in library/ by then.
+fetch:
+  schedule: "0 3 * * *"   # nightly at 3am
+
 playlists:
   - name: "Workout Mix"
     source: apple_music
@@ -16,6 +24,8 @@ playlists:
     # if this playlist later drops them — for platform-curated playlists
     # that rotate/shrink their contents to stay a fixed length.
     sync_mode: additive
+    # Overrides fetch.schedule for this playlist only.
+    fetch_schedule: "0 */6 * * *"
 
 podcasts:
   pocketcasts:

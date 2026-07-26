@@ -1,0 +1,19 @@
+profile: broken_bad_shows_entry
+device:
+  match_by: serial
+  match_value: "AA11BB22"
+playlists: []
+podcasts:
+  pocketcasts:
+    credentials_file: /config/secrets/pocketcasts/broken.json
+  sync_unplayed_only: true
+  max_episodes_per_show: 5
+  shows:
+    - "Daily News":
+        fetch_schedule: "0 6 * * 1"
+      "Weekly Deep Dive":
+        fetch_schedule: "0 7 * * 1"
+sync:
+  trigger: on_connect
+  transcode_format: alac
+  push_play_status_back: true
