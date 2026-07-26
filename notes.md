@@ -1439,3 +1439,30 @@ device disappear from the host entirely.
 **Status**: implemented, not yet live-confirmed end-to-end (needs a real
 install + re-trigger with the new `.service` file — left for the user to
 try next).
+
+## `eject_device()` was too aggressive — stopped the iPod charging (fixed)
+
+User reported live: after a real `sync`/`auto-sync` run ejects the
+device, it doesn't charge — but ejecting the same device through a
+desktop file manager does. `eject_device()` (`device.py`) did two
+`udisksctl` calls: `unmount`, then `power-off` — the second one added
+deliberately (see its old docstring) on the theory that a plain unmount
+left the iPod stuck showing "connected to computer." That belief wasn't
+re-examined against the actual side effect: `udisksctl power-off`
+deauthorizes/powers down the USB port electrically (the same mechanism
+meant for "safe to physically unplug an external HDD now"), which cuts
+USB power delivery entirely — that's what was stopping it charging. A
+file manager's own eject only unmounts; it doesn't power off the port,
+which is exactly why it kept charging.
+
+**Fix**: `eject_device()` now only unmounts, matching file-manager
+behavior. Dropped `power-off` entirely, along with the now-unused
+`_PARENT_DRIVE_RE` regex/`re` import that existed only to compute the
+parent drive for that call. Test `test_eject_device_unmounts_then_
+powers_off_parent_drive` replaced with `test_eject_device_only_
+unmounts_does_not_power_off`; `test_eject_device_raises_on_power_off_
+failure` removed (no longer applicable).
+
+**Status**: fixed, matches the file-manager behavior the user compared
+it against. Not yet re-confirmed live that the device actually charges
+after this — should be checked on the next real eject.
