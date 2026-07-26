@@ -217,21 +217,34 @@ class EjectError(Exception):
 
 
 def eject_device(device_info: DeviceInfo) -> None:
-    """Ejects the drive via `udisksctl eject` (UDisks2's `Drive.Eject()`),
-    the exact call a desktop file manager's own eject button makes —
-    confirmed live by eavesdropping the real D-Bus traffic with `busctl
-    monitor org.freedesktop.UDisks2` while triggering a GUI eject: it's a
-    single `Drive.Eject()` call, nothing else (no separate `Unmount`, no
-    `PowerOff`). The resulting `PropertiesChanged` signal sets the
-    drive's `MediaAvailable=False`/`Size=0` — a SCSI/media-layer "the
-    media is gone" signal, which is what gets the iPod out of "connected
-    to computer" mode — without touching the USB port's power state at
-    all, unlike `Drive.PowerOff()` (an earlier, wrong attempt at this:
-    deauthorizes/powers down the port electrically, which stopped the
-    device charging). `Eject()` handles unmounting any mounted
-    filesystems on the drive internally — no separate `udisksctl
-    unmount` call needed first (also confirmed live: the real capture
-    shows no Unmount call at all, only Eject)."""
+    """Ejects the drive via the classic `eject` utility (util-linux),
+    not `udisksctl`.
+
+    The actual goal here — confirmed live by eavesdropping the real
+    D-Bus traffic with `busctl monitor org.freedesktop.UDisks2` while
+    triggering a GUI eject — is UDisks2's `Drive.Eject()`: a desktop file
+    manager's eject button makes exactly that one call (no separate
+    `Unmount`, no `PowerOff`), and the resulting `PropertiesChanged`
+    signal sets the drive's `MediaAvailable=False`/`Size=0` — a SCSI/
+    media-layer "the media is gone" signal, which is what gets the iPod
+    out of "connected to computer" mode — without touching the USB
+    port's power state at all, unlike `Drive.PowerOff()` (an earlier,
+    wrong attempt at this: deauthorizes/powers down the port
+    electrically, which stopped the device charging).
+
+    `udisksctl eject` would be the direct way to invoke that same
+    D-Bus method, but confirmed live: the udisksctl CLI installed here
+    has no `eject` verb at all (checked its own usage output — `mount`,
+    `unmount`, `power-off`, ... no `eject`), even though the D-Bus method
+    it wraps exists. `eject` (util-linux) is used instead — it's the
+    long-established standalone tool for exactly this "safely detach a
+    removable drive" operation, handles unmounting any mounted
+    filesystems on the drive itself first, and doesn't depend on
+    udisksctl exposing every D-Bus verb as a CLI subcommand. Not yet
+    confirmed to produce the identical MediaAvailable=False signal
+    udisksctl's Drive.Eject() does (the device disconnected mid-
+    investigation before that could be checked) — worth watching on the
+    next real eject."""
     block_device = None
     for candidate_device, mount_point, _fstype in iter_candidate_mounts():
         if mount_point == device_info.path:
@@ -245,6 +258,6 @@ def eject_device(device_info: DeviceInfo) -> None:
         raise EjectError(f"could not determine parent drive for {block_device!r}")
     drive = match.group(1)
 
-    eject = subprocess.run(["udisksctl", "eject", "-b", drive], capture_output=True, text=True)
+    eject = subprocess.run(["eject", drive], capture_output=True, text=True)
     if eject.returncode != 0:
-        raise EjectError(f"udisksctl eject failed: {eject.stdout}{eject.stderr}")
+        raise EjectError(f"eject failed: {eject.stdout}{eject.stderr}")

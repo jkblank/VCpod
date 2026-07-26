@@ -1499,3 +1499,33 @@ as `power-off` did). Tests updated to match
 the real behavior being replicated rather than a plausible-sounding
 theory. Not yet re-confirmed live — should be checked on the next real
 eject that it both leaves "connected" mode AND keeps charging.
+
+**Third correction, same day**: the `udisksctl eject` fix above failed
+the very next real auto-sync run — confirmed live in `auto-sync.log`:
+`udisksctl eject failed: Unknown command 'eject'`, followed by
+udisksctl's own usage text listing its actual verbs (`mount`,
+`unmount`, `power-off`, `info`, `dump`, `status`, `monitor`, `unlock`,
+`lock`, `loop-setup`, `loop-delete`, `smart-simulate`) — no `eject`
+anywhere. The `Drive.Eject()` D-Bus method a GUI eject calls (confirmed
+in the previous fix) genuinely exists, but this system's installed
+`udisksctl` CLI simply never exposes it as a subcommand — a CLI/D-Bus
+API coverage gap, not a wrong understanding of what needs to happen.
+
+**Fix**: switched to the classic standalone `eject` utility (util-linux,
+confirmed present: `eject from util-linux 2.42.2`) instead of
+`udisksctl eject` — same "safely detach a removable drive" intent,
+long-predates udisks2, doesn't depend on udisksctl's CLI covering every
+D-Bus verb. By the time this was being tested live, the device had
+already disconnected (unplugged mid-investigation), so — unlike the
+`Drive.Eject()` finding above — this one is **not yet confirmed** to
+produce the identical `MediaAvailable=False` signal; it's a reasonable
+substitute (same category of operation) rather than a verified-identical
+one. `_PARENT_DRIVE_RE` kept (still needed — `eject` also operates on
+the whole drive, not a partition). Tests updated
+(`test_eject_device_calls_eject_on_parent_drive`).
+
+**Status**: implemented, not yet live-confirmed. This is the third
+attempt at this specific fix in one day (unmount-only → udisksctl eject
+→ plain eject) — genuinely worth confirming carefully on the next real
+connect before considering this closed: check both that the iPod leaves
+"connected to computer" mode AND that it keeps charging.

@@ -198,15 +198,18 @@ class _FakeDeviceInfoForEject:
         self.path = path
 
 
-def test_eject_device_calls_udisksctl_eject_on_parent_drive(monkeypatch):
+def test_eject_device_calls_eject_on_parent_drive(monkeypatch):
     # Confirmed live via `busctl monitor org.freedesktop.UDisks2` while
     # triggering a real GUI eject: a file manager's eject button makes a
-    # single Drive.Eject() call (udisksctl eject) — not Unmount, not
-    # PowerOff. PowerOff (an earlier, wrong attempt at this) deauthorizes/
-    # powers down the USB port electrically, which stops the device
-    # charging; Eject only marks the media logically gone, which is what
-    # gets the iPod out of "connected to computer" mode without touching
-    # port power.
+    # single Drive.Eject() call — not Unmount, not PowerOff. PowerOff (an
+    # earlier, wrong attempt at this) deauthorizes/powers down the USB
+    # port electrically, which stops the device charging; Eject only
+    # marks the media logically gone, which is what gets the iPod out of
+    # "connected to computer" mode without touching port power.
+    # `udisksctl` would be the direct way to invoke that same D-Bus
+    # method, but confirmed live: this system's udisksctl CLI has no
+    # `eject` verb at all (only mount/unmount/power-off/...), so the
+    # classic standalone `eject` utility (util-linux) is used instead.
     monkeypatch.setattr(
         device_module,
         "iter_candidate_mounts",
@@ -222,7 +225,7 @@ def test_eject_device_calls_udisksctl_eject_on_parent_drive(monkeypatch):
 
     eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
 
-    assert calls == [["udisksctl", "eject", "-b", "/dev/sdc"]]
+    assert calls == [["eject", "/dev/sdc"]]
 
 
 def test_eject_device_raises_if_no_longer_mounted(monkeypatch):
