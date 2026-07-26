@@ -1524,8 +1524,7 @@ one. `_PARENT_DRIVE_RE` kept (still needed — `eject` also operates on
 the whole drive, not a partition). Tests updated
 (`test_eject_device_calls_eject_on_parent_drive`).
 
-**Status**: implemented, not yet live-confirmed. This is the third
-attempt at this specific fix in one day (unmount-only → udisksctl eject
-→ plain eject) — genuinely worth confirming carefully on the next real
-connect before considering this closed: check both that the iPod leaves
-"connected to computer" mode AND that it keeps charging.
+**Status**: FIXED, live-confirmed. User confirmed the `eject` (util-linux)
+version works correctly on a real connect — third attempt at this
+specific fix in one day (unmount-only → udisksctl eject → plain eject),
+this one closes it out.
