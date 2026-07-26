@@ -198,11 +198,15 @@ class _FakeDeviceInfoForEject:
         self.path = path
 
 
-def test_eject_device_only_unmounts_does_not_power_off(monkeypatch):
-    # `power-off` deauthorizes/powers down the USB port electrically,
-    # which stops the device charging — confirmed live, unlike a plain
-    # unmount (what a desktop file manager's own eject button does),
-    # which leaves it electrically connected and still charging.
+def test_eject_device_calls_udisksctl_eject_on_parent_drive(monkeypatch):
+    # Confirmed live via `busctl monitor org.freedesktop.UDisks2` while
+    # triggering a real GUI eject: a file manager's eject button makes a
+    # single Drive.Eject() call (udisksctl eject) — not Unmount, not
+    # PowerOff. PowerOff (an earlier, wrong attempt at this) deauthorizes/
+    # powers down the USB port electrically, which stops the device
+    # charging; Eject only marks the media logically gone, which is what
+    # gets the iPod out of "connected to computer" mode without touching
+    # port power.
     monkeypatch.setattr(
         device_module,
         "iter_candidate_mounts",
@@ -218,7 +222,7 @@ def test_eject_device_only_unmounts_does_not_power_off(monkeypatch):
 
     eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
 
-    assert calls == [["udisksctl", "unmount", "-b", "/dev/sdc2"]]
+    assert calls == [["udisksctl", "eject", "-b", "/dev/sdc"]]
 
 
 def test_eject_device_raises_if_no_longer_mounted(monkeypatch):
@@ -228,7 +232,7 @@ def test_eject_device_raises_if_no_longer_mounted(monkeypatch):
         eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
 
 
-def test_eject_device_raises_on_unmount_failure(monkeypatch):
+def test_eject_device_raises_on_eject_failure(monkeypatch):
     monkeypatch.setattr(
         device_module,
         "iter_candidate_mounts",
@@ -236,13 +240,11 @@ def test_eject_device_raises_on_unmount_failure(monkeypatch):
     )
 
     def _fake_run(cmd, capture_output, text, check=False):
-        if "unmount" in cmd:
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="target is busy")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="target is busy")
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
-    with pytest.raises(EjectError, match="unmount failed"):
+    with pytest.raises(EjectError, match="eject failed"):
         eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
 
 

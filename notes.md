@@ -1466,3 +1466,36 @@ failure` removed (no longer applicable).
 **Status**: fixed, matches the file-manager behavior the user compared
 it against. Not yet re-confirmed live that the device actually charges
 after this — should be checked on the next real eject.
+
+**Correction, same day**: the unmount-only fix above was itself wrong —
+user reported live it was still "too soft": the device stayed visible in
+the file explorer and the iPod still showed "do not disconnect" after
+our eject ran. Rather than guess a third time, eavesdropped the real
+D-Bus traffic (`busctl monitor org.freedesktop.UDisks2`) while
+triggering an actual GUI eject in the file manager, to see exactly what
+it calls. Finding: a single `Drive.Eject()` call (`org.freedesktop.
+UDisks2.Drive.Eject`, empty options, going through a polkit
+`org.freedesktop.udisks2.eject-media` check as the logged-in user) — not
+`Filesystem.Unmount`, not `Drive.PowerOff`. No separate `Unmount` call
+appears anywhere in the ~97k-line capture — `Eject()` handles unmounting
+internally. The resulting `PropertiesChanged` signal on the Drive object
+sets `MediaAvailable=False`/`Size=0` — a SCSI/media-layer "media is
+gone" signal (this is what gets the iPod out of "connected" mode) —
+distinct from and unrelated to USB port power state, which is exactly
+why it doesn't stop charging: `Eject()` and `PowerOff()` operate at two
+different layers (media-removal vs. USB-port-power), and the earlier fix
+conflated "not doing PowerOff" with "doing the right thing" without
+confirming what `Eject()` specifically does.
+
+**Fix**: `eject_device()` now calls `udisksctl eject -b <drive>`
+(`Drive.Eject()`) instead of `udisksctl unmount`. Re-added
+`_PARENT_DRIVE_RE`/`re` import (removed in the previous fix, needed
+again since `eject` operates on the whole drive, not a partition, same
+as `power-off` did). Tests updated to match
+(`test_eject_device_calls_udisksctl_eject_on_parent_drive`,
+`test_eject_device_raises_on_eject_failure`).
+
+**Status**: fixed, this time grounded in an actual observed trace of
+the real behavior being replicated rather than a plausible-sounding
+theory. Not yet re-confirmed live — should be checked on the next real
+eject that it both leaves "connected" mode AND keeps charging.

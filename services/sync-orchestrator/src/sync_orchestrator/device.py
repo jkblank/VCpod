@@ -8,6 +8,7 @@ connection and mounting it is M9's job ("automation"), not this one.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -16,6 +17,13 @@ from iopenpod.device.info import DeviceInfo, enrich
 
 _MOUNT_FSTYPES = ("vfat", "hfsplus")
 _MOUNTS_PATH = "/proc/mounts"
+
+# Matches a whole-disk device path off a partition path: /dev/sdc2 ->
+# /dev/sdc, /dev/nvme0n1p2 -> /dev/nvme0n1 (iPods are always plain USB
+# mass storage, so only the sdX form is ever hit live, but nvme is
+# handled too rather than assuming one shape). Needed by eject_device —
+# `udisksctl eject` operates on the whole drive, not a partition.
+_PARENT_DRIVE_RE = re.compile(r"^(/dev/(?:[a-z]+|nvme\d+n\d+))p?\d+$")
 
 # /proc/mounts escapes space/tab/newline/backslash in paths with octal
 # codes — confirmed live these appear in real mount point names (a real
@@ -209,16 +217,21 @@ class EjectError(Exception):
 
 
 def eject_device(device_info: DeviceInfo) -> None:
-    """Unmounts the device's filesystem — the same thing a desktop file
-    manager's own eject button does for a plain USB mass-storage device
-    like this. Deliberately does NOT also call `udisksctl power-off`:
-    an earlier version of this did, on the theory that a plain unmount
-    left the iPod stuck showing "connected to computer" — but confirmed
-    live, `power-off` actually deauthorizes/powers down the USB port
-    electrically, which stops the device from charging at all. A file
-    manager's eject leaves it electrically connected (still charging)
-    despite being unmounted, which is the behavior we actually want here
-    too — matching that, not being more thorough than necessary."""
+    """Ejects the drive via `udisksctl eject` (UDisks2's `Drive.Eject()`),
+    the exact call a desktop file manager's own eject button makes —
+    confirmed live by eavesdropping the real D-Bus traffic with `busctl
+    monitor org.freedesktop.UDisks2` while triggering a GUI eject: it's a
+    single `Drive.Eject()` call, nothing else (no separate `Unmount`, no
+    `PowerOff`). The resulting `PropertiesChanged` signal sets the
+    drive's `MediaAvailable=False`/`Size=0` — a SCSI/media-layer "the
+    media is gone" signal, which is what gets the iPod out of "connected
+    to computer" mode — without touching the USB port's power state at
+    all, unlike `Drive.PowerOff()` (an earlier, wrong attempt at this:
+    deauthorizes/powers down the port electrically, which stopped the
+    device charging). `Eject()` handles unmounting any mounted
+    filesystems on the drive internally — no separate `udisksctl
+    unmount` call needed first (also confirmed live: the real capture
+    shows no Unmount call at all, only Eject)."""
     block_device = None
     for candidate_device, mount_point, _fstype in iter_candidate_mounts():
         if mount_point == device_info.path:
@@ -227,8 +240,11 @@ def eject_device(device_info: DeviceInfo) -> None:
     if block_device is None:
         raise EjectError(f"device no longer mounted at {device_info.path!r}; can't eject")
 
-    unmount = subprocess.run(
-        ["udisksctl", "unmount", "-b", block_device], capture_output=True, text=True
-    )
-    if unmount.returncode != 0:
-        raise EjectError(f"udisksctl unmount failed: {unmount.stdout}{unmount.stderr}")
+    match = _PARENT_DRIVE_RE.match(block_device)
+    if not match:
+        raise EjectError(f"could not determine parent drive for {block_device!r}")
+    drive = match.group(1)
+
+    eject = subprocess.run(["udisksctl", "eject", "-b", drive], capture_output=True, text=True)
+    if eject.returncode != 0:
+        raise EjectError(f"udisksctl eject failed: {eject.stdout}{eject.stderr}")
