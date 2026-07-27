@@ -52,6 +52,7 @@ from iopenpod.sync.mapping import MappingManager
 from sync_orchestrator.playstate import resolve_played_states
 from sync_orchestrator.podcast_removal import build_podcast_removal_items
 from sync_orchestrator.selection import (
+    build_media_folders,
     build_staging_dir,
     resolve_audiobooks_folder,
     resolve_selected_files,
@@ -344,6 +345,7 @@ def plan_sync(
         *audiobooks_folders,
         *extra_pc_folders,
     )
+    media_folders = build_media_folders(pc_folders)
     for folder in pc_folders:
         if not Path(folder).is_dir():
             raise SyncError(f"pc folder not found: {folder}")
@@ -424,7 +426,7 @@ def plan_sync(
         EngineRequest(
             operation=EngineOperation.PLAN,
             ipod_path=ipod_path,
-            pc_folders=pc_folders,
+            pc_folders=media_folders,
             ipod_tracks=tuple(before_tracks),
             existing_playlists=tuple(before_playlists),
             options=options,

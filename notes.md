@@ -1770,3 +1770,108 @@ whenever the directory exists, skipped silently if it doesn't (a
 profile with no audiobooks imported yet shouldn't need any special
 config or throw an error). `--pc-folder library/audiobooks` still works
 as a manual override/escape hatch but is no longer necessary.
+
+**2026-07-27 (later same day) — three real bugs found from live use, all
+fixed:**
+
+1. **Audiobook track title showed as "merged" on-device.** Root cause:
+   `merge.py`'s output was never given a title tag, and its staging
+   filename literally is `merged.m4b` — beets-audible's own track-title
+   assignment copies the source file's existing tag/filename-derived
+   title through unchanged whenever the import isn't a confident,
+   one-file-per-Audible-chapter match (which a single merged file with
+   embedded chapters never is), rather than overriding it from the
+   matched book's real title. Fixed by seeding a real title via a global
+   `title=` line in the FFMETADATA file `merge_parts_to_m4b` already
+   builds for chapters (`derive_title_from_folder_name`: "Author -
+   Title" -> "Title", falling back to the whole folder name). Manually
+   retagged the already-synced Kafka file directly (`©nam` "merged" ->
+   "The Trial") rather than requiring a full re-import.
+2. **A finished podcast episode wasn't removed from the device.** User
+   pressed skip about a minute before the end of an hour-long episode.
+   `playstate.py`'s `resolve_played_states` previously required
+   `recent_playcount > 0` before even checking position — but a
+   click-wheel iPod's own play-count most likely only increments on a
+   *natural* completion, not skip/next, so a near-complete-but-skipped
+   episode never got marked played regardless of how far in the
+   bookmark position was. Fixed: when a known duration exists, position
+   alone (>= `PLAYED_THRESHOLD`) now decides played state, independent
+   of `recent_playcount` — `recent_playcount` is only consulted as a
+   fallback when duration is unknown. Not independently verified against
+   raw device Play Counts data (device wasn't connected at diagnosis
+   time) — worth confirming against real data next real sync.
+3. **The Kafka audiobook's cover art showed up in the iPod's Photos
+   app, not just as track artwork.** Root cause: `sync.py`'s `pc_folders`
+   were bare strings, and iopenpod's own folder-scan defaults an
+   unqualified folder to *every* media type (music/video/photo/
+   playlists — `infrastructure/media_folders.py`'s `DEFAULT_MEDIA_TYPES`),
+   not just music. beets-audible's own `write_description_file`/
+   `fetch_art` config (this project's default) writes a real loose
+   `cover.jpg` alongside every imported book — which the same PLAN
+   operation's photo scan (`sync/photos.py`'s `scan_pc_photos`, driven by
+   `MEDIA_TYPE_PHOTO`) picked up and synced as an actual device photo,
+   completely independent of the (correct, unaffected) per-track
+   artwork-embedding path (`art_extractor.extract_art_with_folder`).
+   Fixed by wrapping every folder in `MediaFolderEntry(...,
+   media_types=(MEDIA_TYPE_MUSIC,))` before handing them to
+   `EngineRequest` — this project has no photo-sync feature at all, so
+   every folder we build should always have been music-only. The
+   already-synced stray photo isn't cleaned up by this code change
+   alone; expect it to show up as a proposed removal on the next real
+   `--execute` sync (PC-side photo scan will now find zero photos across
+   every folder) — gated behind the same `--allow-removals` flag as any
+   other removal, or delete it manually on-device if it doesn't.
+
+**2026-07-27 (same day, real incident) — the photo fix above deleted
+every playlist from a real device.** `music-stack-auto-sync.service`
+fired twice over lunch (13:39 and 14:09, `state/auto-sync.log`). Run 1
+synced the Kafka audiobook + its stray photo for real (before the fix
+above landed). Run 2's plan showed `playlists_to_remove=11` and the
+execute log confirmed all 11 were actually removed
+(`[assemble_commit] 11/11 — Removed playlist: ...`) — plus the
+`WARNING:iopenpod.sync.audio_fingerprint:Unsupported format for
+fingerprint storage: .m4b` the user separately flagged (benign: only
+means .m4b files skip the cached-fingerprint-tag optimization, falls
+back to normal path/tag identify — confirmed the same log shows the
+audiobook track correctly identified regardless, not a contributing
+cause here).
+
+Root cause of the playlist wipe: the photo fix above restricted
+**every** pc_folder — including `library_root/playlists/{profile}` —
+to `media_types=(MEDIA_TYPE_MUSIC,)`, dropping `MEDIA_TYPE_PLAYLISTS`.
+iopenpod's PC-side scan went blind to every `.m3u8` in that folder, and
+its removal planning treats anything previously synced but no longer
+"seen" as removed from the PC — the exact `allowed_paths` mechanism
+`selection.py`'s own module docstring already warned about, just
+triggered a different way. `auto-sync` always runs with
+`--allow-removals` (`cli.py`'s `_cmd_auto_sync`), so this went through
+with zero human review.
+
+Real damage was limited: `to_add=0 to_remove=0` for tracks (only
+playlists were affected), and every `.m3u8` file was confirmed still
+intact under `library/playlists/john/` — so no source data was lost,
+just the on-device playlist objects. Fixed by extracting a
+`build_media_folders()` helper (`selection.py`) that scopes to
+`(MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLISTS)`, with a regression test
+asserting both types survive. The next real sync should re-add all 11
+playlists automatically (their source `.m3u8` files never changed) —
+no snapshot restore needed, just re-run once this fix is in place.
+**Lesson**: any future narrowing of `pc_folders`/media types needs to
+be checked against every folder actually being passed in, not just the
+one that motivated the change.
+
+**2026-07-27 (same day) — playlist recovery confirmed, but the log
+looked alarming for an unrelated reason.** The next auto-sync (14:29)
+correctly re-added all 11 playlists with zero track changes
+(`to_add=0 to_remove=0`, `playlists_to_add=11`), exactly as predicted —
+the fix above worked. But `cli.py`'s `_print_plan` had its own real,
+separate bug: `p.get('title') or p.get('name') or p` was checking the
+wrong case — real iopenpod playlist dicts key the name as `'Title'`
+(capitalized), so both `.get()` calls missed and it fell through to
+printing the **entire raw dict** per playlist, including every track's
+`source_path`/`db_track_id` in its `items` list. For an 80-track
+playlist that's a genuine wall of unreadable text in the log — enough
+that a totally clean, successful sync looked like something had gone
+wrong. Fixed to check `'Title'` first, with the old checks kept as
+fallbacks; regression test added asserting a big `items` list never
+ends up in the printed output.

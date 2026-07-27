@@ -4,6 +4,7 @@ import argparse
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -281,6 +282,57 @@ def test_cmd_auto_sync_fails_immediately_on_ambiguous_match(monkeypatch, tmp_pat
 
     assert result == 1
     assert run_sync_calls == []
+
+
+def _fake_plan(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        to_add=[],
+        to_remove=[],
+        to_update_metadata=[],
+        to_update_file=[],
+        to_update_artwork=[],
+        duplicates={},
+        playlists_to_add=[],
+        playlists_to_edit=[],
+        playlists_to_remove=[],
+        storage=SimpleNamespace(format=lambda: "0 B"),
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_print_plan_playlist_add_prints_title_not_raw_dict(capsys):
+    # Real iopenpod playlist dicts key the name as 'Title' (capitalized)
+    # and carry a huge 'items' list (every track in the playlist) —
+    # a real incident: p.get('title') (lowercase) missed that key
+    # entirely and fell through to printing the whole dict, flooding
+    # auto-sync.log with a wall of every track's source_path/db_track_id
+    # per playlist and making an otherwise-clean sync look broken. See
+    # notes.md.
+    playlist = {
+        "Title": "ALT CTRL",
+        "playlist_id": 123,
+        "items": [{"source_path": f"/library/music/track{i}.m4a"} for i in range(80)],
+    }
+    plan = _fake_plan(playlists_to_add=[playlist])
+
+    cli_module._print_plan(plan)
+
+    out = capsys.readouterr().out
+    assert "+ playlist: ALT CTRL" in out
+    assert "source_path" not in out
+    assert "playlist_id" not in out
+
+
+def test_print_plan_playlist_edit_prints_title_not_raw_dict(capsys):
+    playlist = {"Title": "Chill", "playlist_id": 456, "items": []}
+    plan = _fake_plan(playlists_to_edit=[playlist])
+
+    cli_module._print_plan(plan)
+
+    out = capsys.readouterr().out
+    assert "~ playlist: Chill" in out
+    assert "playlist_id" not in out
 
 
 def test_cmd_auto_sync_fails_after_wait_seconds_exhausted_with_no_match(monkeypatch, tmp_path):

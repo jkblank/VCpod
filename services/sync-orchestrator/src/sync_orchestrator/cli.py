@@ -67,9 +67,9 @@ def _print_plan(plan) -> None:
         f"playlists_to_remove={len(plan.playlists_to_remove)}"
     )
     for p in plan.playlists_to_add:
-        print(f"    + playlist: {p.get('title') or p.get('name') or p}")
+        print(f"    + playlist: {p.get('Title') or p.get('title') or p.get('name') or p}")
     for p in plan.playlists_to_edit:
-        print(f"    ~ playlist: {p.get('title') or p.get('name') or p}")
+        print(f"    ~ playlist: {p.get('Title') or p.get('title') or p.get('name') or p}")
     print(f"  storage: {plan.storage.format()}")
     if plan.to_remove:
         print("  tracks proposed for REMOVAL:")

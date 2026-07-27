@@ -23,6 +23,11 @@ import shutil
 from pathlib import Path
 
 from common.models import AudiobooksConfig
+from iopenpod.infrastructure.media_folders import (
+    MEDIA_TYPE_MUSIC,
+    MEDIA_TYPE_PLAYLISTS,
+    MediaFolderEntry,
+)
 
 
 def _relative_key(path: Path, library_path: Path) -> str:
@@ -94,6 +99,35 @@ def build_staging_dir(
         dest = staging_dir / src.relative_to(library_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.symlink_to(src)
+
+
+def build_media_folders(pc_folders: tuple[str, ...]) -> tuple[MediaFolderEntry, ...]:
+    """Wraps every pc_folder in a MediaFolderEntry scoped to
+    (MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLISTS) — every folder this project
+    builds is music/playlist content, never meant to feed the device's
+    separate Photo Library. A bare string pc_folder defaults to scanning
+    for every media type (music/video/photo/playlists, see iopenpod's
+    infrastructure/media_folders.py), which let beets-audible's own
+    cover.jpg sidecar (written alongside every imported audiobook) get
+    synced as a real device photo.
+
+    MUST include MEDIA_TYPE_PLAYLISTS, not just MEDIA_TYPE_MUSIC — found
+    the hard way: an earlier version of this restricted every folder
+    (including library_root/playlists/{profile}) to music-only, which
+    made the PC-side scan blind to every .m3u8 in that folder. iopenpod's
+    removal planning treats anything previously synced but no longer
+    "seen" as removed from the PC (the same mechanism this module's own
+    docstring warns about for allowed_paths) — auto-sync always runs
+    with --allow-removals (see cli.py's _cmd_auto_sync), so this
+    silently deleted all 11 playlists from a real device with no human
+    review. See notes.md.
+    """
+    return tuple(
+        MediaFolderEntry(
+            directory=folder, media_types=(MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLISTS)
+        )
+        for folder in pc_folders
+    )
 
 
 def resolve_audiobooks_folder(

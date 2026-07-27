@@ -65,14 +65,31 @@ def resolve_played_states(
 
         played_up_to = bookmark_time_ms // 1000
         duration = durations_by_path[source_path]
-        if recent_playcount <= 0:
-            # Position moved (a resume/seek) but no completed play
-            # registered this session — report progress, not "played".
-            played = False
-        elif duration > 0:
+        if duration > 0:
+            # Position-based check, independent of recent_playcount: a
+            # real report was a played-but-not-removed episode after the
+            # user pressed skip/next about a minute before the end of an
+            # hour-long episode — the likely explanation is a click-wheel
+            # iPod's own play-count only incrementing on a *natural*
+            # track completion, not on skip/next, leaving recent_playcount
+            # at 0 even with bookmark_time reflecting ~98% completion
+            # (not independently verified against raw device Play Counts
+            # data, since no device was connected at diagnosis time — but
+            # trusting position alone once past PLAYED_THRESHOLD is safe
+            # regardless: you don't reach 90%+ of a real episode's
+            # duration via an idle scrub, and even a deliberate
+            # seek-to-near-the-end is a reasonable case to treat as
+            # "done" too). See notes.md.
             played = played_up_to >= duration * PLAYED_THRESHOLD
-        else:
+        elif recent_playcount > 0:
+            # No known duration to compare position against — fall back
+            # to the device's own playcount signal.
             played = True
+        else:
+            # Position moved (a resume/seek) but no completed play
+            # registered this session, and no duration to judge position
+            # against — report progress, not "played".
+            played = False
 
         results[source_path] = (played, played_up_to)
 

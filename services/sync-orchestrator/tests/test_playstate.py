@@ -90,6 +90,23 @@ def test_track_not_a_known_episode_path_is_skipped():
     assert result == {}
 
 
+def test_near_end_position_marks_played_even_with_zero_playcount():
+    # A click-wheel iPod's own play-count only increments on a natural
+    # track completion, not on pressing skip/next — a real user pressed
+    # skip one minute before the end of an hour-long (3600s) episode,
+    # landing at 3540s (98.3%), and recent_playcount stayed 0. This must
+    # still count as played, since position alone is trusted once past
+    # PLAYED_THRESHOLD when duration is known.
+    before = {
+        "mhlt": [{"db_track_id": 1, "recent_playcount": 0, "bookmark_time": 3_540_000}]
+    }
+    mapping = _FakeMappingFile({1: "/library/podcasts/Show/ep.mp3"})
+
+    result = resolve_played_states(before, mapping, {"/library/podcasts/Show/ep.mp3": 3600})
+
+    assert result == {"/library/podcasts/Show/ep.mp3": (True, 3540)}
+
+
 def test_missing_db_track_id_is_skipped():
     before = {"mhlt": [{"recent_playcount": 1, "bookmark_time": 100_000}]}
     mapping = _FakeMappingFile({1: "/library/podcasts/Show/ep.mp3"})

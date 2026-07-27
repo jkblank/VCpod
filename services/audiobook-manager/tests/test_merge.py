@@ -9,6 +9,7 @@ import pytest
 from audiobook_manager.merge import (
     MergeError,
     build_ffmetadata,
+    derive_title_from_folder_name,
     discover_parts,
     merge_parts_to_m4b,
 )
@@ -34,16 +35,25 @@ def test_discover_parts_raises_when_empty(tmp_path: Path) -> None:
 
 def test_build_ffmetadata_chapter_boundaries() -> None:
     text = build_ffmetadata(
-        [(Path("01.mp3"), 2.5), (Path("02.mp3"), 3.0)]
+        [(Path("01.mp3"), 2.5), (Path("02.mp3"), 3.0)], title="The Trial"
     )
 
     assert text.startswith(";FFMETADATA1")
+    assert "title=The Trial" in text
     assert "START=0" in text
     assert "END=2500" in text
     assert "START=2500" in text
     assert "END=5500" in text
     assert "title=01" in text
     assert "title=02" in text
+
+
+def test_derive_title_from_folder_name_splits_author_and_title() -> None:
+    assert derive_title_from_folder_name("Franz Kafka - The Trial") == "The Trial"
+
+
+def test_derive_title_from_folder_name_falls_back_to_whole_name() -> None:
+    assert derive_title_from_folder_name("The Trial") == "The Trial"
 
 
 def test_merge_parts_to_m4b_end_to_end(tmp_path: Path) -> None:
@@ -58,6 +68,15 @@ def test_merge_parts_to_m4b_end_to_end(tmp_path: Path) -> None:
 
     ffprobe = shutil.which("ffprobe")
     assert ffprobe
+
+    tags = subprocess.run(
+        [ffprobe, "-v", "error", "-show_entries", "format_tags=title",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(output)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert tags.stdout.strip() == "parts"
 
     chapters = subprocess.run(
         [ffprobe, "-v", "error", "-show_chapters", "-of", "csv=p=0", str(output)],

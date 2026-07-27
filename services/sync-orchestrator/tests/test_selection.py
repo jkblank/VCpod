@@ -2,11 +2,30 @@ from pathlib import Path
 
 from common.models import AudiobooksConfig
 
+from iopenpod.infrastructure.media_folders import MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLISTS
+
 from sync_orchestrator.selection import (
+    build_media_folders,
     build_staging_dir,
     resolve_audiobooks_folder,
     resolve_selected_files,
 )
+
+
+def test_build_media_folders_includes_music_and_playlists_not_photo() -> None:
+    # Regression test for a real incident: an earlier version of this
+    # restricted every pc_folder to music-only, which made iopenpod's
+    # PC-side scan blind to every .m3u8 under library_root/playlists/
+    # {profile} and silently deleted all 11 playlists from a real
+    # device (auto-sync always runs with --allow-removals). Every
+    # folder we build must keep MEDIA_TYPE_PLAYLISTS.
+    entries = build_media_folders(("/library/music", "/library/playlists/john"))
+
+    assert len(entries) == 2
+    for entry in entries:
+        assert entry.media_types == (MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLISTS)
+    assert entries[0].directory == "/library/music"
+    assert entries[1].directory == "/library/playlists/john"
 
 
 def _make_library(tmp_path: Path) -> Path:
