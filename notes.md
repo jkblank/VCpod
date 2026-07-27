@@ -1618,3 +1618,131 @@ install (systemd unit + udev rule) for the USB-touching piece. For
 packaging its install (currently manual README steps) into a proper
 installer — deferred until the web GUI (Phase 4) exists, since
 service-selection + install is natural GUI-setup-flow work.
+
+## M15 audiobook spike, round 2 — odmpy confirmed dead against the real account, manual extraction path found instead
+
+Revisited the M15 spike (see `music-stack-planning.md` §7a) to check
+whether anything changed since the original 2026-07-21 finding
+("`odmpy` dead, only alternative is a stale Firefox extension"). Result:
+the underlying conclusion holds, but is now precisely dated and
+empirically confirmed against a real account rather than inferred from
+old GitHub issues — and a genuinely usable manual extraction method
+turned up in the process.
+
+**`odmpy` — re-investigated, still not viable, now confirmed live:**
+- `odmpy`'s `libby` subcommand (Libby-setup-code auth, distinct from the
+  dead `.odm`/legacy flow) looked promising on paper — non-interactive
+  flags (`--select`/`--selectid`/`--exportloans`), built-in audiobook
+  chapter merging, persistent settings-folder auth. But its last real
+  commit is **September 2023** — it was never updated for OverDrive's
+  subsequent changes.
+- OverDrive killed `.odm` manifests entirely on **January 31, 2025**
+  (now precisely dated, vs. the original spike's approximate "Nov
+  2024/Jan 2025"). Real user reports (odmpy issue #81) show the
+  `libby` subcommand also breaks independently (SSL certificate
+  mismatch against `sentry-read.svc.overdrive.com`'s `chip/sync`
+  endpoint), unresolved, no maintainer activity since the 2023 stall.
+- **Confirmed live against the real account** (not just inferred from
+  issue reports): read `odmpy`'s actual source — its `clone_by_code()`
+  expects a code from an *already-authenticated* Libby session, matching
+  the phone's "Copy to Another Device" dialog. But that dialog's own
+  text says the *opposite* ("if the device where you're setting up
+  Libby is displaying a code, enter it here") — i.e. the current Libby
+  app expects the **new device to display a code**, not the phone. The
+  *only* option that actually generates a code on the phone is Sonos
+  speaker linking — tried that code against `odmpy` twice (once with a
+  delay, past its ~60s TTL; once via a purpose-built script piping the
+  code in within ~3 seconds of generation, ruling out timing) — both
+  attempts got `Error: Could not log in with code.` The Sonos-scoped
+  code is genuinely rejected by odmpy's generic `chip/clone/code`
+  request, not just expired. **Libby's current app no longer exposes a
+  generic "new device" code-generation flow at all** — only specific
+  named partner integrations — which is a more fundamental
+  incompatibility than "the sync endpoint throws sometimes."
+- `bookbonobo/libby-download-extension` (Firefox extension, the other
+  option from the original spike): also stale — last commit July 2024,
+  a dependency bump only, no real feature work since.
+- `ping/libby-calibre-plugin` (same author as odmpy, newly checked):
+  not usable regardless of maintenance status — imports audiobook loans
+  as *empty placeholder records*, no actual audio, and is Calibre-GUI-only,
+  no CLI.
+
+**Manual extraction method found, real and current** (via
+`yackorder.org`'s guide, cross-checked against odmpy's own
+"MP3 part files still gettable, just no metadata" finding): Libby's
+*web* player (libbyapp.com, not the Android/iOS app) streams each
+audiobook as plain per-chapter/segment MP3 files over HTTP — visible
+and directly downloadable via browser DevTools' Network tab (filter
+"Media", play the book, copy each segment's Request URL, open in a new
+tab to download). No root, no reverse-engineering, no paid tool needed
+— just a browser and a bit of manual repetition per book (more
+segments for longer books). This only works from a **desktop/laptop
+Chromium-based browser** — DevTools' Network tab isn't available the
+same way in mobile browsers. The Android Libby app's own local offline
+cache (`Android/data/com.overdrive.mobile.android.libby/files/`) is
+genuinely encrypted and not usable this way.
+
+**Status**: `odmpy` and the Firefox extension both ruled out
+definitively (not just "probably stale"). Manual drop-in via
+desktop-browser DevTools extraction is a real, currently-working
+acquisition path — scoping the rest of the manual-drop-in workflow
+(organize → `beets-audible` tag/chapter → `sync-orchestrator`) next.
+The DevTools method being genuinely scriptable (each segment is just a
+plain HTTP URL captured from real network traffic, not a defeated DRM
+scheme) also means the earlier-proposed Playwright automation path
+looks more tractable than initially assumed, if full automation is
+wanted later.
+
+**2026-07-27 — merge/tag pipeline shipped as `services/audiobook-manager/`.**
+Built the rest of the manual drop-in workflow from the finding above:
+`ffmpeg` concat-demuxer + FFMETADATA chapters to merge raw MP3 parts
+into one AAC `.m4b`, then `beets` + the real `Neurrone/beets-audible`
+plugin (PyPI `beets-audible`, **not** the stale 2022 `seanap` fork) for
+Audible/Audnex metadata lookup and tagging. Shipped as its own
+standalone workspace member rather than a `library-manager` subcommand
+— `beets` 2.12 pulls in `numpy`/`scipy`/`numba`/`llvmlite` as
+unconditional base dependencies (confirmed via `uv sync`, real weight,
+no version conflicts against this workspace's existing lock) plus live
+network calls, which would have made `library-manager` (deliberately
+kept minimal/offline) much heavier for every user, not just audiobook
+users. Docker Compose entry gated behind its own `audiobooks` profile
+for the same reason.
+
+Two real things worth remembering for next time this area is touched:
+- `beet import -q`'s success/failure isn't observable by parsing stdout
+  (not a stable contract) — detected instead by diffing
+  `beets.library.Library`'s item set before/after the subprocess call,
+  which needs zero network to query directly since beets' db layer is
+  plain sqlite.
+- Live-verified this session that mutagen tag writes and beets' own
+  `scrub` plugin's `MP4.delete()` both preserve the MP4 `chpl` chapter
+  atom — safe to merge-then-tag in that exact order with no risk of the
+  tagging step silently stripping chapters back out.
+
+`sync-orchestrator`'s existing `--pc-folder` flag already threads
+`library/audiobooks` into a real sync plan with zero new orchestrator
+code (confirmed live) — passed manually per sync for now, not wired in
+as a persistent default yet.
+
+**Live end-to-end run against the real Franz Kafka - The Trial data**
+(12 real MP3 parts fetched earlier from the home server): merge step
+produced a real 263MB/8.83-hour AAC `.m4b` with 12 correctly-bounded
+chapters. `beet import -q` (the actual mode `import-audiobook`/`tag`
+use) correctly **skipped** it — Audible has 10 different real editions
+of this public-domain classic (Stream Readers, Recorded Books, Naxos,
+Tantor, Penguin Classics, etc.), all scoring the same 25%/0.75-distance
+match against a bare folder-name query, too ambiguous for quiet mode to
+pick automatically. This is expected, correct behavior, not a bug — the
+"Known gap" fallback documented in `services/audiobook-manager/README.md`
+exists precisely for this case. Ran the same import interactively
+instead (`beet import`, no `-q`) and manually picked candidate #1
+(Stream Readers edition, narrated by Daniel Brooks) — it completed for
+real: file moved to `library/audiobooks/Franz Kafka/The Trial/01 -
+merged.m4b` alongside real `cover.jpg`/`desc.txt`/`reader.txt` sidecars,
+`stik` confirmed `[2]`, all 12 chapters and the full 8.83-hour duration
+intact post-move, real Audible-sourced tags (author, narrator, genre,
+description) all present. Fully confirms the merge-then-tag pipeline
+and the skip/retry design both work correctly against real data; only
+the final on-device step (`--pc-folder library/audiobooks --execute`
+against the actual iPod) is still pending, deferred until the device is
+next connected.

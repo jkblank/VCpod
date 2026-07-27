@@ -1,0 +1,22 @@
+[project]
+name = "audiobook-manager"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "common",
+    "beets-audible>=1.6.0,<2",
+    "mutagen>=1.47.0",
+]
+
+[project.scripts]
+audiobook-manager = "audiobook_manager.cli:main"
+
+[tool.uv.sources]
+common = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/audiobook_manager"]

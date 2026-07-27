@@ -335,43 +335,84 @@ Phases 1–4, **the risky unknown here is acquisition, not the device
 side** — a 2026-07-21 spike (see `notes.md`) found this inverted from
 the initial assumption:
 
-- **iOpenPod already has real audiobook support**, more mature than
-  expected: a distinct `MEDIA_TYPE_AUDIOBOOK` type, `bookmark_time` +
-  `remember_position` wired end-to-end (auto-enabled for
-  audiobooks/podcasts, same as this project's existing podcast sync),
-  automatic `.m4b`/`stik`-atom classification during library scan, and
-  an `album_chapters.py` module purpose-built for merging multi-file
-  audiobooks into one chaptered track.
-- **The acquisition tooling this would wrap is not viable today.**
-  `odmpy` (the natural equivalent to `gamdl`/`zotify`/`yt-dlp` for this
-  source) is dead against OverDrive's current backend — OverDrive killed
-  the `.odm`/legacy API it depends on (Nov 2024 / Jan 2025 sunset), and
-  its repo has an unanswered "is this still active?" issue from mid-2024.
-  The only living alternative, `bookbonobo/libby-download-extension`, is
-  a Firefox-only browser extension (UI-scraping, not an API client) with
-  no CLI/headless story — a poor fit for a service meant to run
-  unattended in Docker like the existing fetchers.
-- **Metadata tagging has a real answer**: `beets-audible` (an existing,
-  real beets plugin — author→artist, narrator, series via
-  Audible/Audnex) is directly reusable by `library-manager` rather than
-  needing bespoke non-music handling.
+- **iOpenPod already has real audiobook support, simpler than the
+  original spike described** (corrected 2026-07-27 against the actual
+  source, not a paraphrase): a plain file already gets classified as an
+  audiobook during iOpenPod's normal headless library scan — the exact
+  rule (`iopenpod/sync/pc_library.py`) is `.m4b`/`.aa`/`.aax` extension
+  **or** an MP4 `stik` atom of `2` — and `remember_position` (resume
+  playback) is then automatically derived from that classification
+  (`_track_conversion.py`), no extra wiring needed. **`album_chapters.py`
+  is not part of this pipeline** — it's a GUI-only "convert an existing
+  *music* album into one chaptered track" utility, invoked interactively
+  from iOpenPod's own desktop app, and it explicitly sets
+  `is_audiobook = False` on its output. It's irrelevant to acquiring
+  audiobooks from an external source; the merge-into-one-chaptered-file
+  step we need is a plain `ffmpeg` concat + `FFMETADATA` chapters job we
+  build ourselves (well-documented, standard technique), not something
+  to reuse from iOpenPod.
+- **The acquisition tooling this would wrap is not viable today —
+  confirmed via live testing against a real account, round 2
+  (2026-07-27), not just inferred from old issues.** `odmpy` (the
+  natural equivalent to `gamdl`/`zotify`/`yt-dlp` for this source) has
+  been unmaintained since September 2023. OverDrive killed the
+  `.odm`/legacy API entirely on January 31, 2025. Its separate `libby`
+  setup-code auth flow (which looked like it might sidestep the dead
+  `.odm` path) was tested directly: the current Libby app no longer
+  exposes a generic "new device" code-generation option at all — only
+  named partner integrations (Sonos) — and that code is rejected by
+  `odmpy`'s generic auth request (confirmed twice, including a
+  purpose-built script to rule out the code's ~60s TTL as the cause).
+  `bookbonobo/libby-download-extension` (Firefox extension) is also
+  stale — last commit July 2024, dependency bump only. See `notes.md`
+  for the full round-2 writeup.
+- **A real manual acquisition method exists, found in round 2**:
+  Libby's *web* player (libbyapp.com, desktop Chromium browser only)
+  streams each audiobook as plain per-chapter MP3 segments over HTTP,
+  visible and downloadable via browser DevTools' Network tab — no root,
+  no DRM defeat, no paid tool. More manual repetition for longer books,
+  but genuinely current and working. Because each segment is a plain
+  captured HTTP URL (not a broken encryption scheme), this also means a
+  *scripted-browser* (Playwright) automation path looks more tractable
+  than the original spike assumed, if full automation is wanted later.
+- **Metadata tagging has a real answer**: `beets-audible` (the real,
+  actively-maintained `Neurrone/beets-audible` on PyPI — author→artist,
+  narrator, series, cover art via Audible/Audnex) — implemented as its
+  own service, **not** folded into `library-manager` (see below).
 
-**Spike task (blocks any `fetcher-audiobooks` scoping)**: determine
-whether the Libby web extension's approach (or a fresh reverse-engineering
-of Libby's current web sync protocol) can be driven headlessly (e.g. a
-scripted browser) reliably enough for unattended fetches. If not, the
-realistic scope shrinks to a manual step — export via the browser
-extension, drop into `library/audiobooks/{Author}/{Title}/`, let
-`library-manager` (via `beets-audible`) and `sync-orchestrator` handle
-the rest — still worthwhile given how ready the iPod side already is,
-just not a fully automated fetcher like the music sources.
+**Decision after round 2, now shipped (2026-07-27)**: skip the
+`fetcher-audiobooks`-as-automated-service scope — built the **manual
+drop-in workflow** instead, as `services/audiobook-manager/`. Acquisition
+stays manual (DevTools method above); this new service handles
+everything after that: merging the raw MP3 parts into one chaptered
+`.m4b` via `ffmpeg` (concat demuxer + FFMETADATA chapters, AAC-encoded),
+then `beets-audible` tagging via `beet import -q` against a project-
+managed beets config/db (isolated from any real user beets install).
+It's its own standalone workspace member rather than a `library-manager`
+subcommand — `beets` 2.12 pulls in a real, unconditional dependency
+tree (`numpy`/`scipy`/`numba`/`llvmlite`) plus live Audnex/Audible
+network calls, a `podcast-manager`-shaped operational profile that
+would have made `library-manager` (deliberately kept minimal/offline)
+much heavier for every user, not just audiobook users. `beet import -q`
+skips (doesn't force-tag) any book it can't confidently match — the CLI
+surfaces this loudly (exit 1, merged file's path, exact retry command),
+never silently swallowed. See `services/audiobook-manager/README.md`.
 
-**Shape once spiked**: `library/audiobooks/` as a sibling to
-`library/music/`/`library/podcasts/`; no `.m3u8` needed (iOpenPod's
-Audiobooks section is inherently one-item-per-book with its own resume
-state, not a playlist construct); loans map to `list_loans`/`fetch_loan`
-rather than `list_playlists`/`fetch_playlist` since they're a
-"currently checked out" set with due dates, not user-curated playlists.
+**Shape, as actually implemented**: `library/audiobooks/{Author}/{Album}/
+{Title}.m4b` plus `cover.png`/`desc.txt`/`reader.txt` sidecars — one
+merged, chaptered file per book, but nested one level deeper than the
+original flat `{Author}/{Title}.m4b` assumption (beets-audible's own
+default `paths:` layout, accepted as-is rather than overridden — its
+docs warn against changing path format after import, and it costs
+nothing here since iOpenPod's media-folder scanner recurses by default
+and filters strictly by audio extension, so the sidecar files and extra
+folder depth are both transparently ignored/handled). No `.m3u8` needed.
+`library/audiobooks/` syncs today via `sync-orchestrator`'s existing
+`--pc-folder` flag — confirmed live, **zero new sync-orchestrator code**
+was needed. It's a manual per-sync flag, not a persistent default yet;
+making it permanent (editing `sync.py`'s own `pc_folders` tuple) is a
+natural small follow-up once proven on a real device, deliberately left
+out of this pass.
 
 ---
 
@@ -392,10 +433,11 @@ rather than `list_playlists`/`fetch_playlist` since they're a
    worth a manual-review escape hatch.
 6. **Legal/ToS posture** — gamdl and similar tools operate in a gray area;
    this is a personal-use tool, not something to expose or distribute.
-7. **Libby/OverDrive acquisition tooling viability** — the natural tool to
-   wrap (`odmpy`) is dead against OverDrive's current API; the only living
-   alternative is a browser extension with no headless story. Spike this
-   before scoping Phase 5 (audiobooks) work — see 7a.
+7. **Libby/OverDrive acquisition tooling viability** — resolved (see 7a):
+   the natural tool to wrap (`odmpy`) is confirmed dead against Libby's
+   current app, and no automated alternative exists. Acquisition stays
+   manual; `services/audiobook-manager/` handles everything downstream
+   of that (merge, tag, sync).
 
 ---
 

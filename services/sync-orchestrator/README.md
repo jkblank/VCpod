@@ -48,7 +48,12 @@ by `fetcher-apple`/`podcast-manager`, not a new convention.
 
 `--pc-folder PATH` (repeatable) adds extra folders to mirror onto the
 device beyond `library_root/music` and the profile's playlists folder —
-useful for an ad hoc folder that isn't part of the managed config.
+useful for an ad hoc folder that isn't part of the managed config. This
+is how audiobooks get synced today (`--pc-folder library/audiobooks`,
+live-verified) — see
+[`services/audiobook-manager/README.md`](../audiobook-manager/README.md).
+Not wired in as a persistent default yet, so it needs to be passed on
+every sync that should include audiobooks.
 
 The device is matched against the profile's `device.match_by`/
 `match_value` (`volume_label` or `serial`) — see

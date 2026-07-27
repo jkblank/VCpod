@@ -9,7 +9,10 @@
 # and podcast-manager have no profile, so they're always included —
 # every profile needs dedup/tagging, and podcasts.* is a required part
 # of the profile schema today, not optional per-household like a music
-# source is.
+# source is. audiobook-manager has its own "audiobooks" profile instead
+# (`docker compose --profile audiobooks up`) — it's a manual, per-book CLI
+# tool, not something every profile needs by default, and it pulls in a
+# genuinely heavier dependency tree (beets).
 services:
   fetcher-apple:
     profiles: ["apple"]
@@ -61,6 +64,22 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
+      - ./library:/data/library
+      - ./state:/data/state
+
+  # M15: manual audiobook import (merge MP3 parts -> tagged .m4b via
+  # beets-audible). Gated behind its own profile, unlike library-manager/
+  # podcast-manager above — it pulls in beets' full dependency tree
+  # (numpy/scipy/numba/llvmlite, unconditional base deps of beets 2.12,
+  # confirmed real weight not just an extras-gated nicety) and does live
+  # Audnex/Audible network lookups, so most households shouldn't have to
+  # build it. No config/ mount: fully flag-driven CLI, not profile-driven.
+  audiobook-manager:
+    profiles: ["audiobooks"]
+    build:
+      context: .
+      dockerfile: services/audiobook-manager/Dockerfile
+    volumes:
       - ./library:/data/library
       - ./state:/data/state
 

@@ -47,7 +47,7 @@ service) — see "Running it" below.
 | M9 | Automation: scheduled fetch, udev-triggered device sync, multi-profile matching | Done, live-verified — [`services/fetch-scheduler/README.md`](services/fetch-scheduler/README.md) (fetch scheduling, plus automatic library dedup/cleanup and device backup retention) and [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md) (`auto-sync` + udev/systemd) |
 | M10 | Hardening: secrets review, auth-expiry/API-failure alerting, docs | Secrets handling reviewed (consistent gitignore convention across every credential type); alerting not built yet (`fetch-scheduler`'s per-tick errors are logged, nothing pages anyone); docs — this pass |
 | M11–M14 | Web GUI (backend, profiles/playlists, podcasts/sources, sync visibility) | Not started |
-| M15 | Audiobooks via Libby/OverDrive | Not started — spike needed first, see `notes.md` (the realistic acquisition tooling is currently dead upstream) |
+| M15 | Audiobooks via Libby/OverDrive | Acquisition is manual (Libby's automated auth paths are confirmed dead upstream, see `notes.md`) — but the merge/tag/sync pipeline from manually-downloaded MP3 parts to a real device is done, see [`services/audiobook-manager/README.md`](services/audiobook-manager/README.md) |
 
 ## Setup
 
@@ -116,6 +116,18 @@ systemd service. Requires a one-time manual install (`sudo`, touches
 system udev/systemd config — deliberately not automated):
 [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#automation-m9-auto-sync--udev).
 
+**Audiobooks** — manual, one-off per book (no automated acquisition
+exists, see M15 above): merge a folder of MP3 parts into one tagged,
+chaptered `.m4b`, then sync it like anything else via `--pc-folder`:
+
+```bash
+uv run audiobook-manager import-audiobook \
+    --parts-dir "path/to/Author - Title" \
+    --library-root library/audiobooks --state-root state
+```
+
+Full details: [`services/audiobook-manager/README.md`](services/audiobook-manager/README.md).
+
 ---
 
 Each of the above composes smaller, independently-usable services — see
@@ -134,6 +146,7 @@ Pocket Casts, running dedup on demand, plan-only device syncs, etc.):
 | [`music-stack-cli`](services/music-stack-cli/README.md) | The unified `music-stack sync` command |
 | [`fetch-scheduler`](services/fetch-scheduler/README.md) | Cron-scheduled fetching + automatic library/backup maintenance |
 | [`sync-orchestrator`](services/sync-orchestrator/README.md) | Device sync engine (bare metal) + `auto-sync`/udev automation |
+| [`audiobook-manager`](services/audiobook-manager/README.md) | Merges manually-acquired MP3 parts into a tagged, chaptered `.m4b` (ffmpeg + beets-audible) |
 
 Device sync (`sync-orchestrator`) needs the iPod connected/mounted and
 must run on bare metal, not through Docker (see Architecture below) —
@@ -184,6 +197,18 @@ docker compose --profile apple --profile spotify up   # multiple sources
 reachable before `fetcher-ytmusic` can actually download anything (not
 just an optional nicety — every download fails without it). See
 `services/fetcher-ytmusic/README.md` for setup.
+
+`audiobook-manager` is also gated behind its own profile, but for a
+different reason than the fetchers — it's a manual, one-book-at-a-time
+CLI tool (not tied to any `global.yaml` flag), and it pulls in beets'
+real dependency weight (`numpy`/`scipy`/`numba`/`llvmlite`), so it isn't
+built by default:
+
+```bash
+docker compose --profile audiobooks run --rm audiobook-manager \
+    import-audiobook --parts-dir /data/library/... \
+    --library-root /data/library/audiobooks --state-root /data/state
+```
 
 Or set `COMPOSE_PROFILES` in `.env` once instead of passing `--profile`
 every time (see `.env.example`). Compose doesn't read `global.yaml`
