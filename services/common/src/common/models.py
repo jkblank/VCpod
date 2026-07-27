@@ -122,6 +122,37 @@ class PlaylistEntry(StrictModel):
     fetch_schedule: CronSchedule | None = None
 
 
+def _flatten_nested_selection_entries(value: object) -> object:
+    """Shared by ExternalLibraryConfig.selections and
+    AudiobooksConfig.selections — flattens a mapping-shorthand entry
+    (e.g. "Artist": ["Album1", "Album2"]) into plain "Artist/Album1",
+    "Artist/Album2" strings, so everything downstream (sync_orchestrator's
+    selection-resolution code) only ever deals with plain path-fragment
+    strings, regardless of which config section they came from."""
+    if not isinstance(value, list):
+        return value
+    flattened: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            flattened.append(item)
+        elif isinstance(item, dict):
+            for parent, children in item.items():
+                if not isinstance(parent, str) or not isinstance(children, list):
+                    raise ValueError(
+                        f"invalid selections entry: {item!r} — expected "
+                        "'Name': [\"Child\", ...]"
+                    )
+                for child in children:
+                    if not isinstance(child, str):
+                        raise ValueError(
+                            f"invalid selections entry under {parent!r}: {child!r}"
+                        )
+                    flattened.append(f"{parent}/{child}")
+        else:
+            raise ValueError(f"invalid selections entry: {item!r}")
+    return flattened
+
+
 class ExternalLibraryConfig(StrictModel):
     path: str
     # "include" (default): only files matching a `selections` entry are
@@ -151,28 +182,32 @@ class ExternalLibraryConfig(StrictModel):
     @field_validator("selections", mode="before")
     @classmethod
     def _flatten_nested_selections(cls, value: object) -> object:
-        if not isinstance(value, list):
-            return value
-        flattened: list[str] = []
-        for item in value:
-            if isinstance(item, str):
-                flattened.append(item)
-            elif isinstance(item, dict):
-                for artist, children in item.items():
-                    if not isinstance(artist, str) or not isinstance(children, list):
-                        raise ValueError(
-                            f"invalid selections entry: {item!r} — expected "
-                            "'Artist': [\"Album\", ...]"
-                        )
-                    for child in children:
-                        if not isinstance(child, str):
-                            raise ValueError(
-                                f"invalid selections entry under {artist!r}: {child!r}"
-                            )
-                        flattened.append(f"{artist}/{child}")
-            else:
-                raise ValueError(f"invalid selections entry: {item!r}")
-        return flattened
+        return _flatten_nested_selection_entries(value)
+
+
+class AudiobooksConfig(StrictModel):
+    # "include" (default): only books matching a `selections` entry are
+    # synced — a whitelist. Empty `selections` + include = sync every
+    # audiobook — deliberately the opposite default from
+    # ExternalLibraryConfig's "empty + include = sync nothing": most
+    # profiles don't need per-book curation, so audiobooks default to
+    # "just sync everything" (same behavior as `audiobooks` being left
+    # unset entirely). "exclude": every audiobook is synced EXCEPT those
+    # matching a `selections` entry.
+    mode: Literal["include", "exclude"] = "include"
+    # Relative path fragments under library_root/audiobooks, matched by
+    # prefix — same convention as ExternalLibraryConfig.selections.
+    # beets-audible's own layout is {Author}/{Album}/{Title}.m4b:
+    #   "Franz Kafka"             -> every book by that author
+    #   "Franz Kafka/The Trial"   -> one specific book
+    # A mapping entry (author -> list of titles) is flattened the same
+    # way as ExternalLibraryConfig.selections.
+    selections: list[str] = Field(default_factory=list)
+
+    @field_validator("selections", mode="before")
+    @classmethod
+    def _flatten_nested_selections(cls, value: object) -> object:
+        return _flatten_nested_selection_entries(value)
 
 
 class ProfilePocketCastsConfig(StrictModel):
@@ -292,5 +327,6 @@ class ProfileConfig(StrictModel):
     podcasts: ProfilePodcastsConfig
     sync: SyncSettings
     external_library: ExternalLibraryConfig | None = None
+    audiobooks: AudiobooksConfig | None = None
     fetch: FetchSettings = Field(default_factory=FetchSettings)
     backups: ProfileBackupRetention | None = None

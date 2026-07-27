@@ -143,6 +143,8 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
 
     for selection in planned.unresolved_selections:
         print(f"  WARNING: external_library selection {selection!r} matched 0 files")
+    for selection in planned.unresolved_audiobook_selections:
+        print(f"  WARNING: audiobooks selection {selection!r} matched 0 files")
 
     if planned.play_states_updated:
         print(
@@ -171,6 +173,12 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
             "matched 0 files (see WARNINGs above); refusing to execute until "
             "the profile is fixed"
         )
+    if planned.unresolved_audiobook_selections:
+        return _fail(
+            f"{len(planned.unresolved_audiobook_selections)} audiobooks selection(s) "
+            "matched 0 files (see WARNINGs above); refusing to execute until "
+            "the profile is fixed"
+        )
 
     # Hard safety gate, not just a printed warning — see
     # docs/m6-ipod-headless-recommendation.md for the near-miss that
@@ -179,10 +187,11 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
     # noticing the number stopped it from executing.
     #
     # Removals aren't always a bug though — narrowing an external_library
-    # selection (see notes.md) intentionally proposes removing whatever
-    # fell out of scope. --allow-removals is the explicit, separate opt-in
-    # for that case: --execute alone still refuses on any to_remove, and
-    # --allow-removals alone does nothing without --execute.
+    # or audiobooks selection (see notes.md) intentionally proposes
+    # removing whatever fell out of scope. --allow-removals is the
+    # explicit, separate opt-in for that case: --execute alone still
+    # refuses on any to_remove, and --allow-removals alone does nothing
+    # without --execute.
     if planned.plan.to_remove and not args.allow_removals:
         return _fail(
             f"plan proposes removing {len(planned.plan.to_remove)} track(s); "

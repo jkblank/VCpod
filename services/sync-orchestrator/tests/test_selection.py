@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from sync_orchestrator.selection import build_staging_dir, resolve_selected_files
+from common.models import AudiobooksConfig
+
+from sync_orchestrator.selection import (
+    build_staging_dir,
+    resolve_audiobooks_folder,
+    resolve_selected_files,
+)
 
 
 def _make_library(tmp_path: Path) -> Path:
@@ -121,3 +127,80 @@ def test_build_staging_dir_rebuild_drops_deselected_files(tmp_path):
 
     assert not (staging / "Linkin Park" / "Meteora").exists()
     assert (staging / "Linkin Park" / "Hybrid Theory" / "01 Papercut.m4a").exists()
+
+
+def _make_audiobooks_library(tmp_path: Path) -> Path:
+    library = tmp_path / "audiobooks"
+    books = [
+        "Franz Kafka/The Trial/01 - merged.m4b",
+        "George Orwell/1984/01 - merged.m4b",
+        "George Orwell/Animal Farm/01 - merged.m4b",
+    ]
+    for rel in books:
+        path = library / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake audiobook")
+    return library
+
+
+def test_resolve_audiobooks_folder_missing_root_returns_nothing(tmp_path):
+    folders, unresolved = resolve_audiobooks_folder(
+        tmp_path / "does-not-exist", None, tmp_path / "staging"
+    )
+    assert folders == ()
+    assert unresolved == []
+
+
+def test_resolve_audiobooks_folder_none_config_includes_everything_unfiltered(tmp_path):
+    library = _make_audiobooks_library(tmp_path)
+    folders, unresolved = resolve_audiobooks_folder(library, None, tmp_path / "staging")
+    assert folders == (str(library),)
+    assert unresolved == []
+    assert not (tmp_path / "staging").exists()
+
+
+def test_resolve_audiobooks_folder_default_config_includes_everything_unfiltered(tmp_path):
+    library = _make_audiobooks_library(tmp_path)
+    folders, unresolved = resolve_audiobooks_folder(
+        library, AudiobooksConfig(), tmp_path / "staging"
+    )
+    assert folders == (str(library),)
+    assert unresolved == []
+    assert not (tmp_path / "staging").exists()
+
+
+def test_resolve_audiobooks_folder_include_with_selections_builds_staging_dir(tmp_path):
+    library = _make_audiobooks_library(tmp_path)
+    staging = tmp_path / "staging"
+    config = AudiobooksConfig(mode="include", selections=["George Orwell/1984"])
+
+    folders, unresolved = resolve_audiobooks_folder(library, config, staging)
+
+    assert folders == (str(staging),)
+    assert unresolved == []
+    assert (staging / "George Orwell" / "1984" / "01 - merged.m4b").is_symlink()
+    assert not (staging / "Franz Kafka").exists()
+    assert not (staging / "George Orwell" / "Animal Farm").exists()
+
+
+def test_resolve_audiobooks_folder_exclude_mode_drops_one_author(tmp_path):
+    library = _make_audiobooks_library(tmp_path)
+    staging = tmp_path / "staging"
+    config = AudiobooksConfig(mode="exclude", selections=["Franz Kafka"])
+
+    folders, unresolved = resolve_audiobooks_folder(library, config, staging)
+
+    assert folders == (str(staging),)
+    assert unresolved == []
+    assert not (staging / "Franz Kafka").exists()
+    assert (staging / "George Orwell" / "1984" / "01 - merged.m4b").is_symlink()
+    assert (staging / "George Orwell" / "Animal Farm" / "01 - merged.m4b").is_symlink()
+
+
+def test_resolve_audiobooks_folder_reports_unresolved_selection(tmp_path):
+    library = _make_audiobooks_library(tmp_path)
+    config = AudiobooksConfig(mode="include", selections=["Franz Kafka", "Isaac Asimov"])
+
+    _, unresolved = resolve_audiobooks_folder(library, config, tmp_path / "staging")
+
+    assert unresolved == ["Isaac Asimov"]

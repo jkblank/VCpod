@@ -42,3 +42,13 @@ sync:
 #   selections:
 #     - "Nickelback"
 #     - "Creed"
+
+# Optional: which audiobooks get synced — same include/exclude +
+# selections shape as external_library above, matched by
+# author/album-title prefix under library/audiobooks. "exclude" example:
+# sync every audiobook except the ones listed, the mirror of alice's
+# "include" example (see alice.yaml).
+# audiobooks:
+#   mode: exclude
+#   selections:
+#     - "Some Author You'd Rather Skip"

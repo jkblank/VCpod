@@ -67,20 +67,23 @@ title/author/ASIN) and re-run `tag` against that same staging directory.
 
 ## Syncing audiobooks to a device
 
-Nothing new needed in `sync-orchestrator` — its existing `--pc-folder`
-flag already threads any extra folder into the sync plan:
+`library/audiobooks` syncs automatically once it exists — no
+`--pc-folder` flag needed, `sync-orchestrator` includes it the same way
+it includes `library/music`:
 
 ```bash
 uv run sync-orchestrator sync \
     --profile config/profiles/<you>.yaml \
     --library-root library \
     --state-root state \
-    --pc-folder library/audiobooks \
     --execute
 ```
 
-This isn't wired in as a permanent default yet — pass `--pc-folder`
-manually each sync, or add it to your own wrapper script.
+Which books actually reach a given profile's device is controlled by
+that profile's `audiobooks:` config block (default: every audiobook
+syncs) — see
+[`services/sync-orchestrator/README.md`](../sync-orchestrator/README.md#audiobooks)
+for the include/exclude `selections` shape.
 
 ## Running with Docker
 

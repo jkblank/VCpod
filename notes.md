@@ -1746,3 +1746,27 @@ and the skip/retry design both work correctly against real data; only
 the final on-device step (`--pc-folder library/audiobooks --execute`
 against the actual iPod) is still pending, deferred until the device is
 next connected.
+
+**2026-07-27 (later same day) — audiobooks config + automatic sync
+inclusion.** Resolved the "manual `--pc-folder` flag, not a persistent
+default" follow-up flagged above: added `AudiobooksConfig` to
+`common/models.py` (`mode: include/exclude` + `selections`, same
+path-fragment-prefix shape as the existing `ExternalLibraryConfig`,
+factored the nested-mapping-flattening validator logic out into a
+shared `_flatten_nested_selection_entries` helper both classes use).
+Deliberately different default from `ExternalLibraryConfig`: empty
+`selections` + `include` mode means **sync every audiobook** (not "sync
+nothing," which is what `ExternalLibraryConfig` does in that case) —
+most profiles won't want to curate audiobooks at all, so the no-config
+and default-config cases both behave the same way.
+
+`sync_orchestrator/selection.py` gained `resolve_audiobooks_folder()`,
+reusing the existing `resolve_selected_files`/`build_staging_dir`
+functions (same symlink-staging-dir technique `external_library` uses,
+for the same reason — avoids `iopenpod`'s removal-detection treating a
+narrowed scan as "removed from PC"). `sync.py`'s `plan_sync()` now
+includes `library_root/audiobooks` in `pc_folders` automatically
+whenever the directory exists, skipped silently if it doesn't (a
+profile with no audiobooks imported yet shouldn't need any special
+config or throw an error). `--pc-folder library/audiobooks` still works
+as a manual override/escape hatch but is no longer necessary.

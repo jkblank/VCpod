@@ -51,7 +51,11 @@ from iopenpod.sync.mapping import MappingManager
 
 from sync_orchestrator.playstate import resolve_played_states
 from sync_orchestrator.podcast_removal import build_podcast_removal_items
-from sync_orchestrator.selection import build_staging_dir, resolve_selected_files
+from sync_orchestrator.selection import (
+    build_staging_dir,
+    resolve_audiobooks_folder,
+    resolve_selected_files,
+)
 
 
 class SyncError(Exception):
@@ -284,6 +288,7 @@ class PlannedSync:
     options: EngineOptions
     snapshot: SnapshotInfo | None
     unresolved_selections: list[str] = dataclasses.field(default_factory=list)
+    unresolved_audiobook_selections: list[str] = dataclasses.field(default_factory=list)
     # Count of local episodes whose play state changed vs. what was
     # already recorded, per resolve_played_states — see playstate.py.
     play_states_updated: int = 0
@@ -326,10 +331,17 @@ def plan_sync(
         build_staging_dir(staging_dir, ext.path, selected_files)
         external_library_folders = (str(staging_dir),)
 
+    audiobooks_folders, unresolved_audiobook_selections = resolve_audiobooks_folder(
+        library_root / "audiobooks",
+        profile.audiobooks,
+        state_root / ".audiobooks_staging" / profile.profile,
+    )
+
     pc_folders = (
         str(library_root / "music"),
         str(library_root / "playlists" / profile.profile),
         *external_library_folders,
+        *audiobooks_folders,
         *extra_pc_folders,
     )
     for folder in pc_folders:
@@ -479,6 +491,7 @@ def plan_sync(
         options=options,
         snapshot=snapshot,
         unresolved_selections=unresolved_selections,
+        unresolved_audiobook_selections=unresolved_audiobook_selections,
         play_states_updated=play_states_updated,
     )
 

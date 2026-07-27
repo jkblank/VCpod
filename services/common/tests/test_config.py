@@ -36,6 +36,10 @@ def test_example_profiles_load():
     assert profiles["alice"].playlists[1].fetch_schedule == "0 */6 * * *"
     assert profiles["alice"].playlists[0].fetch_schedule is None
     assert profiles["bob"].fetch.schedule is None
+    assert profiles["alice"].audiobooks is None
+    assert profiles["bob"].audiobooks is None
+    assert profiles["john"].audiobooks.mode == "include"
+    assert profiles["john"].audiobooks.selections == []
 
 
 def test_missing_file_raises():

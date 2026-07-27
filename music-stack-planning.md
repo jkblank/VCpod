@@ -407,12 +407,16 @@ docs warn against changing path format after import, and it costs
 nothing here since iOpenPod's media-folder scanner recurses by default
 and filters strictly by audio extension, so the sidecar files and extra
 folder depth are both transparently ignored/handled). No `.m3u8` needed.
-`library/audiobooks/` syncs today via `sync-orchestrator`'s existing
-`--pc-folder` flag — confirmed live, **zero new sync-orchestrator code**
-was needed. It's a manual per-sync flag, not a persistent default yet;
-making it permanent (editing `sync.py`'s own `pc_folders` tuple) is a
-natural small follow-up once proven on a real device, deliberately left
-out of this pass.
+`library/audiobooks/` first synced via `sync-orchestrator`'s generic
+`--pc-folder` flag (confirmed live, zero new code needed for that first
+pass) — since then, `sync.py`'s `pc_folders` tuple was updated to
+include `library_root/audiobooks` automatically whenever it exists, so
+`--pc-folder` is no longer needed for the common case. Per-profile
+curation is a real `audiobooks:` config block (`AudiobooksConfig` in
+`common/models.py`), same include/exclude + `selections` shape as
+`external_library`, defaulting to "every audiobook syncs" so a profile
+that doesn't care about curation needs zero config. See
+`services/sync-orchestrator/README.md#audiobooks`.
 
 ---
 

@@ -56,3 +56,13 @@ sync:
 #         - "Performance"
 #         - "Remixed"
 #     - "David Bowie/Hunky Dory/05 Life on Mars_.m4a"
+
+# Optional: which audiobooks (library/audiobooks/{Author}/{Album}/
+# {Title}.m4b) get synced to this profile's device. Left unset (or
+# "include" mode with no selections, as below) means every audiobook
+# syncs — no curation needed unless you want it. Same include/exclude +
+# selections shape as external_library above, matched by
+# author/album-title prefix instead of artist/album.
+# audiobooks:
+#   mode: include
+#   selections: []

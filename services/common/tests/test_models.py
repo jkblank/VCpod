@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from common.models import (
+    AudiobooksConfig,
     BackupMaintenanceConfig,
     ExternalLibraryConfig,
     FetchSettings,
@@ -50,6 +51,48 @@ def test_external_library_invalid_nested_selection_raises():
 def test_external_library_invalid_selection_type_raises():
     with pytest.raises(ValidationError, match="invalid selections entry"):
         ExternalLibraryConfig(path="/library", selections=[123])
+
+
+def test_audiobooks_config_defaults_to_include_all():
+    cfg = AudiobooksConfig()
+    assert cfg.mode == "include"
+    assert cfg.selections == []
+
+
+def test_audiobooks_flat_string_selections_unchanged():
+    cfg = AudiobooksConfig(selections=["Franz Kafka", "Franz Kafka/The Trial"])
+    assert cfg.selections == ["Franz Kafka", "Franz Kafka/The Trial"]
+
+
+def test_audiobooks_nested_mapping_selection_flattened():
+    cfg = AudiobooksConfig(
+        mode="exclude",
+        selections=[
+            "Franz Kafka",
+            {"George Orwell": ["1984", "Animal Farm"]},
+        ],
+    )
+    assert cfg.mode == "exclude"
+    assert cfg.selections == [
+        "Franz Kafka",
+        "George Orwell/1984",
+        "George Orwell/Animal Farm",
+    ]
+
+
+def test_audiobooks_invalid_nested_selection_raises():
+    with pytest.raises(ValidationError, match="invalid selections entry"):
+        AudiobooksConfig(selections=[{"George Orwell": "1984"}])
+
+
+def test_audiobooks_invalid_selection_type_raises():
+    with pytest.raises(ValidationError, match="invalid selections entry"):
+        AudiobooksConfig(selections=[123])
+
+
+def test_audiobooks_invalid_mode_raises():
+    with pytest.raises(ValidationError):
+        AudiobooksConfig(mode="whitelist")
 
 
 def _podcasts_config(**overrides):

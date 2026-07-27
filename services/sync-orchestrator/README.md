@@ -47,17 +47,40 @@ host this service always runs on. Same explicit-path pattern already used
 by `fetcher-apple`/`podcast-manager`, not a new convention.
 
 `--pc-folder PATH` (repeatable) adds extra folders to mirror onto the
-device beyond `library_root/music` and the profile's playlists folder —
-useful for an ad hoc folder that isn't part of the managed config. This
-is how audiobooks get synced today (`--pc-folder library/audiobooks`,
-live-verified) — see
-[`services/audiobook-manager/README.md`](../audiobook-manager/README.md).
-Not wired in as a persistent default yet, so it needs to be passed on
-every sync that should include audiobooks.
+device beyond `library_root/music`, the profile's playlists folder, and
+`library_root/audiobooks` (see below) — useful for an ad hoc folder
+that isn't part of the managed config.
 
 The device is matched against the profile's `device.match_by`/
 `match_value` (`volume_label` or `serial`) — see
 `services/common/src/common/models.py`'s `DeviceMatch`.
+
+### Audiobooks
+
+`library_root/audiobooks` (populated by
+[`audiobook-manager`](../audiobook-manager/README.md)) syncs
+automatically whenever it exists — no `--pc-folder` needed. Which
+books actually go to a given profile's device is controlled by that
+profile's `audiobooks:` config block (`ProfileConfig.audiobooks`,
+`AudiobooksConfig` in `common/models.py`), same include/exclude +
+`selections` shape as `external_library` below, matched by
+`{Author}` / `{Author}/{Album}` path-fragment prefixes instead of
+artist/album:
+
+```yaml
+audiobooks:
+  mode: include   # default; empty selections = every audiobook syncs
+  selections: []
+```
+
+Leaving the whole `audiobooks:` block out of a profile entirely behaves
+identically to the default above — every audiobook syncs, no curation
+needed unless you want it. A non-default selection (either mode, with a
+non-empty `selections` list) is resolved into a symlink staging dir the
+same way `external_library` is (see `selection.py`'s
+`resolve_audiobooks_folder`) — the whole `library_root/audiobooks` tree
+is only ever handed to `iopenpod` unfiltered when no real filtering is
+needed, to avoid staging-dir overhead for the common case.
 
 Every stage (backup, PC-side scan, fingerprinting, file writes) prints
 progress as it happens, e.g. `[scan] 3120/4416 — Talking Heads/...m4a` —
