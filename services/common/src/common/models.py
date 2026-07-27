@@ -254,6 +254,14 @@ class ProfilePodcastsConfig(StrictModel):
     # to be listened to in chronological order (serialized fiction,
     # courses) rather than "whatever's newest." See notes.md.
     fill_modes: dict[str, Literal["newest", "next"]] = Field(default_factory=dict)
+    # Once an episode is played (remotely via Pocket Casts, or locally via
+    # sync-orchestrator's device read-back), delete its downloaded audio
+    # file so it stops taking up disk space and drops out of the next
+    # device sync's podcast plan. Only takes effect when sync_unplayed_only
+    # is also True — sync_unplayed_only=False means the profile deliberately
+    # wants played episodes downloaded/kept too (e.g. an archive), and
+    # deleting them the instant they're downloaded would fight that intent.
+    delete_played_episodes: bool = True
 
 
 class SyncSettings(StrictModel):

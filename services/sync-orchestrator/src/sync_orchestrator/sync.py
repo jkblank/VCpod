@@ -50,6 +50,7 @@ from iopenpod.sync.core.models import (
 from iopenpod.sync.mapping import MappingManager
 
 from sync_orchestrator.playstate import resolve_played_states
+from sync_orchestrator.podcast_removal import build_podcast_removal_items
 from sync_orchestrator.selection import build_staging_dir, resolve_selected_files
 
 
@@ -361,6 +362,11 @@ def plan_sync(
 
     play_states_updated = 0
     state_db_path = state_root / f"{profile.profile}.sqlite"
+    # Populated below whenever podcasts are in play — carried forward to the
+    # removal-plan step near the end of this function (after `plan` exists)
+    # so that step sees this run's own device read-back, not stale played
+    # flags from before it.
+    known_episodes: list[Any] = []
     if not skip_podcasts and state_db_path.is_file():
         # Read-only (MappingManager.load() never touches on-device files)
         # and independent of --execute: real listening progress since the
@@ -383,6 +389,10 @@ def plan_sync(
                     episode.episode_uuid, played=played, played_up_to=played_up_to
                 ):
                     play_states_updated += 1
+            # Re-read rather than reuse episodes_by_path.values(): the
+            # update_play_state calls above may have just changed some of
+            # these rows in this very call.
+            known_episodes = db.list_episodes()
 
     fpcalc_path = shutil.which("fpcalc") or ""
     if not fpcalc_path:
@@ -442,6 +452,22 @@ def plan_sync(
                     continue
                 plan.to_add.extend(podcast_plan.to_add)
                 plan.storage.bytes_to_add += podcast_plan.storage.bytes_to_add
+
+            # Deliberately keyed off known_episodes (the state db's played
+            # flag), not _load_podcast_feeds' downloaded_path filter above —
+            # podcast-manager typically deletes a played episode's file
+            # before this ever runs, so a file-presence check would miss
+            # exactly the episodes this is supposed to remove. Flows through
+            # the same --allow-removals gate as any other to_remove, in
+            # cli.py.
+            removal_items = build_podcast_removal_items(known_episodes, before_tracks)
+            if removal_items:
+                plan.to_remove.extend(removal_items)
+                plan.storage.bytes_to_remove += sum(
+                    item.ipod_track.get("size", 0)
+                    for item in removal_items
+                    if item.ipod_track
+                )
 
     return PlannedSync(
         plan=plan,

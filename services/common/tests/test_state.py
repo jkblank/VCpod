@@ -205,6 +205,53 @@ def test_clear_pending_push_removes_flag(tmp_path: Path):
         assert db.list_episodes_pending_push() == []
 
 
+def test_record_remote_play_state_updates_without_pending_push(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode())
+
+        updated = db.record_remote_play_state("ep-123", played=True, played_up_to=900)
+
+        assert updated is True
+        fetched = db.get_episode("ep-123")
+        assert fetched.played is True
+        assert fetched.played_up_to == 900
+        assert fetched.pending_push is False  # Pocket Casts is the source — nothing to push back
+
+
+def test_record_remote_play_state_no_op_when_unchanged(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        episode = _episode()
+        episode.played = True
+        episode.played_up_to = 900
+        db.record_episode(episode)
+
+        updated = db.record_remote_play_state("ep-123", played=True, played_up_to=900)
+
+        assert updated is False
+
+
+def test_record_remote_play_state_returns_false_for_unknown_episode(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        updated = db.record_remote_play_state("does-not-exist", played=True, played_up_to=100)
+        assert updated is False
+
+
+def test_record_remote_play_state_never_downgrades_locally_confirmed_play(tmp_path: Path):
+    # A device read-back may already have confirmed this episode played
+    # (update_play_state) before Pocket Casts' own state has caught up —
+    # a subsequent remote read of played=False must not undo that.
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode())
+        db.update_play_state("ep-123", played=True, played_up_to=900)
+
+        updated = db.record_remote_play_state("ep-123", played=False, played_up_to=0)
+
+        assert updated is False
+        fetched = db.get_episode("ep-123")
+        assert fetched.played is True
+        assert fetched.played_up_to == 900
+
+
 def test_record_episode_does_not_reset_pending_push(tmp_path: Path):
     # A podcast-manager re-sync (record_episode's own upsert) must not
     # silently clobber a pending_push flag set by sync-orchestrator's

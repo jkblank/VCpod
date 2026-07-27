@@ -231,6 +231,30 @@ class StateDB:
         self._conn.commit()
         return True
 
+    def record_remote_play_state(self, episode_uuid: str, *, played: bool, played_up_to: int) -> bool:
+        """Refreshes played/played_up_to from a remote (Pocket Casts)
+        signal, WITHOUT marking pending_push — unlike update_play_state
+        (which is for device-derived changes that Pocket Casts doesn't
+        know about yet and so must be pushed to it), Pocket Casts is
+        already the source of this value, so there is nothing to push
+        back. Only ever merges upward (OR's played, max's played_up_to)
+        so a remote read can never downgrade state a device read-back
+        already confirmed. Returns False if no row exists for
+        episode_uuid (nothing to refresh — the episode isn't downloaded)."""
+        existing = self.get_episode(episode_uuid)
+        if existing is None:
+            return False
+        merged_played = existing.played or played
+        merged_played_up_to = max(existing.played_up_to, played_up_to)
+        if existing.played == merged_played and existing.played_up_to == merged_played_up_to:
+            return False
+        self._conn.execute(
+            "UPDATE episodes SET played = ?, played_up_to = ? WHERE episode_uuid = ?",
+            (int(merged_played), merged_played_up_to, episode_uuid),
+        )
+        self._conn.commit()
+        return True
+
     def list_episodes_pending_push(self) -> list[EpisodeRecord]:
         rows = self._conn.execute(
             f"SELECT {self._EPISODE_COLUMNS} FROM episodes WHERE pending_push = 1"

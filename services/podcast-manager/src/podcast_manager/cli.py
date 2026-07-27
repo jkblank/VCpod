@@ -71,11 +71,13 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         max_episodes_per_show=profile.podcasts.max_episodes_per_show,
         fill_modes=profile.podcasts.fill_modes,
         episode_filter=profile.podcasts.episode_filter,
+        delete_played_episodes=profile.podcasts.delete_played_episodes,
     )
 
     total_downloaded = 0
     total_already = 0
     total_failed = 0
+    total_deleted = 0
     shows_with_errors: list[str] = []
     for outcome in outcomes:
         if outcome.error is not None:
@@ -91,17 +93,19 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         total_downloaded += len(result.downloaded)
         total_already += len(result.already_present)
         total_failed += len(result.failed)
+        total_deleted += len(result.deleted)
         print(
             f"{outcome.podcast.title}: {len(result.downloaded)} downloaded, "
             f"{len(result.already_present)} already present"
             + (f", {len(result.failed)} failed" if result.failed else "")
+            + (f", {len(result.deleted)} played episode(s) deleted" if result.deleted else "")
         )
         for episode, error in result.failed:
             print(f"  FAILED: {episode.title!r} ({error})")
 
     print(
         f"Total: {total_downloaded} downloaded, {total_already} already present, "
-        f"{total_failed} episode(s) failed"
+        f"{total_failed} episode(s) failed, {total_deleted} played episode(s) deleted"
     )
     if shows_with_errors:
         print(f"Shows that could not be reached at all: {', '.join(shows_with_errors)}")

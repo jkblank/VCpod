@@ -189,6 +189,7 @@ def run_sync(
                     max_episodes_per_show=profile.podcasts.max_episodes_per_show,
                     fill_modes=profile.podcasts.fill_modes,
                     episode_filter=profile.podcasts.episode_filter,
+                    delete_played_episodes=profile.podcasts.delete_played_episodes,
                     lock_timeout=lock_timeout,
                 )
 

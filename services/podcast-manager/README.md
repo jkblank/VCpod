@@ -27,6 +27,25 @@ per-playlist repetition needed. Respects the profile's
 feature — see `notes.md` for why these two signals genuinely diverge),
 and per-show `fill_modes` (`newest` vs. `next`/chronological).
 
+Every `sync` also refreshes each show's played state from Pocket Casts
+for *every* already-downloaded episode, not just ones still in this
+run's download window — otherwise an episode played only through the
+Pocket Casts app (never round-tripped through a device) would never get
+recorded locally once `sync_unplayed_only` excludes it from candidates.
+Then, if `podcasts.delete_played_episodes` (default `true`) and
+`sync_unplayed_only` are both on, any episode played — remotely via
+Pocket Casts, or locally via `sync-orchestrator`'s device read-back — has
+its downloaded audio file deleted, so it stops taking up disk space and
+drops out of the next `sync-orchestrator` run's device plan (which
+separately proposes removing it from the iPod itself if it's already
+there — see that service's README). The state-db row is kept (so a
+re-sync doesn't re-download something already listened to); only the
+file goes. Set `delete_played_episodes: false` on a profile to keep a
+local archive of played episodes instead. `sync_unplayed_only: false`
+already means "keep played episodes downloaded too" (e.g. an archive
+profile), so deletion never runs in that case regardless of
+`delete_played_episodes`.
+
 ```bash
 uv run podcast-manager push-play-status \
     --credentials-path config/secrets/pocketcasts/<you>.json \

@@ -67,6 +67,34 @@ most one line per second per stage (iopenpod's own progress callbacks
 fire once per file, completely unthrottled) plus always on a stage
 change or completion — see `sync.py`'s `_ThrottledProgressPrinter`.
 
+### Podcasts
+
+Every plan (unless `--skip-podcasts`) does three podcast-related things,
+merged into the same plan/`to_remove` gate as music:
+
+1. **Device read-back**: before planning, reads real listening progress
+   off the device's own Play Counts file (`playstate.py`'s
+   `resolve_played_states`, via iopenpod's `MappingManager` — read-only,
+   safe on a plan-only run) and records it into `podcast-manager`'s state
+   db. This is independent of Pocket Casts ever seeing that listen.
+2. **Adds** newly-downloaded episodes not yet on this device
+   (`_load_podcast_feeds` + iopenpod's `build_podcast_sync_plan`).
+3. **Removes** any episode the state db already knows is played — merged
+   from Pocket Casts and/or the device read-back in step 1, the same
+   `played` flag `podcast-manager`'s own `delete_played_episodes` cleanup
+   uses — that's still actually present on this device
+   (`podcast_removal.py`'s `build_podcast_removal_items`, matching by
+   enclosure URL / title+album like iopenpod's own matcher). This is
+   deliberately keyed off the state db, not "does the local file still
+   exist": `podcast-manager` typically deletes a played episode's file
+   before this ever runs, so a file-presence check would miss exactly the
+   episodes meant to be removed.
+
+Podcast removals flow through the same `--allow-removals` gate as
+everything else in `to_remove` — no separate flag. A "just finished
+listening, then plugged in" episode gets removed in that same sync run,
+since step 1's read-back runs before step 3's removal plan is built.
+
 ### Selective sync from an external library
 
 A profile's optional `external_library` block (see `config/profiles/
