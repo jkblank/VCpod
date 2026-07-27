@@ -65,10 +65,40 @@ class PodcastsGlobalConfig(StrictModel):
     pocketcasts: PocketCastsGlobalConfig
 
 
+class LibraryManagerConfig(StrictModel):
+    # Global (not per-profile): dedup/cleanup operate on the whole shared
+    # library, same as library-manager's own CLI (--state-dir globs every
+    # profile's *.sqlite at once so one pass updates them all). No
+    # schedule of their own — runs as a post-step whenever any profile
+    # actually fetches this tick (see fetch_scheduler.loop), gated by
+    # these enable flags rather than a separate cron. False = manual-only
+    # (unchanged default behavior, via the `library-manager` CLI).
+    dedup_enabled: bool = False
+    cleanup_enabled: bool = False
+    # Mirror find_duplicate_groups'/sweep_quarantine's own defaults —
+    # present here so these can be overridden via config (e.g. a GUI)
+    # without a code change.
+    fuzzy_threshold: float = Field(default=92.0, gt=0, le=100)
+    quarantine_older_than_days: int = Field(default=14, gt=0)
+
+
+class BackupMaintenanceConfig(StrictModel):
+    # No schedule of its own, same reasoning as LibraryManagerConfig
+    # above — runs as a post-step whenever any profile fetches this
+    # tick. False = manual-only.
+    prune_enabled: bool = False
+    # Applied to any device_backups/{device_id} directory not resolved to
+    # a profile (see common.backups.resolve_retention_map).
+    default_keep_last: int = Field(default=3, gt=0)
+    default_max_age_days: int = Field(default=14, gt=0)
+
+
 class GlobalConfig(StrictModel):
     paths: Paths
     sources: SourcesConfig
     podcasts: PodcastsGlobalConfig
+    library_manager: LibraryManagerConfig = Field(default_factory=LibraryManagerConfig)
+    backups: BackupMaintenanceConfig = Field(default_factory=BackupMaintenanceConfig)
 
 
 class DeviceMatch(StrictModel):
@@ -240,6 +270,13 @@ class FetchSettings(StrictModel):
     schedule: CronSchedule | None = None
 
 
+class ProfileBackupRetention(StrictModel):
+    # None on either field = "use GlobalConfig.backups.default_*" — a
+    # per-field override, not all-or-nothing.
+    keep_last: int | None = Field(default=None, gt=0)
+    max_age_days: int | None = Field(default=None, gt=0)
+
+
 class ProfileConfig(StrictModel):
     profile: str
     device: DeviceMatch
@@ -248,3 +285,4 @@ class ProfileConfig(StrictModel):
     sync: SyncSettings
     external_library: ExternalLibraryConfig | None = None
     fetch: FetchSettings = Field(default_factory=FetchSettings)
+    backups: ProfileBackupRetention | None = None

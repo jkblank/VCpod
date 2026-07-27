@@ -51,9 +51,16 @@ def load_profile_config(path: Path | str) -> ProfileConfig:
     path = Path(path)
     data = _load_yaml(path)
     try:
-        return ProfileConfig.model_validate(data)
+        profile = ProfileConfig.model_validate(data)
     except ValidationError as e:
         raise _format_validation_error(path, e) from e
+    if profile.profile == "global":
+        # state_root/global.sqlite is reserved for fetch-scheduler's
+        # cross-profile maintenance tasks (dedup/cleanup/backup pruning —
+        # see common.schedule/common.backups); a profile named "global"
+        # would silently collide with it via resolve_roots.
+        raise ConfigError(path, ["profile name 'global' is reserved, choose a different name"])
+    return profile
 
 
 def load_all_profiles(directory: Path | str) -> dict[str, ProfileConfig]:

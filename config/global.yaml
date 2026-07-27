@@ -17,3 +17,23 @@ sources:
 podcasts:
   pocketcasts:
     poll_interval_minutes: 60
+
+# Global (not per-profile) library maintenance — runs as a post-step
+# whenever any profile actually fetches, not on its own schedule. See
+# music-stack-planning.md / notes.md.
+library_manager:
+  dedup_enabled: true
+  cleanup_enabled: true
+  # fuzzy_threshold: 92.0            # find_duplicate_groups' own default
+  # quarantine_older_than_days: 14   # sweep_quarantine's own default
+
+# Device backup snapshot retention — same "runs after any fetch" timing
+# as library_manager above. Defaults below (keep last 3 OR 14 days,
+# whichever is more inclusive) chosen given real disk pressure
+# (state/device_backups/ was 199GB, disk 77% full) — confirmed via a
+# dry run against real data that these settings delete nothing today,
+# only kick in once a device accumulates more snapshots than that.
+backups:
+  prune_enabled: true
+  default_keep_last: 3
+  default_max_age_days: 14

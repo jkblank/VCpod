@@ -18,7 +18,17 @@ def _print_tick_result(result: TickResult) -> None:
             print(f"[{profile}] ERROR: {error}")
     for profile in result.errors:
         print(f"[{profile}] ERROR: tick failed, see log")
-    if not result.fetched and not result.errors and not result.source_errors:
+    for task_id, summary in result.maintenance.items():
+        print(f"[maintenance:{task_id}] {summary}")
+    for task_id in result.maintenance_errors:
+        print(f"[maintenance:{task_id}] ERROR: task failed, see log")
+    if (
+        not result.fetched
+        and not result.errors
+        and not result.source_errors
+        and not result.maintenance
+        and not result.maintenance_errors
+    ):
         print("nothing due")
 
 
@@ -32,7 +42,7 @@ def _run_once(args: argparse.Namespace) -> int:
         lock_timeout=args.lock_timeout,
     )
     _print_tick_result(result)
-    return 1 if result.errors else 0
+    return 1 if (result.errors or result.maintenance_errors) else 0
 
 
 def main() -> None:

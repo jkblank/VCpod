@@ -170,6 +170,200 @@ def test_run_tick_dry_run_does_not_call_run_sync_or_write_state(monkeypatch, tmp
         assert db.get_last_fetched("playlist", "Chill") is None
 
 
+MAINTENANCE_GLOBAL_YAML = """
+paths:
+  library_root: /data/library
+  state_root: /data/state
+sources:
+  apple_music:
+    enabled: true
+    cookies_file: /config/secrets/apple.txt
+  spotify:
+    enabled: false
+    credentials_file: /config/secrets/spotify.json
+  ytmusic:
+    enabled: true
+    oauth_file: /config/secrets/yt_oauth.json
+    cookies_file: /config/secrets/yt.txt
+podcasts:
+  pocketcasts:
+    poll_interval_minutes: 60
+library_manager:
+  dedup_enabled: {dedup_enabled}
+  cleanup_enabled: {cleanup_enabled}
+backups:
+  prune_enabled: {prune_enabled}
+"""
+
+
+def _setup_maintenance(
+    tmp_path: Path,
+    *,
+    dedup_enabled: bool = False,
+    cleanup_enabled: bool = False,
+    prune_enabled: bool = False,
+    profiles: dict[str, str | None] | None = None,
+) -> Path:
+    config_root = tmp_path / "config"
+    (config_root / "global.yaml").parent.mkdir(parents=True, exist_ok=True)
+    yaml_text = MAINTENANCE_GLOBAL_YAML.format(
+        dedup_enabled=str(dedup_enabled).lower(),
+        cleanup_enabled=str(cleanup_enabled).lower(),
+        prune_enabled=str(prune_enabled).lower(),
+    )
+    (config_root / "global.yaml").write_text(yaml_text)
+
+    for name, fetch_schedule in (profiles or {}).items():
+        _write_profile(config_root, name, fetch_schedule=fetch_schedule)
+    return config_root
+
+
+class _FakeDedupResult:
+    def __init__(self, quarantined_count: int):
+        self.quarantined = [object()] * quarantined_count
+
+
+def _fake_resolution():
+    from common.backups import RetentionResolution
+
+    return RetentionResolution(by_device_id={}, orphaned_device_ids=[])
+
+
+def _fake_prune_result():
+    from common.backups import PruneResult
+
+    return PruneResult(
+        deleted_snapshots={}, kept_snapshot_counts={}, deleted_blob_count=0,
+        deleted_blob_bytes=0, dry_run=False,
+    )
+
+
+def test_run_tick_dedup_fires_when_enabled_and_a_fetch_happens(monkeypatch, tmp_path):
+    # No schedule of its own — dedup runs as a post-step whenever any
+    # profile actually fetches this tick, gated only by dedup_enabled.
+    config_root = _setup_maintenance(
+        tmp_path, dedup_enabled=True, profiles={"john": "* * * * *"}
+    )
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "global.sqlite").touch()  # must be excluded from state_db_paths
+
+    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+    monkeypatch.setattr(loop_module, "scan_library", lambda root: ["track1", "track2"])
+    monkeypatch.setattr(loop_module, "find_duplicate_groups", lambda tracks, fuzzy_threshold: [["g1"]])
+    captured = {}
+
+    def fake_quarantine(groups, *, library_root, playlists_root, state_db_paths):
+        captured["library_root"] = library_root
+        captured["playlists_root"] = playlists_root
+        captured["state_db_paths"] = state_db_paths
+        return _FakeDedupResult(quarantined_count=1)
+
+    monkeypatch.setattr(loop_module, "quarantine_duplicates", fake_quarantine)
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+    )
+
+    assert "library_dedup" in result.maintenance
+    assert captured["library_root"] == tmp_path / "library" / "music"
+    assert captured["playlists_root"] == tmp_path / "library" / "playlists"
+    # john.sqlite is created for real by run_tick's own profile processing
+    # above; global.sqlite was pre-touched here specifically to confirm
+    # it's excluded from the glob passed to quarantine_duplicates.
+    assert tmp_path / "state" / "john.sqlite" in captured["state_db_paths"]
+    assert tmp_path / "state" / "global.sqlite" not in captured["state_db_paths"]
+
+
+def test_run_tick_maintenance_skipped_when_not_enabled(monkeypatch, tmp_path):
+    config_root = _setup_maintenance(tmp_path, profiles={"john": "* * * * *"})  # all *_enabled default False
+    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+    calls = []
+    monkeypatch.setattr(loop_module, "scan_library", lambda root: calls.append(root) or [])
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+    )
+
+    assert calls == []
+    assert result.maintenance == {}
+
+
+def test_run_tick_maintenance_skipped_when_nothing_fetched_even_if_enabled(monkeypatch, tmp_path):
+    config_root = _setup_maintenance(
+        tmp_path, dedup_enabled=True, profiles={"john": None}  # no fetch schedule -> never due
+    )
+    calls = []
+    monkeypatch.setattr(loop_module, "scan_library", lambda root: calls.append(root) or [])
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+    )
+
+    assert calls == []
+    assert result.fetched == {}
+    assert result.maintenance == {}
+
+
+def test_run_tick_maintenance_task_exception_does_not_stop_others(monkeypatch, tmp_path):
+    config_root = _setup_maintenance(
+        tmp_path, dedup_enabled=True, prune_enabled=True, profiles={"john": "* * * * *"}
+    )
+    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+
+    def _raise(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(loop_module, "scan_library", _raise)
+    monkeypatch.setattr(
+        loop_module,
+        "resolve_retention_map",
+        lambda global_config, profiles, state_root: _fake_resolution(),
+    )
+    monkeypatch.setattr(loop_module, "prune_and_gc_backups", lambda *a, **k: _fake_prune_result())
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+    )
+
+    assert "library_dedup" in result.maintenance_errors
+    assert "backup_prune" in result.maintenance
+
+
+def test_run_tick_dry_run_maintenance_does_not_call_mutating_function(monkeypatch, tmp_path):
+    config_root = _setup_maintenance(
+        tmp_path, dedup_enabled=True, profiles={"john": "* * * * *"}
+    )
+    monkeypatch.setattr(loop_module, "scan_library", lambda root: ["t1"])
+    monkeypatch.setattr(loop_module, "find_duplicate_groups", lambda tracks, fuzzy_threshold: [["g1"]])
+    calls = []
+    monkeypatch.setattr(
+        loop_module, "quarantine_duplicates", lambda *a, **k: calls.append(1) or _FakeDedupResult(0)
+    )
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+        dry_run=True,
+    )
+
+    assert calls == []  # quarantine_duplicates never called under dry_run
+    assert "would be quarantined" in result.maintenance["library_dedup"]
+
+
 def test_run_tick_one_profile_exception_does_not_abort_the_rest(monkeypatch, tmp_path):
     config_root = _setup(
         tmp_path, profiles={"alice": "* * * * *", "bob": "* * * * *"}

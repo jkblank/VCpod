@@ -18,6 +18,8 @@ def test_global_config_loads():
     assert config.sources.apple_music.enabled is True
     assert config.sources.ytmusic.enabled is True
     assert config.podcasts.pocketcasts.poll_interval_minutes == 60
+    assert config.library_manager.dedup_enabled is True
+    assert config.backups.default_keep_last == 3
 
 
 def test_example_profiles_load():
@@ -74,3 +76,11 @@ def test_invalid_shows_entry_raises():
 def test_duplicate_profile_name_raises():
     with pytest.raises(ConfigError, match="duplicate profile name"):
         load_all_profiles(FIXTURES / "duplicate")
+
+
+def test_reserved_profile_name_global_raises():
+    # state_root/global.sqlite is reserved for fetch-scheduler's
+    # cross-profile maintenance tasks — a profile named "global" would
+    # silently collide with it via resolve_roots.
+    with pytest.raises(ConfigError, match="reserved"):
+        load_profile_config(FIXTURES / "profile_reserved_name.yaml")

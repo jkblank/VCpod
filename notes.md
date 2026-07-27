@@ -1528,3 +1528,60 @@ the whole drive, not a partition). Tests updated
 version works correctly on a real connect — third attempt at this
 specific fix in one day (unmount-only → udisksctl eject → plain eject),
 this one closes it out.
+
+## Automatic library dedup/cleanup + backup retention — shipped
+
+Two long-standing gaps closed while thinking about long-term homelab
+deployment: `library-manager`'s dedup/cleanup was 100% manual (nothing
+ever called it automatically), and `state/device_backups/` had no
+retention policy at all — confirmed live it had already grown to 199GB
+(disk 77% full) with sync now fully automated (udev + fetch-scheduler)
+and nothing capping it.
+
+**Design**: both wired into `fetch-scheduler`'s existing tick as global
+(not per-profile) maintenance, gated by simple `bool` enable flags
+(`library_manager.dedup_enabled`/`cleanup_enabled`,
+`backups.prune_enabled` in `global.yaml`) rather than their own cron
+schedules — per explicit instruction, they run as a post-step whenever
+*any* profile actually fetches this tick, not on independent timing.
+New `common/backups.py` (zero `iopenpod` dependency — reads the plain
+JSON snapshot manifest + content-addressed blob format directly) does
+retention: a snapshot is kept if its rank among that device's snapshots
+is `< keep_last` **OR** its age is `<= max_age_days` — pruned only if
+both fail, deliberately conservative. Blob garbage collection is a
+strict two-phase operation: decide+delete every device's snapshot
+manifests first, then only once every device's keep-set is final,
+compute the union of hashes referenced by every *surviving* snapshot
+across *every* device directory (confirmed live: `blobs/` is a single
+store shared across different device_ids, not per-device) and delete
+anything not in that union.
+
+**Real findings from live testing against the real 199GB store**:
+1. Real snapshot JSON timestamps have no timezone info (`iopenpod`'s
+   `BackupManager` writes naive ISO timestamps) — comparing against an
+   aware `now` raised `TypeError` on first live dry-run. Fixed by
+   treating a naive timestamp as UTC (matches every other timestamp
+   convention already used in this project).
+2. John's real backup data has the *same physical iPod* under two
+   different `device_id` directories (`000A270015AE6188`,
+   `8K6382K4V9S`) — a different serial/FireWire-GUID read across
+   sessions. `resolve_retention_map`'s volume-label matching handles
+   this by matching *every* device dir whose sampled `device_name`
+   equals a profile's `match_value`, not just the first.
+3. User-confirmed retention defaults given real disk pressure: keep
+   last 3 snapshots OR 14 days (matches `library-manager`'s own
+   quarantine grace period) — dry-run against real data confirmed this
+   deletes nothing today (all existing snapshots are recent), only
+   starts pruning once a device accumulates more history.
+
+**Live-confirmed end-to-end** (real, non-dry-run `fetch-scheduler
+--once` run): dedup scanned 1,158 tracks and quarantined 1 real
+duplicate (confirmed on disk under `library/music/.duplicates/`);
+cleanup found nothing old enough yet; backup-prune deleted 0 snapshots
+and 1 orphaned blob (confirmed: blob count on disk dropped from 10,972
+to 10,971) — every number matched what the preceding dry-run predicted
+exactly.
+
+**Status**: shipped and live-confirmed. `profile: global` is now a
+reserved profile name (`common/config.py`) to keep it free for any
+future non-profile-scoped state.

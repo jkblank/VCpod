@@ -2,9 +2,12 @@ import pytest
 from pydantic import ValidationError
 
 from common.models import (
+    BackupMaintenanceConfig,
     ExternalLibraryConfig,
     FetchSettings,
+    LibraryManagerConfig,
     PlaylistEntry,
+    ProfileBackupRetention,
     ProfilePodcastsConfig,
     ShowOverride,
 )
@@ -146,3 +149,45 @@ def test_podcasts_fetch_schedule_defaults_to_none():
 def test_podcasts_fetch_schedule_rejects_invalid_cron():
     with pytest.raises(ValidationError, match="invalid cron expression"):
         _podcasts_config(fetch_schedule="nope")
+
+
+def test_library_manager_config_defaults():
+    cfg = LibraryManagerConfig()
+    assert cfg.dedup_enabled is False
+    assert cfg.cleanup_enabled is False
+    assert cfg.fuzzy_threshold == 92.0
+    assert cfg.quarantine_older_than_days == 14
+
+
+def test_library_manager_config_rejects_out_of_range_fuzzy_threshold():
+    with pytest.raises(ValidationError):
+        LibraryManagerConfig(fuzzy_threshold=101)
+    with pytest.raises(ValidationError):
+        LibraryManagerConfig(fuzzy_threshold=0)
+
+
+def test_backup_maintenance_config_defaults():
+    cfg = BackupMaintenanceConfig()
+    assert cfg.prune_enabled is False
+    assert cfg.default_keep_last == 3
+    assert cfg.default_max_age_days == 14
+
+
+def test_backup_maintenance_config_rejects_non_positive_values():
+    with pytest.raises(ValidationError):
+        BackupMaintenanceConfig(default_keep_last=0)
+    with pytest.raises(ValidationError):
+        BackupMaintenanceConfig(default_max_age_days=0)
+
+
+def test_profile_backup_retention_defaults_to_none():
+    cfg = ProfileBackupRetention()
+    assert cfg.keep_last is None
+    assert cfg.max_age_days is None
+
+
+def test_profile_backup_retention_rejects_non_positive_values():
+    with pytest.raises(ValidationError):
+        ProfileBackupRetention(keep_last=0)
+    with pytest.raises(ValidationError):
+        ProfileBackupRetention(max_age_days=-1)

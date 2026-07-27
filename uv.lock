@@ -198,12 +198,14 @@ version = "0.1.0"
 source = { editable = "services/fetch-scheduler" }
 dependencies = [
     { name = "common" },
+    { name = "library-manager" },
     { name = "music-stack-cli" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "common", editable = "services/common" },
+    { name = "library-manager", editable = "services/library-manager" },
     { name = "music-stack-cli", editable = "services/music-stack-cli" },
 ]
 
