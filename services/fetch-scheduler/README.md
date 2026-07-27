@@ -12,6 +12,14 @@ Reuses `music_stack_cli.orchestrate.run_sync` for the actual fetching —
 this service only adds the "which targets are due, and when" layer on top
 (`common.schedule`, `common.state`'s `fetch_runs` table).
 
+Each tick also runs library maintenance as a post-step whenever any
+profile actually fetched: cross-source dedup, quarantine cleanup
+(`library-manager`), and device backup pruning/GC (`common.backups`).
+These have no schedule of their own — gated purely by
+`config/global.yaml`'s `library_manager.dedup_enabled`/`cleanup_enabled`
+and `backups.prune_enabled` booleans, off by default. See "Library
+maintenance" below.
+
 ## Deployment
 
 Two equally-supported ways to run it, pick whichever fits your setup:
@@ -45,3 +53,33 @@ Two equally-supported ways to run it, pick whichever fits your setup:
   per-source locks and to the per-profile fetch lock this service takes
   (`.fetch_{profile}.lock`) to avoid racing a manual `music-stack sync`
   run or another tick.
+
+## Library maintenance
+
+```yaml
+# config/global.yaml
+library_manager:
+  dedup_enabled: true     # library-manager dedup, whenever any fetch happens
+  cleanup_enabled: true   # library-manager cleanup-duplicates, same trigger
+  fuzzy_threshold: 92.0             # optional, matches library-manager's own default
+  quarantine_older_than_days: 14    # optional, ditto
+backups:
+  prune_enabled: true               # prune + GC state/device_backups/, same trigger
+  default_keep_last: 3              # per device_backups/{device_id}, unless a
+  default_max_age_days: 14          # profile overrides via its own `backups:` block
+```
+
+All three run **at most once per tick**, as a single post-step after
+the per-profile loop, gated only by these booleans — not their own cron
+schedule, since they're global (cross-profile) operations that don't
+belong to any one profile's fetch cadence. `backup_prune` resolves each
+`state/device_backups/{device_id}/` directory to a profile's retention
+policy without needing a live device connection (matches by serial, or
+by sampling a snapshot's recorded device name against a profile's
+configured volume label — see `common/backups.py`); a directory that
+matches no profile still gets the global default policy, never left
+unmanaged. `--dry-run` reports exactly what each task would do (tracks
+scanned, snapshots/blobs that would be deleted, bytes freed) without
+touching anything — worth running once before flipping any of these
+booleans on for real, since backup pruning is the one destructive
+operation in this whole pipeline.

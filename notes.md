@@ -1585,3 +1585,36 @@ exactly.
 **Status**: shipped and live-confirmed. `profile: global` is now a
 reserved profile name (`common/config.py`) to keep it free for any
 future non-profile-scoped state.
+
+## Distribution: why sync-orchestrator isn't containerized too
+
+Considered whether the whole stack — including `sync-orchestrator` +
+its udev rule + systemd service — could collapse into a single Docker
+container, for easier distribution.
+
+`systemd-udevd` itself can't reasonably run inside a container (needs
+`--privileged` + the host's `/sys`/`/dev`/cgroup hierarchy shared in,
+and conflicts with the udev daemon already running on the host for the
+same devices) — but that's not actually required: `auto-sync`'s own
+detection (`mount_candidate_devices()`/`find_matching_profile()`) never
+depended on udev *events*, only used udev as an efficient trigger
+instead of polling continuously. A privileged container running an
+infinite poll loop instead would work detection-wise (this is the
+established pattern for "container needs to react to USB hotplug" —
+e.g. how Home Assistant's USB integrations and Zigbee2MQTT handle it).
+
+The real blocker is mounting: actually mounting/unmounting a real
+filesystem from inside a container needs `--privileged` (or at minimum
+`CAP_SYS_ADMIN` for the `mount()` syscall) plus the host's `/dev`
+shared in for the block device nodes — at that point the container
+boundary isn't providing meaningful isolation anymore for this
+component specifically, just extra namespace/cgroup plumbing on top of
+what's effectively bare-metal access anyway.
+
+**Decision**: keep the two-tier split — Docker Compose for the
+genuinely containerizable services, a separate small bare-metal
+install (systemd unit + udev rule) for the USB-touching piece. For
+*distribution*, the win isn't forcing that piece into Docker, it's
+packaging its install (currently manual README steps) into a proper
+installer — deferred until the web GUI (Phase 4) exists, since
+service-selection + install is natural GUI-setup-flow work.
