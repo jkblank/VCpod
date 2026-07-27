@@ -45,6 +45,7 @@ class SyncResult:
     downloaded: list[EpisodeRecord] = field(default_factory=list)
     already_present: list[EpisodeRecord] = field(default_factory=list)
     failed: list[tuple[FullEpisode, str]] = field(default_factory=list)
+    deleted: list[EpisodeRecord] = field(default_factory=list)
 
 
 # Episode audio files are commonly tens of MB — httpx's default 5s timeout
@@ -103,6 +104,7 @@ def sync_podcast(
     max_episodes_per_show: int = 5,
     fill_mode: str = "newest",
     episode_filter: str = "played",
+    delete_played_episodes: bool = True,
     lock_path: Path | str | None = None,
     lock_timeout: float = 1800,
 ) -> SyncResult:
@@ -150,10 +152,17 @@ def sync_podcast(
         # unplayed just because Pocket Casts hasn't caught up.
         local_by_uuid = {e.episode_uuid: e for e in db.list_episodes()}
 
-        def _is_played(episode_uuid: str) -> bool:
-            remote = states_by_uuid.get(episode_uuid)
+        def _merged_played_state(episode_uuid: str) -> tuple[bool, int]:
+            state = states_by_uuid.get(episode_uuid)
             local = local_by_uuid.get(episode_uuid)
-            return bool(remote and remote.played) or bool(local and local.played)
+            remote_played = bool(state and state.played)
+            remote_played_up_to = state.played_up_to if state else 0
+            local_played = bool(local and local.played)
+            local_played_up_to = local.played_up_to if local else 0
+            return remote_played or local_played, max(remote_played_up_to, local_played_up_to)
+
+        def _is_played(episode_uuid: str) -> bool:
+            return _merged_played_state(episode_uuid)[0]
 
         def _is_archived(episode_uuid: str) -> bool:
             # Archive is purely a Pocket Casts app/user action — unlike
@@ -166,12 +175,24 @@ def sync_podcast(
 
         _is_done = _is_archived if episode_filter == "archived" else _is_played
 
+        # Refresh remote-confirmed play state for every already-downloaded
+        # episode of this show, not just this run's download candidates
+        # below. Without this, an episode played only through the Pocket
+        # Casts app (never round-tripped through the device) goes stale
+        # forever the moment sync_unplayed_only excludes it from
+        # candidates — its state-db row would keep reporting played=False
+        # even though Pocket Casts already knows better, which would also
+        # silently defeat delete_played_episodes below.
+        for episode in full_episodes:
+            if episode.uuid not in local_by_uuid:
+                continue  # never downloaded — nothing to refresh
+            played, played_up_to = _merged_played_state(episode.uuid)
+            db.record_remote_play_state(episode.uuid, played=played, played_up_to=played_up_to)
+
         if sync_unplayed_only:
             candidates = [e for e in candidates if not _is_done(e.uuid)]
 
         candidates = candidates[:max_episodes_per_show]
-        if not candidates:
-            return result
 
         for episode in candidates:
             dest = _episode_path(show_dir, episode)
@@ -206,19 +227,14 @@ def sync_podcast(
             # up. record_episode's own ON CONFLICT already leaves
             # pending_push untouched; this closes the equivalent gap for
             # played/played_up_to.
-            state = states_by_uuid.get(episode.uuid)
-            local = local_by_uuid.get(episode.uuid)
-            remote_played = bool(state and state.played)
-            remote_played_up_to = state.played_up_to if state else 0
-            local_played = bool(local and local.played)
-            local_played_up_to = local.played_up_to if local else 0
+            played, played_up_to = _merged_played_state(episode.uuid)
             record = EpisodeRecord(
                 episode_uuid=episode.uuid,
                 podcast_uuid=podcast.uuid,
                 show_name=podcast.title,
                 local_path=str(dest),
-                played=remote_played or local_played,
-                played_up_to=max(remote_played_up_to, local_played_up_to),
+                played=played,
+                played_up_to=played_up_to,
                 downloaded_at=datetime.now(timezone.utc).isoformat(),
                 title=episode.title,
                 audio_url=episode.url,
@@ -226,6 +242,23 @@ def sync_podcast(
             )
             db.record_episode(record)
             (result.already_present if already_downloaded else result.downloaded).append(record)
+
+        # Only takes effect alongside sync_unplayed_only — see
+        # delete_played_episodes' docstring in common/models.py for why
+        # sync_unplayed_only=False (deliberately keeping played episodes
+        # downloaded, e.g. as an archive) must not be undermined by
+        # deleting them the instant they land.
+        if delete_played_episodes and sync_unplayed_only:
+            for local in local_by_uuid.values():
+                if local.podcast_uuid != podcast.uuid:
+                    continue
+                played, _played_up_to = _merged_played_state(local.episode_uuid)
+                if not played:
+                    continue
+                path = Path(local.local_path)
+                if path.is_file():
+                    path.unlink()
+                    result.deleted.append(local)
 
     return result
 
@@ -247,6 +280,7 @@ def sync_shows(
     max_episodes_per_show: int = 5,
     fill_modes: dict[str, str] | None = None,
     episode_filter: str = "played",
+    delete_played_episodes: bool = True,
     lock_path: Path | str | None = None,
     lock_timeout: float = 1800,
 ) -> list[ShowSyncOutcome]:
@@ -267,6 +301,7 @@ def sync_shows(
                 max_episodes_per_show=max_episodes_per_show,
                 fill_mode=fill_modes.get(podcast.uuid, "newest"),
                 episode_filter=episode_filter,
+                delete_played_episodes=delete_played_episodes,
                 lock_path=lock_path,
                 lock_timeout=lock_timeout,
             )

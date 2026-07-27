@@ -250,6 +250,153 @@ def test_sync_podcast_does_not_downgrade_locally_played_episode(
         assert db.get_episode("ep-0").played is True
 
 
+def _record_existing_episode(state_db_path, *, episode_uuid, local_path, played, podcast_uuid="show-1"):
+    with StateDB(state_db_path) as db:
+        db.record_episode(
+            EpisodeRecord(
+                episode_uuid=episode_uuid,
+                podcast_uuid=podcast_uuid,
+                show_name="Test Show",
+                local_path=str(local_path),
+                played=played,
+                played_up_to=0,
+                downloaded_at="2026-07-19T00:00:00+00:00",
+            )
+        )
+
+
+def test_sync_podcast_refreshes_remote_played_state_for_non_candidate_episode(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # Regression test for the "stale played state" gap: an episode played
+    # only via the Pocket Casts app (not through the device) must have its
+    # state-db row updated even though sync_unplayed_only excludes it from
+    # this run's download candidates below.
+    states = [EpisodeState(uuid="ep-1", played=True, played_up_to=100)]
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: states)
+
+    state_db_path = tmp_path / "state.sqlite"
+    existing_path = tmp_path / "library" / "Test Show" / "Middle Episode [ep-1].mp3"
+    existing_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", existing_path)
+    _record_existing_episode(
+        state_db_path, episode_uuid="ep-1", local_path=existing_path, played=False
+    )
+
+    _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        delete_played_episodes=False,
+        max_episodes_per_show=1,
+    )
+
+    with StateDB(state_db_path) as db:
+        refreshed = db.get_episode("ep-1")
+        assert refreshed.played is True
+        assert refreshed.played_up_to == 100
+
+
+def test_sync_podcast_deletes_file_for_played_episode(monkeypatch, patched_pipeline, tmp_path):
+    states = [EpisodeState(uuid="ep-1", played=True, played_up_to=100)]
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: states)
+
+    state_db_path = tmp_path / "state.sqlite"
+    existing_path = tmp_path / "library" / "Test Show" / "Middle Episode [ep-1].mp3"
+    existing_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", existing_path)
+    _record_existing_episode(
+        state_db_path, episode_uuid="ep-1", local_path=existing_path, played=False
+    )
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        max_episodes_per_show=1,
+    )
+
+    assert not existing_path.exists()
+    assert [r.episode_uuid for r in result.deleted] == ["ep-1"]
+
+
+def test_sync_podcast_keeps_file_when_delete_played_episodes_disabled(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    states = [EpisodeState(uuid="ep-1", played=True, played_up_to=100)]
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: states)
+
+    state_db_path = tmp_path / "state.sqlite"
+    existing_path = tmp_path / "library" / "Test Show" / "Middle Episode [ep-1].mp3"
+    existing_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", existing_path)
+    _record_existing_episode(
+        state_db_path, episode_uuid="ep-1", local_path=existing_path, played=False
+    )
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        max_episodes_per_show=1,
+        delete_played_episodes=False,
+    )
+
+    assert existing_path.exists()
+    assert result.deleted == []
+
+
+def test_sync_podcast_keeps_played_files_when_sync_unplayed_only_false(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # sync_unplayed_only=False means the profile deliberately wants played
+    # episodes downloaded/kept too (e.g. an archive) — delete_played_episodes
+    # must not fight that, even though it defaults to True.
+    states = [EpisodeState(uuid="ep-1", played=True, played_up_to=100)]
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: states)
+
+    state_db_path = tmp_path / "state.sqlite"
+    existing_path = tmp_path / "library" / "Test Show" / "Middle Episode [ep-1].mp3"
+    existing_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", existing_path)
+    _record_existing_episode(
+        state_db_path, episode_uuid="ep-1", local_path=existing_path, played=False
+    )
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        max_episodes_per_show=10,
+        sync_unplayed_only=False,
+    )
+
+    assert existing_path.exists()
+    assert result.deleted == []
+
+
+def test_sync_podcast_deletion_scoped_to_this_podcast_only(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    state_db_path = tmp_path / "state.sqlite"
+    other_show_path = tmp_path / "library" / "Other Show" / "episode.mp3"
+    other_show_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", other_show_path)
+    _record_existing_episode(
+        state_db_path,
+        episode_uuid="other-ep",
+        local_path=other_show_path,
+        played=True,
+        podcast_uuid="show-999",
+    )
+
+    _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        max_episodes_per_show=1,
+    )
+
+    assert other_show_path.exists()
+
+
 def test_sync_podcast_orders_newest_first_regardless_of_input_order(monkeypatch, tmp_path):
     shuffled = [FULL_EPISODES[2], FULL_EPISODES[0], FULL_EPISODES[1]]
     monkeypatch.setattr(download_module, "list_full_episodes", lambda token, uuid: shuffled)
