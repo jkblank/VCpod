@@ -151,7 +151,7 @@ wheels = [
 
 [[package]]
 name = "iopenpod"
-version = "1.66.2"
+version = "1.67.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -168,9 +168,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "wasmtime" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/20/924c449aefd239f9a571de5cbc14c8ed3aa770ca893f51d6531ae4075304/iopenpod-1.66.2.tar.gz", hash = "sha256:84477d2f3f943cb0abd3dce2fb48bb9adde10423f69f02de22acb483ad8a20c8", size = 24418176, upload-time = "2026-07-17T01:29:22.321Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/8b/6a5f73b6ddeed391252d7f560859e4b97a0e1974cf5e17c2eb30258ba566/iopenpod-1.67.0.tar.gz", hash = "sha256:0b561b4eac1bfc4186fd19404c37de928a8f97d7f7e6bb8e9a71f34608b04037", size = 24429931, upload-time = "2026-07-30T02:17:54.685Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/7c/35e7ce73b3a7d8128019f9f51b52a1bf855d90f6bd63975cc7ccbb3205d4/iopenpod-1.66.2-py3-none-any.whl", hash = "sha256:85ec30a4ff7684df211039334da76c0951ed4975b2e31c088ae1566d515af2a3", size = 18992242, upload-time = "2026-07-17T01:29:19.223Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/cc/d98859559ac2fa654c1b5d4e67f964381f37cd6c270fda837b1420623089/iopenpod-1.67.0-py3-none-any.whl", hash = "sha256:42c20696737db5751729f34b90beddb94c41a2dd6740322f558bdc1d78b53f1f", size = 19013136, upload-time = "2026-07-30T02:17:52.299Z" },
 ]
 
 [[package]]
@@ -629,7 +629,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "common", directory = "../common" },
-    { name = "iopenpod", specifier = "==1.66.2" },
+    { name = "iopenpod", specifier = "==1.67.0" },
 ]
 
 [package.metadata.requires-dev]

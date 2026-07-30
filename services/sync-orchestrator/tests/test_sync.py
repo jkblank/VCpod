@@ -11,6 +11,7 @@ from common.models import (
     SyncSettings,
 )
 
+import iopenpod.device as _iopenpod_device
 from iopenpod.artworkdb_writer import artworkdb_chunks as artworkdb_chunks_module
 from iopenpod.artworkdb_writer.artwork_types import ArtworkEntry, EncodedFormatPayload
 from iopenpod.device.info import DeviceInfo
@@ -20,9 +21,9 @@ from sync_orchestrator.sync import (
     SyncError,
     _apply_missing_artwork_index_chunk_workaround,
     _backup_progress_adapter,
-    _capabilities_with_artwork_workaround,
     _engine_progress_adapter,
     _MHII_MISSING_INDEX_CHUNK,
+    _register_current_device,
     _ThrottledProgressPrinter,
     _write_mhii_original,
     plan_sync,
@@ -159,54 +160,47 @@ def test_plan_sync_raises_when_external_library_path_missing(tmp_path):
         )
 
 
-def test_capabilities_workaround_corrects_ipod_video_identity_and_finds_real_artwork_formats():
+def test_register_current_device_returns_real_capabilities_for_known_family():
     # Real DeviceInfo, real (unmocked) capabilities_for_family_gen — this
-    # is meant to prove iopenpod's own real table resolves correctly once
-    # given the right identity, not just that our code calls some mock
-    # the way we expect.
-    info = DeviceInfo(path="/fake/mount")
-    info.model_family = "iPod Video"
-    info.generation = ""
-
-    capabilities = _capabilities_with_artwork_workaround(info)
-
-    assert info.model_family == "iPod"
-    assert info.generation == "5.5th Gen"
-    assert capabilities.supports_artwork is True
-    assert len(capabilities.cover_art_formats) > 0
-
-
-def test_capabilities_workaround_corrects_real_enrich_output_ambiguous_placeholder():
-    # This is the actual shape enrich() produces for this real device
-    # (confirmed live: "cached family 'iPod Video' conflicts with live USB
-    # PID 0x1209 family 'iPod'; using live USB identity") — model_family
-    # is already collapsed to "iPod" with an EMPTY generation by the time
-    # this function runs, never the literal "iPod Video" string. The
-    # sibling test above using model_family="iPod Video" passed even
-    # against the old buggy code (which only checked for that literal
-    # string) and never caught this — this test would have failed on it.
+    # is meant to prove iopenpod's own real table resolves correctly for
+    # an already-correctly-identified device (as of iopenpod==1.67.0,
+    # enrich() resolves this project's real 5.5th Gen unit natively —
+    # see notes.md — so this function no longer needs to hand-correct
+    # model_family/generation itself, just register the device and
+    # return its capabilities).
     info = DeviceInfo(path="/fake/mount")
     info.model_family = "iPod"
-    info.generation = ""
+    info.generation = "5.5th Gen"
 
-    capabilities = _capabilities_with_artwork_workaround(info)
+    capabilities = _register_current_device(info)
 
-    assert info.model_family == "iPod"
-    assert info.generation == "5.5th Gen"
     assert capabilities.supports_artwork is True
     assert len(capabilities.cover_art_formats) > 0
 
 
-def test_capabilities_workaround_falls_back_for_unrecognized_family():
+def test_register_current_device_registers_device_for_path():
+    # Nothing else in our headless path calls iopenpod's own
+    # set_current_device() — this registration is still required (not a
+    # workaround for a bug, just something our path must do itself).
+    info = DeviceInfo(path="/fake/mount")
+    info.model_family = "iPod"
+    info.generation = "5.5th Gen"
+
+    _register_current_device(info)
+
+    assert _iopenpod_device.get_current_device_for_path("/fake/mount") is info
+
+
+def test_register_current_device_falls_back_for_unrecognized_family():
     info = DeviceInfo(path="/fake/mount")
     info.model_family = "Some Unknown Device"
     info.generation = ""
 
-    capabilities = _capabilities_with_artwork_workaround(info)
+    capabilities = _register_current_device(info)
 
     assert capabilities.supports_artwork is False
-    # Identity is left alone for families this workaround doesn't know
-    # anything special about.
+    # Identity is left alone — this function no longer tries to correct
+    # identity for any family, known or unknown.
     assert info.model_family == "Some Unknown Device"
 
 

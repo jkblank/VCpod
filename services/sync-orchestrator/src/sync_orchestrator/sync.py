@@ -223,58 +223,45 @@ def _apply_missing_artwork_index_chunk_workaround() -> None:
     _artworkdb_chunks._write_mhii = _write_mhii_with_missing_index_chunk
 
 
-def _capabilities_with_artwork_workaround(info: DeviceInfo) -> Any:
+def _register_current_device(info: DeviceInfo) -> Any:
     """EngineRequest.device_capabilities doesn't reach the actual
     write-time decision: iopenpod.sync._db_io and the real ArtworkDB
     writer (artworkdb_writer/rgb565.py) both re-resolve capabilities/
     formats themselves via a private in-process device registry
-    (get_current_device_for_path). Patch that registry to return our
-    own DeviceInfo instance so every consumer sees it, regardless of
-    how each individual iopenpod module happened to import
-    capabilities_for_family_gen (confirmed some do
-    `from iopenpod.device import capabilities_for_family_gen` —
-    package-level, reachable by patching it here — while others do
-    `from .capabilities import capabilities_for_family_gen` — a direct
-    binding our patch never reaches; rgb565.py's real artwork writer
-    sidesteps this entirely by reading model_family/generation directly
-    off the device object instead, so fixing those two fields on the
-    object itself is what actually matters).
+    (get_current_device_for_path). Our headless path never calls
+    iopenpod's own set_current_device(), so patch that registry to
+    return our own DeviceInfo instance ourselves — every consumer needs
+    this, regardless of how each individual iopenpod module happened to
+    import capabilities_for_family_gen.
 
-    enrich() (device/info.py) resolves this real device's identity to a
-    coarse, ambiguous placeholder (model_family="iPod", generation="")
-    instead of the more specific "iPod Video"/"5.5th Gen" its own
-    SysInfo reports — confirmed live via enrich()'s own "cached family
-    'iPod Video' conflicts with live USB PID 0x1209 family 'iPod'; using
-    live USB identity" log line. iopenpod's real capabilities table
-    (device/capabilities.py) already has a complete, correct entry for
-    ("iPod", "5.5th Gen") — including cover_art_formats pointing at
-    format IDs 1028/1029, the exact IDs already seen live on this
-    device's own on-disk artwork — so correcting the identity here is
-    enough; no capabilities data is actually missing. See notes.md."""
+    Until iopenpod==1.67.0 this function also had to hand-correct
+    model_family/generation: enrich() (device/info.py) used to resolve
+    this real device's identity to a coarse, ambiguous placeholder
+    (model_family="iPod", generation="") instead of the more specific
+    "iPod Video"/"5.5th Gen" its own SysInfo reports, because USB PID
+    0x1209 is shared by 5th/5.5th gen and Linux had no privilege-safe
+    way to read the real Apple product serial needed to disambiguate
+    them. Confirmed fixed (2026-07-30): once iopenpod's own
+    61-iopenpod.rules udev rule is installed (see notes.md), enrich()
+    resolves this device natively — model_family='iPod',
+    generation='5.5th Gen', model_number='MA450', full artwork
+    capabilities including cover_art_formats 1028/1029 — with no
+    override needed. Direct enrich() call against the real device
+    confirmed this; no more "cached family conflicts with live USB
+    PID... using live USB identity" collapse. See notes.md for the full
+    verification."""
     _iopenpod_device.get_current_device_for_path = lambda path: info
 
-    if info.model_family == "iPod Video" or (
-        info.model_family == "iPod" and not info.generation
-    ):
-        # The literal "iPod Video" check is a defensive no-op today:
-        # enrich() already collapses this device down to the ambiguous
-        # ("iPod", "") placeholder before this function ever sees it
-        # (confirmed live — see docstring above), so it's the second
-        # clause that actually fires in practice. Kept in case a future
-        # iopenpod version stops doing that collapsing.
-        info.model_family = "iPod"
-        info.generation = "5.5th Gen"
-
-    capabilities = _iopenpod_device.capabilities_for_family_gen(
-        info.model_family, info.generation or ""
-    )
-    if capabilities is not None and capabilities.cover_art_formats:
-        return capabilities
-
-    # Fallback for any other still-unrecognized device: force
-    # supports_artwork=False rather than risk a bad ArtworkDB write.
-    capabilities = dataclasses.replace(info.capabilities, supports_artwork=False)
-    _iopenpod_device.capabilities_for_family_gen = lambda *a, **kw: capabilities
+    capabilities = info.capabilities
+    if not capabilities.cover_art_formats:
+        # Defensive fallback for any genuinely unrecognized device (not
+        # this project's known 5.5th Gen unit): force
+        # supports_artwork=False on the object we return rather than
+        # risk a bad ArtworkDB write. Deliberately scoped to the return
+        # value only, not a global capabilities_for_family_gen patch —
+        # write_itunesdb already has a documented "abort rather than
+        # guess" default for supports_artwork=False.
+        capabilities = dataclasses.replace(capabilities, supports_artwork=False)
     return capabilities
 
 
@@ -412,7 +399,7 @@ def plan_sync(
     if not fpcalc_path:
         raise SyncError("fpcalc not found on PATH (chromaprint not installed)")
 
-    capabilities = _capabilities_with_artwork_workaround(device_info)
+    capabilities = _register_current_device(device_info)
     _apply_missing_artwork_index_chunk_workaround()
     storage = _DeviceStorage.from_device_info(device_info)
     options = EngineOptions(

@@ -1875,3 +1875,120 @@ that a totally clean, successful sync looked like something had gone
 wrong. Fixed to check `'Title'` first, with the old checks kept as
 fallbacks; regression test added asserting a big `items` list never
 ends up in the printed output.
+
+## iopenpod 1.66.2 → 1.67.0 — the 5.5th-gen identity workaround is now dead code; the ArtworkDB mhii chunk workaround is not
+
+**2026-07-30.** iopenpod shipped 1.67.0 with, per its own release notes,
+"Fixes to device identification flow on Linux." Bumped
+`services/sync-orchestrator/pyproject.toml`'s pin, `uv lock` + `uv
+sync`, full suite green (77 tests) before touching anything else. The
+internals our two monkeypatches touch (`get_current_device_for_path`,
+`capabilities_for_family_gen`, `artworkdb_writer.artworkdb_chunks
+._write_mhii`) all still exist with identical signatures, so nothing
+broke outright — but worth checking whether either patch had become
+unnecessary, or worse, is now fighting a fixed upstream instead of a
+broken one.
+
+**What actually changed**: a new `device/linux_identity.py` module plus
+a provenance-ranked field-source system in `enrich()`
+(`_set_field_from_source`, `_source_rank`/`device/authority.py`).
+Crucially this requires iopenpod's own separate udev rule
+(`61-iopenpod.rules`, asset bundled in the package, distinct from this
+project's own `99-ipod-music-stack.rules`) to be installed — it reads
+the real Apple product serial off SCSI VPD page 0x80 (systemd-udevd
+already runs `scsi_id` as root for storage discovery; the rule just
+captures that page into `ID_IOPENPOD_PRODUCT_SERIAL` without granting
+raw-disk access) and publishes it via
+`/dev/disk/by-id/ipod-<serial>`. Without that rule, Linux identity
+resolution still falls back to firewire_guid/usb_pid only, and
+`device/models.py`'s `USB_PID_TO_MODEL[0x1209] = ("iPod", "")` coarse
+mapping (5th/5.5th gen share this PID) is **unchanged** in 1.67.0 — so
+the fix only actually applies once the rule is installed.
+
+Installed it live against the real device via `iopenpod
+--linux-identity-status <mount>` (prints a self-contained, safe shell
+script when the rule isn't installed yet — ran it verbatim, no
+modifications). `state=ready`, `serial=8K6382K4V9S` afterward — this is
+the same value already seen as one of the two inconsistent
+`device_id` directories under `state/device_backups/` from the earlier
+backup-retention work (`000A270015AE6188` was always the FireWire GUID
+misread as a device identifier in earlier sessions; `8K6382K4V9S` was
+the real Apple product serial all along, just not reliably readable
+without this rule).
+
+**Direct verification** (bypassing our own code entirely — called
+`iopenpod.device.info.enrich()` straight against the real mounted
+device): `model_family='iPod'`, `generation='5.5th Gen'`,
+`model_number='MA450'`, every field's `_field_sources` value
+`'linux_scsi'`, and `info.capabilities` already correctly populated
+(`cover_art_formats` = formats 1028/1029, `supports_artwork=True`) —
+with zero use of our monkeypatch. No "cached family conflicts with
+live USB PID... using live USB identity" collapse anywhere in a full
+plan-only sync run either (`grep`-checked the whole log for
+conflict/coarse/warning text — nothing).
+
+**Conclusion**: the identity-correction half of
+`_capabilities_with_artwork_workaround` (the `if model_family ==
+"iPod Video" or (== "iPod" and not generation)` block, and the
+process-global `capabilities_for_family_gen` monkeypatch fallback) is
+confirmed dead for this device now that the udev rule is installed.
+Simplified and renamed to `_register_current_device` — it still has to
+patch `get_current_device_for_path` (nothing else in this project's
+headless path ever calls iopenpod's own `set_current_device()`, so that
+part isn't a workaround, it's a real requirement), and still returns
+`DeviceCapabilities(supports_artwork=False)` for a genuinely
+unrecognized family as a safety net — but no longer hand-corrects
+identity, and no longer mutates `capabilities_for_family_gen` globally
+(scoped the unrecognized-family fallback to the returned object only).
+Old tests asserting the coarse-placeholder-correction behavior replaced
+with tests asserting the new, narrower behavior.
+
+**Separately confirmed still needed**: read 1.67.0's actual
+`artworkdb_chunks._write_mhii()` source directly — still only writes
+`len(children)` for the mhii `childCount` field, still never appends
+the real-iTunes-shaped third child (the missing-mhod-type-6 fix in
+`_apply_missing_artwork_index_chunk_workaround`/
+`_MHII_MISSING_INDEX_CHUNK`). Untouched, still wired into `plan_sync`.
+
+**Also fixed while verifying**: the diagnostic plan-only sync used to
+check all this was accidentally run without `--skip-backup` the first
+time, and spent 10+ minutes on `BackupManager`'s full-file-hash pass
+before being killed and restarted — that phase deliberately never
+trusts a cache ("removable filesystems can retain coarse timestamps
+across content changes"), so `FingerprintCache` (warm, last saved the
+day before) never had a chance to help. Re-run with `--skip-backup`
+(safe: a recent snapshot already existed, nothing had been written to
+the device since) finished in 1m20s. Not a bug, just a reminder:
+`--skip-backup` is the right flag for a read-only diagnostic run
+against a device that hasn't changed.
+
+**Follow-up**: `config/profiles/john.yaml`'s `device.match_by` switched
+from `volume_label` to `serial` (`match_value: "8K6382K4V9S"`) now that
+the serial is reliably readable — more robust than the volume label,
+which has already changed once in this project's history (a real
+iTunes resync renamed the volume to "VBOXUSER'S", see the ArtworkDB
+mhii investigation above). `sync_orchestrator/device.py`'s
+`find_matching_device` already supported `match_by: "serial"` before
+this (checks `match_value in (info.serial, info.firewire_guid)`) — no
+code change needed there, just the config value.
+
+Our own udev trigger rule
+(`services/sync-orchestrator/udev/99-ipod-music-stack.rules`, currently
+**intentionally disabled** on this host —
+`/etc/udev/rules.d/99-ipod-music-stack.rules.disabled` — so auto-sync
+doesn't unmount the device mid-development) still matches on
+`idVendor`/`idProduct` at the raw USB `ACTION=="add"` event, before a
+block device exists — too early for `ID_IOPENPOD_PRODUCT_SERIAL` to be
+available (that's only set once iopenpod's `61-iopenpod.rules` runs
+against the later `SUBSYSTEM=="block", ENV{DEVTYPE}=="disk"` event).
+Matching our trigger by serial instead — the more precise "the
+best way to do automount/autosync" the user was after — would mean
+switching our rule to match that same later block/disk event and
+condition on `ENV{ID_IOPENPOD_PRODUCT_SERIAL}=="8K6382K4V9S"` instead
+of PID. Because udev processes all matching rule files for one event
+in filename-sorted order, and iopenpod's rule is numbered `61` (ours is
+`99`), our rule would still see iopenpod's `ENV{}` assignment from
+earlier in the same event pass — no race condition. Not yet
+implemented (rule stays disabled by request); the design is confirmed
+sound, just needs the actual rule text change once auto-sync is
+re-enabled.
