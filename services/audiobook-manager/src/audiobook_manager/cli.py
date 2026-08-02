@@ -128,7 +128,13 @@ def main() -> None:
     )
     merge_parser.add_argument("--parts-dir", required=True)
     merge_parser.add_argument("--output", required=True)
-    merge_parser.add_argument("--bitrate", default="64k")
+    merge_parser.add_argument(
+        "--bitrate",
+        default=None,
+        help="Force a flat lossy AAC bitrate (e.g. 64k), overriding the "
+        "default source-matching/lossless-cutover policy (see "
+        "merge.select_encoding)",
+    )
     merge_parser.set_defaults(func=_cmd_merge)
 
     tag_parser = subparsers.add_parser(
@@ -148,7 +154,13 @@ def main() -> None:
     import_parser.add_argument("--parts-dir", required=True)
     import_parser.add_argument("--library-root", required=True)
     import_parser.add_argument("--state-root", required=True)
-    import_parser.add_argument("--bitrate", default="64k")
+    import_parser.add_argument(
+        "--bitrate",
+        default=None,
+        help="Force a flat lossy AAC bitrate (e.g. 64k), overriding the "
+        "default source-matching/lossless-cutover policy (see "
+        "merge.select_encoding)",
+    )
     import_parser.set_defaults(func=_cmd_import_audiobook)
 
     args = parser.parse_args()

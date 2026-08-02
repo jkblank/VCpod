@@ -107,6 +107,25 @@ def test_near_end_position_marks_played_even_with_zero_playcount():
     assert result == {"/library/podcasts/Show/ep.mp3": (True, 3540)}
 
 
+def test_bare_filename_source_path_hint_matches_full_local_path():
+    # Regression: iopenpod's own mapping file (iOpenPod.json) stores
+    # TrackMapping.source_path_hint as a bare filename, not the absolute
+    # path our state db's local_path uses -- confirmed live against a
+    # real device, where every podcast episode with real activity failed
+    # the old exact-path membership check, 8/8. Matching by filename
+    # alone is safe because our episode filenames embed the Pocket Casts
+    # episode UUID (globally unique) -- see download.py's _episode_path.
+    before = {
+        "mhlt": [{"db_track_id": 1, "recent_playcount": 1, "bookmark_time": 1_700_000}]
+    }
+    mapping = _FakeMappingFile({1: "Episode Title [abc-123].mp3"})
+    local_path = "/home/john/Music/music-stack/library/podcasts/Show/Episode Title [abc-123].mp3"
+
+    result = resolve_played_states(before, mapping, {local_path: 1800})
+
+    assert result == {local_path: (True, 1700)}
+
+
 def test_missing_db_track_id_is_skipped():
     before = {"mhlt": [{"recent_playcount": 1, "bookmark_time": 100_000}]}
     mapping = _FakeMappingFile({1: "/library/podcasts/Show/ep.mp3"})

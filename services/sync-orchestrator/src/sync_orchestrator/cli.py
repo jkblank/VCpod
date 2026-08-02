@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import subprocess
 import sys
 import time
@@ -93,6 +94,13 @@ def _print_plan(plan) -> None:
 
 
 def _cmd_sync(args: argparse.Namespace) -> int:
+    if args.debug:
+        # Surfaces playstate.py's per-track resolution logging (which
+        # branch of the device-read-back -> mapping -> local-episode chain
+        # a track resolved through, or where it silently dropped out) --
+        # see notes.md for the investigation this was added for.
+        logging.basicConfig(level=logging.DEBUG, format="%(name)s: %(message)s")
+
     try:
         profile = load_profile_config(args.profile)
     except ConfigError as e:
@@ -475,6 +483,12 @@ def main() -> None:
         default=1800,
         help="Max seconds to wait for another sync of this profile to "
         "finish (default 1800).",
+    )
+    sync_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable DEBUG-level logging, including playstate.py's "
+        "per-track device-play-state resolution trace.",
     )
     sync_parser.set_defaults(func=_cmd_sync)
 

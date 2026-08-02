@@ -16,7 +16,11 @@ ipod_by_db_track_id lookup is built.
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Fraction of an episode's duration a bookmark position must reach to be
 # considered "played through" rather than merely "in progress" — matches
@@ -43,7 +47,18 @@ def resolve_played_states(
     episode — most commonly a music track) are silently skipped: this is
     how music playback naturally doesn't get treated as podcast state
     without needing an explicit is-this-a-podcast check.
+
+    Matched by filename, not full path: iopenpod's own mapping file
+    (iOpenPod.json) stores TrackMapping.source_path_hint as a bare
+    filename, not the absolute path our own state db's local_path uses --
+    confirmed live (2026-08-02) via the debug logging below, where every
+    single podcast episode with real device activity failed the old
+    full-path membership check, 8/8, on this exact mismatch. Safe to match
+    on filename alone because our own episode filenames already embed the
+    Pocket Casts episode UUID (see download.py's _episode_path), which is
+    globally unique -- no two episodes can collide. See notes.md.
     """
+    durations_by_basename = {Path(p).name: p for p in durations_by_path}
     results: dict[str, tuple[bool, int]] = {}
     for track in before.get("mhlt", []):
         recent_playcount = track.get("recent_playcount", 0)
@@ -53,18 +68,39 @@ def resolve_played_states(
 
         db_track_id = track.get("db_track_id", track.get("db_id"))
         if not db_track_id:
+            logger.debug(
+                "activity but no db_track_id: recent_playcount=%r bookmark_time_ms=%r",
+                recent_playcount, bookmark_time_ms,
+            )
             continue
 
         entry = mapping.get_by_db_track_id(db_track_id)
         if entry is None:
+            logger.debug(
+                "db_track_id=%s recent_playcount=%r bookmark_time_ms=%r: "
+                "no mapping entry (iOpenPod.json has no TrackMapping for this id)",
+                db_track_id, recent_playcount, bookmark_time_ms,
+            )
             continue
         _fingerprint, track_mapping = entry
         source_path = track_mapping.source_path_hint
-        if not source_path or source_path not in durations_by_path:
+        if not source_path:
+            logger.debug(
+                "db_track_id=%s: mapping entry has no source_path_hint", db_track_id,
+            )
+            continue
+        source_basename = Path(source_path).name
+        local_path = durations_by_basename.get(source_basename)
+        if local_path is None:
+            logger.debug(
+                "db_track_id=%s source_path=%r (basename=%r): not a known "
+                "podcast episode filename -- most commonly a music track",
+                db_track_id, source_path, source_basename,
+            )
             continue
 
         played_up_to = bookmark_time_ms // 1000
-        duration = durations_by_path[source_path]
+        duration = durations_by_path[local_path]
         if duration > 0:
             # Position-based check, independent of recent_playcount: a
             # real report was a played-but-not-removed episode after the
@@ -91,6 +127,12 @@ def resolve_played_states(
             # against — report progress, not "played".
             played = False
 
-        results[source_path] = (played, played_up_to)
+        logger.debug(
+            "db_track_id=%s local_path=%r: recent_playcount=%r bookmark_time_ms=%r "
+            "duration=%r -> played=%r played_up_to=%r",
+            db_track_id, local_path, recent_playcount, bookmark_time_ms,
+            duration, played, played_up_to,
+        )
+        results[local_path] = (played, played_up_to)
 
     return results

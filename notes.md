@@ -1992,3 +1992,133 @@ earlier in the same event pass — no race condition. Not yet
 implemented (rule stays disabled by request); the design is confirmed
 sound, just needs the actual rule text change once auto-sync is
 re-enabled.
+
+## Audiobook merge bitrate: fixed a real quality regression, plus two bugs found processing the next real batch
+
+**2026-08-01/02.** The Kafka audiobook (`library/audiobooks/Franz
+Kafka/The Trial`) sounded visibly worse than the source. Root cause:
+`audiobook_manager.merge.merge_parts_to_m4b` hardcoded AAC output at a
+flat `64k` regardless of source — Kafka's real source (still on
+`olive:/mnt/storage/inprogress/Franz Kafka - The Trial/`) is 96kbps
+stereo MP3, so it got knocked down to 64k AAC, a real bitrate cut plus
+a lossy MP3→AAC generation.
+
+Fixed per the user's stated policy — match source bitrate, capped at
+what's sane for spoken word, go lossless above that — as
+`merge.select_encoding` (`services/audiobook-manager/src/
+audiobook_manager/merge.py`): AAC at ~source bitrate for anything
+≤96kbps (iOpenPod's own "Spoken Word Bitrate" ceiling —
+`gui/widgets/settingsPage.py`, options cap at 96kbps — the established
+convention in this device's own tooling for where dialogue stops
+benefiting from a higher bitrate), ALAC lossless above that. `bitrate`
+param is now `None` by default (auto); an explicit value still forces
+the old flat-lossy behavior.
+
+**Rounding edge case, confirmed live**: the very first re-encode of
+Kafka's real source produced a 4.1GB file (should have been ~400MB) —
+`select_encoding` compared the *unrounded* probed bitrate against the
+96kbps cap, and ffprobe's format-level `bit_rate` includes
+container/frame overhead, so a real 96kbps MP3 probes at
+96.005-96.006kbps — just over the cap, tripping the lossless branch for
+a ~16x storage cost with zero quality benefit (the source has no more
+information in that overhead to preserve). Fixed by rounding before
+the comparison. Redone correctly: 398MB, AAC ~99kbps, all 12 chapters
+intact, same Audible edition/tags as the original import (Stream
+Readers, narrated by Daniel Brooks, B0H8SSMPHW).
+
+**Real per-book judgment call, confirmed with the user rather than
+guessed**: pulled 4 more books from `olive:/mnt/storage/audiobooks/`
+(1984, Animal Farm, Marcus Aurelius Meditations, Neil Postman's
+Amusing Ourselves to Death). 1984's source has 2 of 14 parts at
+128kbps against the other 12 at ~56kbps (a mismatched rip) —
+`select_encoding` takes the *max* across parts, so this pushed the
+entire book to lossless ALAC (~2.9GB) to protect 2 outlier chapters.
+User confirmed: keep it (safest, matches the policy literally) over
+either lossy-downgrading the 2 outlier chapters to match the book
+average, or a one-off two-pass merge. No code change from this —
+documented so a future max()-vs-average design debate doesn't have to
+re-derive it.
+
+**Second real bug found in the same batch**: `merge_parts_to_m4b`'s
+ffmpeg concat-list format (`file '{path}'`) had no escaping for a
+literal single quote inside a path. Neil Postman's source has
+`...Publisher's Introduction.mp3` — ffmpeg's concat demuxer closes the
+quoted field at that apostrophe and fails to open the truncated path
+(`ffmpeg exited 254`). Fixed with `_concat_escape` (close-quote,
+escaped-quote, reopen-quote — `'\''`, the standard shell-quoting
+technique, since ffmpeg's concat format follows the same convention).
+Regression test added (`test_merge_parts_to_m4b_handles_apostrophe_in_
+part_filename`).
+
+Also extended `discover_parts` to accept `.m4a` sources (previously
+`.mp3`-only) — Animal Farm's source is AAC `.m4a`, not MP3.
+
+**Also found while staging**: `services/common/tests/test_config.py`'s
+`test_example_profiles_load` still asserted `profiles["john"].device.
+match_value == "JOHN'S IPOD"` — stale from before the serial-matching
+switch documented above. Fixed to assert the real current values
+(`match_by: serial`, `match_value: "8K6382K4V9S"`).
+
+Full device sync after all 5 books were staged: `to_add=53
+to_remove=1` (only the old degraded Kafka file, replaced by the new
+one — exactly the expected removal), storage `+7.1GB -251MB`. Executed
+clean with `--execute --allow-removals`.
+
+## Podcast played-state round trip was completely broken for every episode — fixed
+
+**2026-08-02.** User reported finishing several podcast episodes
+on-device that weren't getting marked played or removed. Investigated
+in plan mode (see the session transcript / `/home/john/.claude/plans/`
+for the full write-up) rather than guessing at a fix.
+
+Traced the pipeline: `sync_orchestrator/playstate.py`'s
+`resolve_played_states` (called from every `plan_sync`, plan-only or
+`--execute`) is the *only* place a device's `Play Counts` read-back
+reaches `state/{profile}.sqlite`, which both `podcast-manager`'s local
+deletion (`download.py`) and this project's own direct on-device
+removal (`sync_orchestrator/podcast_removal.py` — matches a played
+`EpisodeRecord` against on-device tracks by enclosure URL/title+album
+and issues `REMOVE_FROM_IPOD` directly, independent of whether the
+local file was already deleted) both key off.
+
+Added temporary DEBUG-level logging to `resolve_played_states` (plus a
+new `--debug` flag on `sync-orchestrator sync`) to make its
+previously-silent per-track skip points observable, then re-ran
+against the real connected device. Result: **8/8** podcast episodes
+with real device activity failed at the same point —
+`track_mapping.source_path_hint not in durations_by_path`. Root cause:
+iopenpod's own mapping file (`iOpenPod.json`) stores
+`source_path_hint` as a bare filename (e.g. `Open Sauce vs Better
+Software Conference [2dc422bb-...].mp3`), not the absolute path our
+`EpisodeRecord.local_path` uses — an exact full-path membership check
+can never match against a bare filename. This wasn't a "a few
+episodes" bug — with `local_path` stored absolute (as it must be, see
+CLAUDE.md's `.resolve()` lore), the device-read-back path could not
+have worked for *any* episode in this state. Note this is the
+device-read-back path specifically: the 9 episodes already showing
+`played=1` before this fix got there via the separate, working
+Pocket-Casts-remote path (`podcast_manager.download._merged_played_state`
+ORs in `record_remote_play_state`, independent of device read-back) —
+not evidence the device path ever worked. Whether this is a
+long-standing bug or a regression from whenever `local_path` was made
+absolute (fixing the unrelated m3u8-path bug — see CLAUDE.md) isn't
+established; not worth archaeology, the fix is the same either way.
+
+Fixed by matching on filename instead of full path
+(`durations_by_basename` lookup in `resolve_played_states`) — safe
+because this project's own episode filenames already embed the Pocket
+Casts episode UUID (`download.py`'s `_episode_path`), which is
+globally unique, so no two episodes can collide on basename.
+Regression test added
+(`test_bare_filename_source_path_hint_matches_full_local_path`).
+
+**Live-verified end to end, same session**: re-ran against the real
+device with the fix — `8 episode(s) with new local play state
+recorded` (matching the 8 debug-log entries exactly), and one episode
+that had already crossed the 90% played threshold
+(`playstate.PLAYED_THRESHOLD`) was immediately proposed for on-device
+removal in the *same* plan (`podcast_removal.py` doesn't require a
+separate podcast-manager pass first, unlike the local-file-deletion
+side of this — it keys purely off the state db's `played` flag against
+on-device tracks). Confirms the fix is complete and sufficient on its
+own; no other link in the chain needed changing.

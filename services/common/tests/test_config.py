@@ -27,7 +27,8 @@ def test_example_profiles_load():
     assert set(profiles) == {"alice", "bob", "john"}
     assert profiles["alice"].device.match_by == "serial"
     assert profiles["bob"].device.match_by == "volume_label"
-    assert profiles["john"].device.match_value == "JOHN'S IPOD"
+    assert profiles["john"].device.match_by == "serial"
+    assert profiles["john"].device.match_value == "8K6382K4V9S"
     assert profiles["bob"].podcasts.shows == [
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
