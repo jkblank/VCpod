@@ -335,6 +335,117 @@ def test_print_plan_playlist_edit_prints_title_not_raw_dict(capsys):
     assert "playlist_id" not in out
 
 
+def test_print_plan_playlist_remove_prints_title_not_raw_dict(capsys):
+    # Regression: playlists_to_remove had no per-item printing at all before
+    # this test existed -- a real removal (see cli.py's playlists_to_remove
+    # gate) was invisible in the plan output, findable only by count. See
+    # notes.md.
+    playlist = {"Title": "Playlist", "playlist_id": 789, "items": []}
+    plan = _fake_plan(playlists_to_remove=[playlist])
+
+    cli_module._print_plan(plan)
+
+    out = capsys.readouterr().out
+    assert "- playlist: Playlist" in out
+    assert "playlist_id" not in out
+
+
+# --- _run_sync's removal safety gate -------------------------------------
+
+
+def _fake_planned(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        plan=_fake_plan(),
+        device_info=SimpleNamespace(path="/mnt/ipod"),
+        before_track_count=0,
+        snapshot=None,
+        unresolved_selections=[],
+        unresolved_audiobook_selections=[],
+        play_states_updated=0,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _run_sync_args(**overrides) -> argparse.Namespace:
+    base = dict(
+        library_root="/library",
+        state_root="/state",
+        pc_folders=None,
+        skip_backup=True,
+        skip_podcasts=False,
+        execute=True,
+        allow_removals=False,
+        skip_eject=True,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_run_sync_refuses_execute_when_playlist_removal_proposed_without_allow_removals(
+    monkeypatch, tmp_path
+):
+    # Regression: plan.playlists_to_remove is a separate list from
+    # plan.to_remove (tracks) on SyncPlan -- the removal safety gate only
+    # checked the latter, so a plain --execute (no --allow-removals) would
+    # have removed a real on-device playlist with zero review step. See
+    # notes.md.
+    profile = SimpleNamespace(
+        profile="john",
+        device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+    )
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: SimpleNamespace(
+            path="/mnt/ipod", model_family="iPod", generation="5.5th Gen",
+            model_number="MA450", capacity="80GB",
+        ),
+    )
+    playlist = {"Title": "Playlist", "playlist_id": 1}
+    planned = _fake_planned(plan=_fake_plan(playlists_to_remove=[playlist]))
+    monkeypatch.setattr(cli_module, "plan_sync", lambda **kwargs: planned)
+    execute_calls = []
+    monkeypatch.setattr(
+        cli_module, "execute_sync", lambda *a, **k: execute_calls.append(a) or (None, None)
+    )
+
+    result = cli_module._run_sync(_run_sync_args(allow_removals=False), profile)
+
+    assert result == 1
+    assert execute_calls == []
+
+
+def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
+    monkeypatch, tmp_path
+):
+    profile = SimpleNamespace(
+        profile="john",
+        device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+    )
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: SimpleNamespace(
+            path="/mnt/ipod", model_family="iPod", generation="5.5th Gen",
+            model_number="MA450", capacity="80GB",
+        ),
+    )
+    playlist = {"Title": "Playlist", "playlist_id": 1}
+    planned = _fake_planned(plan=_fake_plan(playlists_to_remove=[playlist]))
+    monkeypatch.setattr(cli_module, "plan_sync", lambda **kwargs: planned)
+    execute_calls = []
+    monkeypatch.setattr(
+        cli_module, "execute_sync",
+        lambda *a, **k: execute_calls.append(a) or (
+            SimpleNamespace(summary="done", tracks_added=0), {"mhlt": []}
+        ),
+    )
+
+    result = cli_module._run_sync(_run_sync_args(allow_removals=True), profile)
+
+    assert result == 0
+    assert len(execute_calls) == 1
+
+
 def test_cmd_auto_sync_fails_after_wait_seconds_exhausted_with_no_match(monkeypatch, tmp_path):
     config_root = tmp_path / "config"
     (config_root / "profiles").mkdir(parents=True)

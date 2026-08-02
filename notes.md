@@ -2185,3 +2185,44 @@ in an earlier played-episode removal cycle, before this fix existed;
 `build_podcast_removal_items` correctly skips anything not currently
 on-device) with `(unsubscribed)` labels, net -476MB; executed clean
 with `--allow-removals`.
+
+## `--allow-removals` didn't actually gate playlist removals — fixed
+
+**2026-08-02, same day.** Investigating a stray on-device playlist
+literally titled "Playlist" (user asked where it came from — never
+traced to anything this project's own pipeline writes; likely a
+leftover from this device's pre-project real-iTunes ownership, see the
+"VBOXUSER'S" volume-rename history earlier in this file), a routine
+plan-only run happened to show `playlists_to_remove=1` for the first
+time this session. Went to identify which playlist before executing
+(`cli.py`'s `_print_plan` prints `playlists_to_add`/`playlists_to_edit`
+titles individually but never printed `playlists_to_remove` items at
+all — only the count) and found something more serious while checking:
+`_run_sync`'s hard safety gate
+(`if planned.plan.to_remove and not args.allow_removals: return
+_fail(...)`) only ever checked `plan.to_remove` (tracks).
+`plan.playlists_to_remove` is a **separate** list on iopenpod's
+`SyncPlan` (confirmed in `sync/contracts.py`) that was never covered —
+a plain `--execute` with no `--allow-removals` would have silently
+removed a real on-device playlist with zero review step, the exact
+failure mode `docs/m6-ipod-headless-recommendation.md`'s "11 playlists
+wiped" incident already scarred this project over, just for playlists
+instead of tracks.
+
+Confirmed live via a direct `plan_sync()` call (read-only, no
+`--execute`) that the pending removal really was the mystery
+"Playlist" (`playlist_id=5282529750801489828`, `master_flag=0` —
+confirmed not the device's real master playlist) before doing anything
+about it.
+
+Fixed both gaps: `_print_plan` now prints each `playlists_to_remove`
+item's title (same `Title`/`title`/`name` fallback chain as the
+existing add/edit printing), and `_run_sync` gates
+`plan.playlists_to_remove` behind `--allow-removals` exactly like
+`plan.to_remove` already was. Regression tests added
+(`test_print_plan_playlist_remove_prints_title_not_raw_dict`,
+`test_run_sync_refuses_execute_when_playlist_removal_proposed_without_allow_removals`,
+`test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set`)
+— the latter two are the first direct unit tests of `_run_sync`'s
+removal gate at all; it had only ever been exercised live/manually
+before.

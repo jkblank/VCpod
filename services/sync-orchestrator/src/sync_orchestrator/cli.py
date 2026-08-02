@@ -71,6 +71,8 @@ def _print_plan(plan) -> None:
         print(f"    + playlist: {p.get('Title') or p.get('title') or p.get('name') or p}")
     for p in plan.playlists_to_edit:
         print(f"    ~ playlist: {p.get('Title') or p.get('title') or p.get('name') or p}")
+    for p in plan.playlists_to_remove:
+        print(f"    - playlist: {p.get('Title') or p.get('title') or p.get('name') or p}")
     print(f"  storage: {plan.storage.format()}")
     if plan.to_remove:
         print("  tracks proposed for REMOVAL:")
@@ -200,11 +202,22 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
     # explicit, separate opt-in for that case: --execute alone still
     # refuses on any to_remove, and --allow-removals alone does nothing
     # without --execute.
+    #
+    # Must also cover plan.playlists_to_remove, not just plan.to_remove
+    # (tracks) -- confirmed live these are two separate lists on SyncPlan,
+    # and a plain --execute alone would have removed a real on-device
+    # playlist with zero review step before this was added. See notes.md.
     if planned.plan.to_remove and not args.allow_removals:
         return _fail(
             f"plan proposes removing {len(planned.plan.to_remove)} track(s); "
             "refusing to execute against a real device without --allow-removals "
             "(review the removal list above first)"
+        )
+    if planned.plan.playlists_to_remove and not args.allow_removals:
+        return _fail(
+            f"plan proposes removing {len(planned.plan.playlists_to_remove)} "
+            "playlist(s); refusing to execute against a real device without "
+            "--allow-removals (review the removal list above first)"
         )
 
     print("== Executing ==")
