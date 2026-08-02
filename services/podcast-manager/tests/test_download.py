@@ -738,3 +738,137 @@ def test_sync_shows_captures_lock_timeout_as_error_outcome(
 
     assert outcomes[0].error is not None
     assert outcomes[0].result is None
+
+
+# --- prune_unsubscribed_shows ------------------------------------------------
+
+
+def test_prune_deletes_file_and_flags_episode_for_unsubscribed_show(tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    episode_path = tmp_path / "library" / "Old Show" / "episode.mp3"
+    episode_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", episode_path)
+    _record_existing_episode(
+        state_db_path,
+        episode_uuid="ep-1",
+        local_path=episode_path,
+        played=False,
+        podcast_uuid="show-gone",
+    )
+
+    pruned = download_module.prune_unsubscribed_shows(
+        [PodcastSummary(uuid="show-still-subscribed", title="Other", author="")],
+        state_db_path=state_db_path,
+    )
+
+    assert [e.episode_uuid for e in pruned] == ["ep-1"]
+    assert not episode_path.exists()
+    with StateDB(state_db_path) as db:
+        assert db.get_episode("ep-1").unsubscribed is True
+
+
+def test_prune_leaves_subscribed_show_alone(tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    episode_path = tmp_path / "library" / "Still Here" / "episode.mp3"
+    episode_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", episode_path)
+    _record_existing_episode(
+        state_db_path,
+        episode_uuid="ep-1",
+        local_path=episode_path,
+        played=False,
+        podcast_uuid="show-1",
+    )
+
+    pruned = download_module.prune_unsubscribed_shows(
+        [PodcastSummary(uuid="show-1", title="Still Here", author="")],
+        state_db_path=state_db_path,
+    )
+
+    assert pruned == []
+    assert episode_path.exists()
+    with StateDB(state_db_path) as db:
+        assert db.get_episode("ep-1").unsubscribed is False
+
+
+def test_prune_is_idempotent_across_runs(tmp_path):
+    # Second run must not re-report or re-attempt an already-pruned episode.
+    state_db_path = tmp_path / "state.sqlite"
+    episode_path = tmp_path / "library" / "Old Show" / "episode.mp3"
+    episode_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", episode_path)
+    _record_existing_episode(
+        state_db_path,
+        episode_uuid="ep-1",
+        local_path=episode_path,
+        played=False,
+        podcast_uuid="show-gone",
+    )
+
+    first = download_module.prune_unsubscribed_shows([], state_db_path=state_db_path)
+    second = download_module.prune_unsubscribed_shows([], state_db_path=state_db_path)
+
+    assert len(first) == 1
+    assert second == []
+
+
+def test_prune_does_not_delete_file_still_wanted_by_sibling_profile(tmp_path):
+    # Podcast files are shared/deduped across profiles (no profile name in
+    # the path) -- profile A unsubscribing must not break profile B, which
+    # is still subscribed to the same show and shares the same file.
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    shared_path = tmp_path / "library" / "Shared Show" / "episode.mp3"
+    shared_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", shared_path)
+
+    profile_a_db = state_root / "alice.sqlite"
+    profile_b_db = state_root / "bob.sqlite"
+    for db_path in (profile_a_db, profile_b_db):
+        _record_existing_episode(
+            db_path,
+            episode_uuid="ep-1",
+            local_path=shared_path,
+            played=False,
+            podcast_uuid="show-shared",
+        )
+
+    # Only alice unsubscribes; bob's row is untouched (still not unsubscribed).
+    pruned = download_module.prune_unsubscribed_shows([], state_db_path=profile_a_db)
+
+    assert [e.episode_uuid for e in pruned] == ["ep-1"]
+    assert shared_path.exists()  # bob still needs it
+    with StateDB(profile_a_db) as db:
+        assert db.get_episode("ep-1").unsubscribed is True  # alice's own flag still set
+    with StateDB(profile_b_db) as db:
+        assert db.get_episode("ep-1").unsubscribed is False  # bob's is untouched
+
+
+def test_prune_narrowed_show_filter_is_not_mistaken_for_unsubscribe(tmp_path):
+    # Passing a --show-narrowed list (instead of the full account
+    # subscriptions) would wrongly prune every other subscribed show.
+    # Callers must always pass the full list -- this documents why.
+    state_db_path = tmp_path / "state.sqlite"
+    episode_path = tmp_path / "library" / "Still Subscribed" / "episode.mp3"
+    episode_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", episode_path)
+    _record_existing_episode(
+        state_db_path,
+        episode_uuid="ep-1",
+        local_path=episode_path,
+        played=False,
+        podcast_uuid="show-1",
+    )
+
+    # Simulates passing a --show-narrowed subset that happens to exclude
+    # show-1 for this particular run -- NOT the same as unsubscribing.
+    narrowed_subscriptions = [PodcastSummary(uuid="show-2", title="Other", author="")]
+    pruned = download_module.prune_unsubscribed_shows(
+        narrowed_subscriptions, state_db_path=state_db_path
+    )
+
+    # This demonstrates the function has no way to distinguish "narrowed"
+    # from "unsubscribed" -- it trusts its input completely, so it DOES
+    # prune here. The safety is entirely in the caller passing the full
+    # list (see cli.py/orchestrate.py call sites).
+    assert [e.episode_uuid for e in pruned] == ["ep-1"]

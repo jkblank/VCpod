@@ -1,23 +1,27 @@
 """Removes on-device podcast episodes once they're played (remotely via
-Pocket Casts, or locally via playstate.py's device read-back) — the
-device-side counterpart to podcast-manager's own played-episode file
-deletion (see download.py's delete_played_episodes).
+Pocket Casts, or locally via playstate.py's device read-back) or once
+their show is no longer subscribed to — the device-side counterpart to
+podcast-manager's own local deletion (see download.py's
+delete_played_episodes and prune_unsubscribed_shows).
 
 iopenpod's build_podcast_sync_plan (used for to_add in sync.py) never
 proposes removals on its own — that's iopenpod's sibling
 build_podcast_managed_plan, but only via a slot-based fill/clear model
 (episode_slots, clear_when_listened, clear_older_than) this project
 doesn't use. This module is a much smaller, targeted diff: any episode
-EpisodeRecord.played already says is done, that's still actually present
-on the device, gets a REMOVE_FROM_IPOD item — nothing else.
+EpisodeRecord.played or .unsubscribed already says is done, that's still
+actually present on the device, gets a REMOVE_FROM_IPOD item — nothing
+else.
 
 Matching by enclosure URL (falling back to title+album, same as
 iopenpod's own PodcastTrackMatcher/build_podcast_sync_plan) so an
 already-synced episode is recognized the same way whether the decision
 is to add it or remove it. Deliberately does NOT require the episode's
 local file to still exist — podcast-manager typically deletes it before
-this ever runs, so keying off the state db's played flag (not file
-presence) is what actually decouples the two independent side effects.
+this ever runs (played episodes via delete_played_episodes, unsubscribed
+shows via prune_unsubscribed_shows), so keying off the state db's flags
+(not file presence) is what actually decouples the two independent side
+effects.
 """
 
 from __future__ import annotations
@@ -32,9 +36,10 @@ _PODCAST_MEDIA_TYPE_FLAG = 0x04
 def build_podcast_removal_items(
     episodes: list[EpisodeRecord], ipod_tracks: list[dict]
 ) -> list[SyncItem]:
-    """Returns a REMOVE_FROM_IPOD SyncItem for every played episode still
-    present on the device. Unplayed episodes, and played episodes never
-    actually synced to this particular device, are left alone."""
+    """Returns a REMOVE_FROM_IPOD SyncItem for every played or unsubscribed
+    episode still present on the device. Unplayed episodes of subscribed
+    shows, and episodes never actually synced to this particular device,
+    are left alone."""
     by_enclosure: dict[str, dict] = {}
     by_title_album: dict[tuple[str, str], dict] = {}
     for track in ipod_tracks:
@@ -50,7 +55,7 @@ def build_podcast_removal_items(
 
     items: list[SyncItem] = []
     for episode in episodes:
-        if not episode.played:
+        if not (episode.played or episode.unsubscribed):
             continue
 
         track = None
@@ -61,13 +66,16 @@ def build_podcast_removal_items(
         if track is None:
             continue  # not (or no longer) on this device
 
+        # unsubscribed is the more specific/actionable reason when both
+        # are true (e.g. the user unsubscribed after finishing it).
+        reason = "unsubscribed" if episode.unsubscribed else "played"
         db_track_id = track.get("db_track_id", track.get("db_id"))
         items.append(
             SyncItem(
                 action=SyncAction.REMOVE_FROM_IPOD,
                 db_track_id=db_track_id,
                 ipod_track=track,
-                description=f"\U0001f399 {episode.show_name} — {episode.title} (played)",
+                description=f"\U0001f399 {episode.show_name} — {episode.title} ({reason})",
             )
         )
     return items

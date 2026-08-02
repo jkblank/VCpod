@@ -2122,3 +2122,66 @@ separate podcast-manager pass first, unlike the local-file-deletion
 side of this — it keys purely off the state db's `played` flag against
 on-device tracks). Confirms the fix is complete and sufficient on its
 own; no other link in the chain needed changing.
+
+## Unsubscribed podcast shows were never pruned locally or from the device — fixed
+
+**2026-08-02, same day.** User noticed two shows they'd unsubscribed
+from on Pocket Casts (Dual Boot Diaries, Hard Drive) still had episodes
+on the iPod. Traced the pipeline: unsubscribing correctly stops new
+downloads (`list_subscriptions(token)` just won't return the show
+again), but nothing ever pruned what was *already* downloaded — both
+halves of the device sync plan (`sync_orchestrator/sync.py`'s
+`_load_podcast_feeds` for additions, `podcast_removal.py`'s
+`build_podcast_removal_items` for removals) read purely from the local
+state db and local files, never checking current subscription status.
+The only existing local-deletion path
+(`podcast_manager/download.py`'s `delete_played_episodes`, inside
+`sync_podcast`) only ever runs for a show that's still in
+`subscriptions` — unsubscribing stops it from running for that show
+ever again, so it can't be the thing that notices the unsubscribe
+either. A genuinely missing feature, not a latent bug.
+
+Added `EpisodeRecord.unsubscribed` (same schema-migration pattern as
+`pending_push` — `common/state.py`'s `_migrate_episodes_columns`) and
+`download.prune_unsubscribed_shows`: compares the account's *full,
+unfiltered* subscription list against the state db's distinct
+`podcast_uuid`s, deletes the local file and flags the row for any show
+that's fallen out. Wired into both call sites that already fetch that
+full list before narrowing it for a `--show`-restricted run
+(`podcast_manager/cli.py::_cmd_sync`,
+`music_stack_cli/orchestrate.py::run_sync`) — deliberately placed
+*before* the narrowing, since a one-off `--show` restricted sync is a
+per-run scope choice, not an unsubscribe signal, and using the narrowed
+list there would have wrongly pruned every show outside that run's
+scope.
+
+**Cross-profile correctness, caught during design, not live**: podcast
+audio files are shared/deduped across profiles by design (no profile
+name in `_episode_path`/`show_dir` — see CLAUDE.md). If profile A
+unsubscribes from a show profile B is still subscribed to, deleting the
+shared file would silently break B. `prune_unsubscribed_shows` scans
+sibling `*.sqlite` files in the same state directory before physically
+deleting — skips the delete (but still sets *this* profile's own
+`unsubscribed` flag, since its own device removal must still happen
+independent of the file) if another profile's db still has a
+non-unsubscribed row for that `podcast_uuid`. Not exercised for real
+yet (only one real profile, "john", exists on this install — alice/bob
+are templates), but the sharing behavior itself is real and documented,
+so the bug this avoids is real too.
+
+`podcast_removal.py`'s `build_podcast_removal_items` extended:
+`if not (episode.played or episode.unsubscribed): continue`, with the
+description reason showing whichever is more specific
+(`"(unsubscribed)"` over `"(played)"` when both are true).
+
+**Live-verified end to end**: `music-stack sync --source podcasts`
+against the real account correctly identified and pruned exactly the
+two shows the user named — `Pruned 10 episode(s) from 2 unsubscribed
+show(s): Dual Boot Diaries, Hard Drive` — files gone from
+`library/podcasts/`, state db rows flagged. Next device sync's plan showed 6 of those 10 as actually still present
+on the device (1 Dual Boot Diaries + 5 Hard Drive — the other 4 Dual
+Boot Diaries episodes were presumably already removed from the device
+in an earlier played-episode removal cycle, before this fix existed;
+`build_podcast_removal_items` correctly skips anything not currently
+on-device) with `(unsubscribed)` labels, net -476MB; executed clean
+with `--allow-removals`.

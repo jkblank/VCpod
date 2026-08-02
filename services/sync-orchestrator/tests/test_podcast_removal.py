@@ -9,6 +9,7 @@ def _episode(
     title="Episode One",
     audio_url="https://cdn.example/ep1.mp3",
     played=True,
+    unsubscribed=False,
 ) -> EpisodeRecord:
     return EpisodeRecord(
         episode_uuid=episode_uuid,
@@ -20,6 +21,7 @@ def _episode(
         downloaded_at="2026-07-19T00:00:00+00:00",
         title=title,
         audio_url=audio_url,
+        unsubscribed=unsubscribed,
     )
 
 
@@ -124,6 +126,34 @@ def test_multiple_played_episodes_each_produce_their_own_removal_item():
     items = build_podcast_removal_items(episodes, ipod_tracks)
 
     assert {item.db_track_id for item in items} == {1, 2}
+
+
+def test_unsubscribed_unplayed_episode_on_device_is_proposed_for_removal():
+    episodes = [_episode(played=False, unsubscribed=True)]
+    ipod_tracks = [_ipod_podcast_track()]
+
+    items = build_podcast_removal_items(episodes, ipod_tracks)
+
+    assert len(items) == 1
+    assert items[0].description.endswith("(unsubscribed)")
+
+
+def test_played_episode_description_says_played():
+    episodes = [_episode(played=True, unsubscribed=False)]
+    ipod_tracks = [_ipod_podcast_track()]
+
+    items = build_podcast_removal_items(episodes, ipod_tracks)
+
+    assert items[0].description.endswith("(played)")
+
+
+def test_played_and_unsubscribed_description_prefers_unsubscribed():
+    episodes = [_episode(played=True, unsubscribed=True)]
+    ipod_tracks = [_ipod_podcast_track()]
+
+    items = build_podcast_removal_items(episodes, ipod_tracks)
+
+    assert items[0].description.endswith("(unsubscribed)")
 
 
 def test_bytes_removed_are_recoverable_from_ipod_track_size():

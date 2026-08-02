@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 import httpx
 
 from common.models import GlobalConfig, PlaylistEntry, ProfileConfig
+from common.state import EpisodeRecord
 
 from fetcher_apple.download import (
     DownloadError as AppleDownloadError,
@@ -18,7 +19,7 @@ from fetcher_ytmusic.download import (
     fetch_playlists as fetch_ytmusic_playlists,
 )
 from podcast_manager.api import list_subscriptions, load_credentials, login, resolve_show_selection
-from podcast_manager.download import ShowSyncOutcome, sync_shows
+from podcast_manager.download import ShowSyncOutcome, prune_unsubscribed_shows, sync_shows
 
 SUPPORTED_SOURCES = ("apple_music", "ytmusic", "podcasts")
 UNSUPPORTED_SOURCES = ("spotify",)
@@ -75,6 +76,7 @@ class SyncAllResult:
     apple_outcomes: list[ApplePlaylistSyncOutcome] = field(default_factory=list)
     ytmusic_outcomes: list[YtPlaylistSyncOutcome] = field(default_factory=list)
     podcast_outcomes: list[ShowSyncOutcome] = field(default_factory=list)
+    pruned_unsubscribed: list[EpisodeRecord] = field(default_factory=list)
     unmatched_playlists: list[str] = field(default_factory=list)
     unmatched_shows: list[str] = field(default_factory=list)
     source_errors: list[str] = field(default_factory=list)
@@ -175,6 +177,14 @@ def run_sync(
         except (OSError, ValueError, KeyError, httpx.HTTPError) as e:
             result.source_errors.append(f"podcasts: could not authenticate ({e})")
         else:
+            # Must run against the full, unfiltered subscriptions list
+            # above -- before any --show narrowing below, which is a
+            # per-run scope choice, not an unsubscribe signal. See
+            # prune_unsubscribed_shows's docstring.
+            result.pruned_unsubscribed = prune_unsubscribed_shows(
+                subscriptions, state_db_path=roots.state_db_path, lock_timeout=lock_timeout
+            )
+
             shows_filter = show_selectors or profile.podcasts.show_names
             if shows_filter != "all":
                 subscriptions, unmatched = resolve_show_selection(subscriptions, shows_filter)

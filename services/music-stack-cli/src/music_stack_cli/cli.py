@@ -111,6 +111,13 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         total_present += p
         total_ep_failed += f
 
+    if result.pruned_unsubscribed:
+        shows = sorted({e.show_name for e in result.pruned_unsubscribed})
+        print(
+            f"[podcasts] Pruned {len(result.pruned_unsubscribed)} episode(s) from "
+            f"{len(shows)} unsubscribed show(s): {', '.join(shows)}"
+        )
+
     for name in result.unmatched_playlists:
         print(f"WARNING: no playlist matched --playlist {name!r}")
     for name in result.unmatched_shows:

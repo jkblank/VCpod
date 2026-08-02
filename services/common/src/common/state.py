@@ -32,6 +32,10 @@ class EpisodeRecord:
     # change; cleared by podcast-manager once successfully pushed to
     # Pocket Casts. See notes.md's M8 write-up.
     pending_push: bool = False
+    # Set by podcast_manager.download.prune_unsubscribed_shows once the
+    # show is no longer in the account's Pocket Casts subscriptions.
+    # Per-profile (unlike the shared local file) — see notes.md.
+    unsubscribed: bool = False
 
 
 class StateDB:
@@ -66,6 +70,7 @@ class StateDB:
                 audio_url TEXT NOT NULL DEFAULT '',
                 duration_seconds INTEGER NOT NULL DEFAULT 0,
                 pending_push INTEGER NOT NULL DEFAULT 0,
+                unsubscribed INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (episode_uuid)
             )
             """
@@ -94,6 +99,7 @@ class StateDB:
             ("audio_url", "TEXT NOT NULL DEFAULT ''"),
             ("duration_seconds", "INTEGER NOT NULL DEFAULT 0"),
             ("pending_push", "INTEGER NOT NULL DEFAULT 0"),
+            ("unsubscribed", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE episodes ADD COLUMN {column} {ddl}")
@@ -150,7 +156,8 @@ class StateDB:
 
     _EPISODE_COLUMNS = (
         "episode_uuid, podcast_uuid, show_name, local_path, played, "
-        "played_up_to, downloaded_at, title, audio_url, duration_seconds, pending_push"
+        "played_up_to, downloaded_at, title, audio_url, duration_seconds, "
+        "pending_push, unsubscribed"
     )
 
     @staticmethod
@@ -167,6 +174,7 @@ class StateDB:
             audio_url=row[8],
             duration_seconds=row[9],
             pending_push=bool(row[10]),
+            unsubscribed=bool(row[11]),
         )
 
     def get_episode(self, episode_uuid: str) -> EpisodeRecord | None:
@@ -181,11 +189,18 @@ class StateDB:
         return [self._episode_from_row(row) for row in rows]
 
     def record_episode(self, record: EpisodeRecord) -> None:
+        # unsubscribed is always written as 0 here, regardless of
+        # record.unsubscribed -- this is the self-heal path: being called
+        # at all means a real local file exists right now (just downloaded,
+        # or verified already-present), which can only happen for a show
+        # that's currently subscribed again, so any stale unsubscribed
+        # flag from before must clear.
         self._conn.execute(
             """
             INSERT INTO episodes (episode_uuid, podcast_uuid, show_name, local_path,
-                played, played_up_to, downloaded_at, title, audio_url, duration_seconds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                played, played_up_to, downloaded_at, title, audio_url, duration_seconds,
+                unsubscribed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT (episode_uuid) DO UPDATE SET
                 podcast_uuid = excluded.podcast_uuid,
                 show_name = excluded.show_name,
@@ -195,7 +210,8 @@ class StateDB:
                 downloaded_at = excluded.downloaded_at,
                 title = excluded.title,
                 audio_url = excluded.audio_url,
-                duration_seconds = excluded.duration_seconds
+                duration_seconds = excluded.duration_seconds,
+                unsubscribed = 0
             """,
             (
                 record.episode_uuid,
@@ -211,6 +227,25 @@ class StateDB:
             ),
         )
         self._conn.commit()
+
+    def mark_unsubscribed(self, episode_uuid: str) -> bool:
+        """Records that this episode's show is no longer in the account's
+        Pocket Casts subscriptions. Caller (prune_unsubscribed_shows) has
+        already handled the local file; this just flags the row so
+        sync-orchestrator's next device sync can find and remove the
+        on-device track via build_podcast_removal_items. Idempotent.
+        Returns False if no row exists for episode_uuid."""
+        existing = self.get_episode(episode_uuid)
+        if existing is None:
+            return False
+        if existing.unsubscribed:
+            return True
+        self._conn.execute(
+            "UPDATE episodes SET unsubscribed = 1 WHERE episode_uuid = ?",
+            (episode_uuid,),
+        )
+        self._conn.commit()
+        return True
 
     def update_play_state(self, episode_uuid: str, *, played: bool, played_up_to: int) -> bool:
         """Records a device-derived play-state change and marks it

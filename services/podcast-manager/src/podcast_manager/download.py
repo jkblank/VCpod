@@ -310,3 +310,64 @@ def sync_shows(
             continue
         outcomes.append(ShowSyncOutcome(podcast=podcast, result=result, error=None))
     return outcomes
+
+
+def _other_profile_still_wants_show(
+    podcast_uuid: str, this_state_db_path: Path
+) -> bool:
+    """Podcast audio files are shared/deduped across profiles (no profile
+    name in the path -- see _episode_path/CLAUDE.md), but play/subscribe
+    state is tracked per-profile in each profile's own state db. Before
+    physically deleting a show's file because *this* profile unsubscribed,
+    check every sibling state db in the same directory: if any of them
+    still has a non-unsubscribed row for this podcast_uuid, another
+    profile is still using the file and it must not be deleted."""
+    for sibling in this_state_db_path.parent.glob("*.sqlite"):
+        if sibling == this_state_db_path:
+            continue
+        with StateDB(sibling) as db:
+            for episode in db.list_episodes():
+                if episode.podcast_uuid == podcast_uuid and not episode.unsubscribed:
+                    return True
+    return False
+
+
+def prune_unsubscribed_shows(
+    all_subscriptions: list[PodcastSummary],
+    *,
+    state_db_path: Path | str,
+    lock_path: Path | str | None = None,
+    lock_timeout: float = 1800,
+) -> list[EpisodeRecord]:
+    """Deletes local files and flags EpisodeRecord.unsubscribed=True for
+    every downloaded episode whose show is no longer among the account's
+    current Pocket Casts subscriptions.
+
+    `all_subscriptions` MUST be the full, unfiltered account subscription
+    list -- never a --show-narrowed subset. A sync run scoped to specific
+    shows is choosing not to touch the rest this time, not reporting that
+    the user unsubscribed from them; narrowing here would wrongly prune
+    every show outside that run's scope.
+
+    Device-side removal is a separate step (sync-orchestrator's
+    build_podcast_removal_items, on its next run) -- this only handles the
+    local side. Returns the newly-pruned records (already-pruned rows from
+    a previous run are skipped, not re-returned).
+    """
+    state_db_path = Path(state_db_path).resolve()
+    subscribed_uuids = {p.uuid for p in all_subscriptions}
+    if lock_path is None:
+        lock_path = state_db_path.parent / ".podcasts.lock"
+
+    pruned: list[EpisodeRecord] = []
+    with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
+        for episode in db.list_episodes():
+            if episode.unsubscribed or episode.podcast_uuid in subscribed_uuids:
+                continue
+            if not _other_profile_still_wants_show(episode.podcast_uuid, state_db_path):
+                path = Path(episode.local_path)
+                if path.is_file():
+                    path.unlink()
+            db.mark_unsubscribed(episode.episode_uuid)
+            pruned.append(episode)
+    return pruned

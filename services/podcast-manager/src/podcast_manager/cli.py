@@ -15,7 +15,7 @@ from podcast_manager.api import (
     resolve_show_selection,
     update_episode_status,
 )
-from podcast_manager.download import sync_shows
+from podcast_manager.download import prune_unsubscribed_shows, sync_shows
 
 
 def _cmd_list_subscriptions(args: argparse.Namespace) -> int:
@@ -51,6 +51,17 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     except (OSError, ValueError, KeyError) as e:
         print(f"ERROR: could not authenticate with Pocket Casts: {e}")
         return 1
+
+    # Must run against the full, unfiltered subscriptions list above --
+    # before any --show narrowing below, which is a per-run scope choice,
+    # not an unsubscribe signal. See prune_unsubscribed_shows's docstring.
+    pruned = prune_unsubscribed_shows(subscriptions, state_db_path=args.state_path)
+    if pruned:
+        shows = sorted({e.show_name for e in pruned})
+        print(
+            f"Pruned {len(pruned)} episode(s) from {len(shows)} unsubscribed "
+            f"show(s): {', '.join(shows)}"
+        )
 
     shows_filter = args.show or profile.podcasts.shows
     if shows_filter != "all":
