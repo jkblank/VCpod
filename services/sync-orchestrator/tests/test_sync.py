@@ -1,3 +1,4 @@
+import sqlite3
 import struct
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from iopenpod.artworkdb_writer import artworkdb_chunks as artworkdb_chunks_modul
 from iopenpod.artworkdb_writer.artwork_types import ArtworkEntry, EncodedFormatPayload
 from iopenpod.device.info import DeviceInfo
 
+from iopenpod.sync.transcoder import TranscodeOptions
+
 from sync_orchestrator import sync as sync_module
 from sync_orchestrator.sync import (
     SyncError,
@@ -25,6 +28,7 @@ from sync_orchestrator.sync import (
     _MHII_MISSING_INDEX_CHUNK,
     _register_current_device,
     _ThrottledProgressPrinter,
+    _transcode_options_for,
     _write_mhii_original,
     plan_sync,
 )
@@ -46,7 +50,9 @@ def _make_ipod_mount(tmp_path: Path) -> Path:
     return mount
 
 
-def _make_profile(tmp_path: Path, external_library_path: str) -> ProfileConfig:
+def _make_profile(
+    tmp_path: Path, external_library_path: str, transcode_format: str = "alac"
+) -> ProfileConfig:
     return ProfileConfig(
         profile="test",
         device=DeviceMatch(match_by="volume_label", match_value="TEST"),
@@ -57,7 +63,7 @@ def _make_profile(tmp_path: Path, external_library_path: str) -> ProfileConfig:
             max_episodes_per_show=5,
         ),
         sync=SyncSettings(
-            trigger="manual", transcode_format="mp3", push_play_status_back=False
+            trigger="manual", transcode_format=transcode_format, push_play_status_back=False
         ),
         external_library=ExternalLibraryConfig(path=external_library_path, selections=[]),
     )
@@ -160,6 +166,22 @@ def test_plan_sync_raises_when_external_library_path_missing(tmp_path):
         )
 
 
+def test_transcode_options_for_alac_prefers_lossless(tmp_path):
+    profile = _make_profile(tmp_path, str(tmp_path), transcode_format="alac")
+    assert _transcode_options_for(profile) == TranscodeOptions(prefer_lossy=False)
+
+
+def test_transcode_options_for_aac_prefers_lossy(tmp_path):
+    profile = _make_profile(tmp_path, str(tmp_path), transcode_format="aac")
+    assert _transcode_options_for(profile) == TranscodeOptions(prefer_lossy=True)
+
+
+def test_transcode_options_for_unsupported_format_raises(tmp_path):
+    profile = _make_profile(tmp_path, str(tmp_path), transcode_format="mp3")
+    with pytest.raises(SyncError, match="transcode_format='mp3'"):
+        _transcode_options_for(profile)
+
+
 def test_register_current_device_returns_real_capabilities_for_known_family():
     # Real DeviceInfo, real (unmocked) capabilities_for_family_gen — this
     # is meant to prove iopenpod's own real table resolves correctly for
@@ -202,6 +224,198 @@ def test_register_current_device_falls_back_for_unrecognized_family():
     # Identity is left alone — this function no longer tries to correct
     # identity for any family, known or unknown.
     assert info.model_family == "Some Unknown Device"
+
+
+# --- podcast played-state must reach the add/remove decision -----------------
+
+
+def _make_episodes_db(tmp_path: Path, rows: list[dict]) -> Path:
+    db_path = tmp_path / "state.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE episodes (
+            episode_uuid TEXT NOT NULL,
+            podcast_uuid TEXT NOT NULL,
+            show_name TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            played INTEGER NOT NULL,
+            played_up_to INTEGER NOT NULL,
+            downloaded_at TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            audio_url TEXT NOT NULL DEFAULT '',
+            duration_seconds INTEGER NOT NULL DEFAULT 0,
+            pending_push INTEGER NOT NULL DEFAULT 0,
+            unsubscribed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (episode_uuid)
+        )
+        """
+    )
+    for row in rows:
+        conn.execute(
+            "INSERT INTO episodes (episode_uuid, podcast_uuid, show_name, local_path, "
+            "played, played_up_to, downloaded_at, title, audio_url, duration_seconds) "
+            "VALUES (?, ?, ?, ?, ?, 0, '2026-01-01', ?, '', ?)",
+            (
+                row["guid"],
+                row.get("podcast_uuid", "show-1"),
+                row.get("show_name", "Show"),
+                str(row["local_path"]),
+                int(row.get("played", False)),
+                row.get("title", ""),
+                row.get("duration_seconds", 0),
+            ),
+        )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_load_podcast_feeds_sets_listened_override_for_played_episodes(tmp_path):
+    # Confirmed live (2026-08-18): episodes marked played in our state db
+    # kept getting re-added to the device because this override was never
+    # set — see _load_podcast_feeds' docstring for the full trace.
+    audio = tmp_path / "played.mp3"
+    audio.write_bytes(b"")
+    db_path = _make_episodes_db(
+        tmp_path,
+        [{"guid": "ep-played", "local_path": audio, "played": True, "title": "Played episode"}],
+    )
+
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path)
+
+    (episode,) = feeds[0].episodes
+    assert episode.listened_override is True
+
+
+def test_load_podcast_feeds_leaves_unplayed_episodes_untouched(tmp_path):
+    # None (not False) is required so device-observed play history can
+    # still independently mark the episode listened later — an explicit
+    # False is a *sticky* override that blocks that path entirely.
+    audio = tmp_path / "unplayed.mp3"
+    audio.write_bytes(b"")
+    db_path = _make_episodes_db(
+        tmp_path,
+        [{"guid": "ep-unplayed", "local_path": audio, "played": False, "title": "Unplayed episode"}],
+    )
+
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path)
+
+    (episode,) = feeds[0].episodes
+    assert episode.listened_override is None
+
+
+# --- device-reported AlbumArt formats (SysInfoExtended) ----------------------
+
+# Trimmed real excerpt (2026-08-17, real "iPod Classic" 7th Gen/MC293 unit)
+# reproducing Apple's actual non-standard shape: a <key> element directly
+# inside an <array>, immediately before each item's <dict> — invalid plist,
+# confirmed live to make plistlib.loads() raise "unexpected key". Includes
+# an unrelated top-level <key>...</key><dict> pair (BuildID-adjacent) to
+# prove the sanitizer doesn't touch non-array key/dict pairs.
+_REAL_SHAPE_SYSINFO_EXTENDED = b"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+<key>AudioCodecs</key>
+<dict>
+<key>MP3</key>
+<true/>
+</dict>
+<key>AlbumArt</key>
+<array>
+<key>1069</key>
+<dict>
+<key>FormatId</key>
+<integer>1069</integer>
+<key>RenderWidth</key>
+<integer>142</integer>
+<key>RenderHeight</key>
+<integer>142</integer>
+<key>AssociatedFormat</key>
+<integer>131072</integer>
+<key>ExcludedFormats</key>
+<integer>-1</integer>
+</dict>
+<key>1061</key>
+<dict>
+<key>FormatId</key>
+<integer>1061</integer>
+<key>RenderWidth</key>
+<integer>55</integer>
+<key>RenderHeight</key>
+<integer>55</integer>
+</dict>
+</array>
+<key>SerialNumber</key>
+<string>8K13762U9ZS</string>
+</dict>
+</plist>
+"""
+
+
+def _write_sysinfo_extended(mount: Path, content: bytes = _REAL_SHAPE_SYSINFO_EXTENDED) -> None:
+    device_dir = mount / "iPod_Control" / "Device"
+    device_dir.mkdir(parents=True, exist_ok=True)
+    (device_dir / "SysInfoExtended").write_bytes(content)
+
+
+def test_sanitize_sysinfo_extended_plist_makes_apples_shape_parseable():
+    import plistlib
+
+    with pytest.raises(Exception, match="unexpected key"):
+        plistlib.loads(_REAL_SHAPE_SYSINFO_EXTENDED)
+
+    sanitized = sync_module._sanitize_sysinfo_extended_plist(_REAL_SHAPE_SYSINFO_EXTENDED)
+    plist = plistlib.loads(sanitized)
+
+    # Unrelated top-level key/dict pairs (not inside an <array>) survive
+    # untouched — the sanitizer must not be a blanket "drop every <key>
+    # before <dict>" pass.
+    assert plist["AudioCodecs"] == {"MP3": True}
+    assert plist["SerialNumber"] == "8K13762U9ZS"
+    assert len(plist["AlbumArt"]) == 2
+
+
+def test_read_device_album_art_formats_parses_real_device_shape(tmp_path):
+    _write_sysinfo_extended(tmp_path)
+
+    formats = sync_module._read_device_album_art_formats(str(tmp_path))
+
+    assert formats == {1069: (142, 142), 1061: (55, 55)}
+
+
+def test_read_device_album_art_formats_returns_empty_when_file_missing(tmp_path):
+    assert sync_module._read_device_album_art_formats(str(tmp_path)) == {}
+
+
+def test_register_current_device_overrides_artwork_formats_from_real_device(tmp_path):
+    # iopenpod's enrich() resolves info.artwork_formats from a static,
+    # per-family table (device/capabilities.py's CLASSIC_COVER_ART_FORMATS)
+    # that's missing format 1069 and has the wrong dimensions for 1061 —
+    # confirmed live against a real "iPod Classic" 7th Gen unit, see the
+    # docstring on _read_device_album_art_formats. The device's own
+    # SysInfoExtended is authoritative and must win.
+    _write_sysinfo_extended(tmp_path)
+    info = DeviceInfo(path=str(tmp_path))
+    info.model_family = "iPod Classic"
+    info.generation = "7th Gen"
+    info.artwork_formats = {1055: (128, 128), 1060: (320, 320), 1061: (56, 56), 1068: (128, 128)}
+
+    _register_current_device(info)
+
+    assert info.artwork_formats == {1069: (142, 142), 1061: (55, 55)}
+
+
+def test_register_current_device_keeps_static_formats_without_sysinfo_extended():
+    info = DeviceInfo(path="/fake/mount")
+    info.model_family = "iPod Classic"
+    info.generation = "7th Gen"
+    info.artwork_formats = {1055: (128, 128)}
+
+    _register_current_device(info)
+
+    assert info.artwork_formats == {1055: (128, 128)}
 
 
 # --- missing ArtworkDB index chunk workaround --------------------------------

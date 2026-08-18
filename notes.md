@@ -2226,3 +2226,241 @@ existing add/edit printing), and `_run_sync` gates
 — the latter two are the first direct unit tests of `_run_sync`'s
 removal gate at all; it had only ever been exercised live/manually
 before.
+
+## Future: `music-stack sync`'s fetch side has no progress reporting
+
+Noticed live (2026-08-15) running a first-time `music-stack sync
+--profile ...` for a brand-new profile (`john-copy`, set up for a
+newly-acquired second iPod — see the reformat/bootstrap notes around
+this same date). The only output on stdout while it runs is
+gamdl/fetcher-apple's raw `debug`-level structured log lines (full
+JSON API responses per playlist/track dumped verbatim) — there's no
+counter like "playlist 3/15" or "track 42/210", no ETA, nothing
+structured to poll. Status had to be estimated by eyeballing which
+playlist/track name last appeared in the log tail, same workaround
+used for the same reason earlier this project (see "status and ETA"
+checks during the big playlist-fetch session two sessions back).
+
+This is the mirror-image gap to the one already fixed on the device
+side (`sync-orchestrator: real progress reporting — shipped`, above) —
+that shipped a `progress_callback` threaded through `plan_sync`/
+`execute_sync` plus a throttled printer so a device sync shows `[scan]
+3120/4416 — ...` instead of going silent. The fetch side
+(`music_stack_cli/orchestrate.py`'s `run_sync`, looping fetchers +
+`library-manager` + `podcast-manager`) has never gotten the same
+treatment.
+
+**Fix idea**: same shape as the device-side fix — a
+`progress_callback` threaded through `run_sync` and each fetcher's
+`fetch_playlist`, emitting one line per playlist/show started and
+finished (`[fetch] apple_music "Chill" — 3/15 playlists, 42 tracks`),
+with the existing throttled-printer pattern reused rather than
+reinvented if per-track granularity turns out noisy. gamdl's own debug
+logging would need to move behind a `--debug`-style flag (matching how
+`sync-orchestrator sync --debug` already gates its own verbose trace)
+rather than always being on, so the default output is the progress
+line, not the raw API dump.
+
+**Status**: not started — flagged for later, not blocking the
+`john-copy` first-sync work in progress right now.
+
+## `sync.transcode_format` was a complete no-op — fixed
+
+**2026-08-15, same day.** Setting up `john-copy` (a second, smaller-capacity
+iPod) as a fresh device with the same profile shape as `john.yaml` hit a
+real "not enough space on iPod" failure (needs ~114GB, device has ~74GB
+free). Trimmed playlists/podcasts/audiobooks first — barely helped
+(111GB → 101.6GB), since most of that content already overlaps with
+`external_library`, which is the real weight (nearly all of a 95GB
+`MusicLibrary`, `mode: exclude` with only 2-3 artists carved out). Excluded
+one more large artist (King Gizzard & The Lizard Wizard, 9.5GB) — still
+nowhere near enough on its own. Decided to switch `john-copy.yaml`'s
+`sync.transcode_format` from `alac` to `aac`, expecting iPod-side lossless
+sources to get transcoded to lossy AAC instead, shrinking the total
+significantly.
+
+Went looking for where `transcode_format` actually influences
+transcoding, to sanity-check the expected size drop before re-running the
+device sync — and found nothing. `grep -rn transcode_format` across
+`sync-orchestrator/src`, `library-manager/src`, and iopenpod itself: zero
+hits outside `common/models.py`'s schema definition and test fixtures.
+`plan_sync`'s `EngineOptions(...)` construction (`sync.py`) never set
+`transcode_options` at all, so every sync — on `john`'s real device
+included — has always run with iopenpod's own default
+`TranscodeOptions()` (`prefer_lossy=False`), regardless of what any
+profile's `transcode_format` said. The field has existed in the schema
+since the project's early milestones and has never once actually done
+anything.
+
+(iopenpod itself has the real mechanism, confirmed by reading
+`iopenpod/sync/transcoder.py`/`_formats.py`: native formats — mp3/m4a/
+m4b/aac — play as-is with zero transcoding regardless of `prefer_lossy`;
+only truly non-native lossless sources (flac/wav/aiff) get converted to
+ALAC or, with `prefer_lossy=True`, AAC — and `prefer_lossy` also catches
+already-native `.m4a`/`.m4b` files that are actually lossless-codec-in-
+container (`bits_per_sample >= 16`), which is likely most of what's
+inflating `MusicLibrary`'s per-track size here.)
+
+**Fixed**: added `_transcode_options_for(profile) -> TranscodeOptions` in
+`sync.py`, mapping `alac -> prefer_lossy=False` / `aac -> prefer_lossy=True`
+via an explicit dict, raising `SyncError` for anything else (the schema
+field is an unconstrained `str`, so a typo'd value must fail loud rather
+than silently falling back to lossless). Wired into `plan_sync`'s
+`EngineOptions(transcode_options=...)` — `execute_sync` needed no change,
+it reuses `planned.options` from the same `plan_sync` call. Tests added:
+`test_transcode_options_for_alac_prefers_lossless`,
+`test_transcode_options_for_aac_prefers_lossy`,
+`test_transcode_options_for_unsupported_format_raises`. Full suite (87
+tests) passes.
+
+Not yet live-verified how much this actually shrinks `john-copy`'s plan —
+that's the next step. Worth knowing: this also silently changes behavior
+for every *existing* profile using `transcode_format: alac` (including
+`john`'s real device) — but since `alac` maps to `prefer_lossy=False`,
+that's iopenpod's existing default, so no behavior change for anyone who
+was already relying on the old (unwired) lossless-by-default behavior.
+Only profiles that had `transcode_format: aac`/anything-non-`alac`
+already set (none did, before `john-copy` today) would see a real
+behavior change from this fix.
+
+## iPod Classic 7th Gen: album art wrote correctly but never rendered on-screen — fixed
+
+New primary device (2026-08-17, `john.yaml` updated to a new "iPod Classic
+7th Gen" unit, model MC293, serial 8K13762U9ZS) synced fine — 6215 tracks
+added, no errors — but the user reported no album art visible on-device,
+including on the 48 tracks from an earlier isolated single-playlist test
+sync that had (per the user) displayed art correctly before the full sync.
+
+**First hypothesis, ruled out**: that this was the same "byte-correct
+ArtworkDB, nothing renders" bug already fixed once before via
+`_apply_missing_artwork_index_chunk_workaround()` (see the "5th/5.5th-gen
+iPod Video artwork" entry above) simply not yet validated for the "iPod
+Classic" family. Checked directly: parsed the real on-device `ArtworkDB`
+(`iopenpod.artworkdb_parser.parser.parse_artworkdb`) — all 5794 entries
+(100%) have the type-6 `mhod` workaround chunk. Decoded raw pixel bytes
+directly from the on-device `.ithmb` files for both an old (preserved,
+untouched by the full sync) and a newly-written track, across all 4
+formats in `CLASSIC_COVER_ART_FORMATS` (1055/1060/1061/1068) — all
+real, correct, undistorted album art. iTunesDB `artwork_id_ref`/
+`has_artwork`/`artwork_count` links also correct. Tried a hard reset
+(Menu+Center ~8s) per the old investigation's own suggestion — no change.
+So: not a regression of the already-fixed bug, and not a device-side
+render-cache issue either.
+
+**Root cause found**: compared the real device's own `SysInfoExtended`
+(`iPod_Control/Device/SysInfoExtended`, read live off the actual unit)
+against what iopenpod wrote. The device's own `AlbumArt` array declares
+**5** formats — 1069 (142x142, flagged with an `AssociatedFormat`/
+`ExcludedFormats` pair no other entry has, strongly suggesting it's the
+primary/Now-Playing format), 1055 (128x128), 1068 (128x128), 1060
+(320x320), 1061 (**55x55**) — but iopenpod's `CLASSIC_COVER_ART_FORMATS`
+(`device/artwork_presets.py`) only defines 4, entirely missing 1069 and
+defining 1061 as **56x56** (off by one pixel each dimension).
+
+Traced why the device's real capability list was never consulted:
+`DeviceInfo.enrich()` (`device/info.py` ~line 1287) resolves
+`info.artwork_formats` from the static per-family table
+(`ithmb_formats_for_device` -> `capabilities_for_family_gen`) *first*,
+and short-circuits — `if not info.artwork_formats and info.model_family`
+— before ever trying to read the real `SysInfoExtended`. A dedicated
+`_parse_sysinfo_artwork_formats()` function exists in that same module
+but is dead code, never called from anywhere. So for every "iPod
+Classic" family device (both this new primary *and* the second/80GB
+device set up earlier this session — its artwork was never actually
+visually confirmed either), the static table wins unconditionally and
+the device's real, authoritative format list is silently ignored.
+
+Separately, Apple's own `SysInfoExtended` XML for `AlbumArt` (and
+`ImageSpecifications`/`ChapterImageSpecs`) is invalid plist — a `<key>`
+element sits directly inside each `<array>`, immediately before each
+format's `<dict>` — confirmed live: `plistlib.loads()` raises "unexpected
+key" on the real file. iopenpod's regex fallback parser (used when
+plistlib fails) doesn't attempt nested array-of-dicts extraction at all,
+so even a project that *did* reach the SysInfoExtended-reading branch
+would get nothing back for `AlbumArt`.
+
+**Fix implemented (`sync_orchestrator/sync.py`)**: rather than patching
+iopenpod's general-purpose plist parser to tolerate Apple's shape,
+added a narrowly-scoped local workaround: `_sanitize_sysinfo_extended_plist()`
+strips just the offending `<key>` elements that sit directly inside an
+`<array>` immediately before a `<dict>` (regex-scoped to array bodies
+only, confirmed via test not to touch ordinary top-level key/dict pairs),
+then `_read_device_album_art_formats()` reads the real on-device
+`SysInfoExtended`, sanitizes, and parses it with plistlib + iopenpod's
+own `extract_image_formats()` (reused rather than reimplemented, so
+dimension-field priority — RenderWidth/DisplayWidth/Width/width — stays
+consistent with iopenpod's own logic). Wired into `_register_current_device()`:
+overrides `info.artwork_formats` with the device-reported dict when one
+parses successfully.
+
+This is sufficient on its own — no other iopenpod code needed patching.
+`resolve_cover_art_format_definitions_for_device()`
+(`device/artwork.py`) already treats `device.artwork_formats` as
+authoritative "observed" data when present, and its own
+`_resolve_observed_format()` fallback chain (device-family static defs ->
+global `ARTWORK_FORMATS_BY_ID` -> generic inferred RGB565 definition)
+automatically produces the right shape once the *set of formats* is
+right: format 1061 self-corrects to 55x55 via the generic fallback (its
+entries in both the static table and the global registry are 56x56, so
+neither matches and it falls through), and 1069 gets a generic-but-correct
+`ArtworkFormat(1069, 142, 142, 284, "RGB565_LE", ...)` since it isn't in
+either table at all. Verified this resolution chain directly against the
+real device object before touching anything else.
+
+5 new tests in `test_sync.py` (sanitizer preserves non-array key/dict
+pairs; parses the real Apple shape; empty on missing file;
+`_register_current_device` overrides the static table when a real
+SysInfoExtended is present; leaves the static table alone when it's
+not). Full suite (92, up from 87) passing.
+
+**Not yet independently confirmed on-device** — the byte-level chain
+was proven correct once before (the mhii-chunk case) and *still* didn't
+render, so per that precedent this isn't being called fixed until a real
+resync + the user physically confirms album art visible on the device's
+own screen. Next step when picking this back up: real
+`--execute --allow-removals` resync against the primary device, then
+direct visual confirmation.
+
+## Podcast episodes marked played were still synced to the iPod — fixed
+
+While marking played state for a backlog of podcast episodes across
+several shows (state db `played`/`played_up_to`, via `StateDB.update_play_state`),
+the user asked why already-completed episodes kept getting synced to the
+device anyway.
+
+**Root cause**: `sync_orchestrator/sync.py`'s `_load_podcast_feeds()`
+builds `iopenpod.podcasts.models.PodcastEpisode` objects straight from our
+own `episodes` table, but never set `listened_override` (or `play_count`)
+on them. iopenpod's own add/remove decision
+(`podcasts/podcast_sync.py::_episode_was_listened()`) checks
+`listened_override` first and otherwise falls back to `play_count` —
+which our own loader also never set, and which upstream only ever
+populates from **device-observed** play history
+(`_update_episode_playback_from_track`, driven by an iPod track's own
+play count read back on a previous sync). So our own Pocket-Casts-sourced
+or manually-set `played` flag was completely invisible to the sync plan —
+an episode only stopped being (re-)added once the device itself had
+already recorded playing it once, regardless of what our state db said.
+
+**Fix**: `_load_podcast_feeds()` now selects `played` too and sets
+`listened_override=True if row["played"] else None` when constructing
+each `PodcastEpisode`. Deliberately `None`, not `False`, for unplayed
+episodes — `_update_episode_playback_from_track` treats an explicit
+`False` as a *sticky* override and returns before ever recording new
+on-device play data, which would permanently block real device-side play
+tracking for any episode not already marked played through our own path.
+`None` correctly means "defer to device/RSS-derived history" per
+`PodcastEpisode.listened_override`'s own docstring.
+
+2 new tests in `test_sync.py` (played episode gets `listened_override=True`;
+unplayed stays `None`, not `False`). Full suite (94, up from 92) passing.
+
+Adjacent, not-yet-fixed gaps noticed while reading this code (out of
+scope for this fix, noting for later): `_load_podcast_feeds` also never
+sets `pub_date` (defaults to 0.0 for every episode — with `fill_mode:
+"newest"` sorting by `pub_date` descending, Python's stable sort means
+ties keep DB row order rather than true chronological order, so "newest"
+mode isn't reliably picking the actual newest episodes), and never
+threads `profile.podcasts.max_episodes_per_show` into `PodcastFeed.episode_slots`
+(silently stuck at the dataclass default of 3, not the profile's
+configured value — e.g. `john.yaml` sets 5).

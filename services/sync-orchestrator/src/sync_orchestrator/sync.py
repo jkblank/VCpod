@@ -21,6 +21,8 @@ the reasoning terse and points there instead of repeating it.
 from __future__ import annotations
 
 import dataclasses
+import logging
+import re
 import shutil
 import sqlite3
 import struct
@@ -48,6 +50,7 @@ from iopenpod.sync.core.models import (
     EngineRequest,
 )
 from iopenpod.sync.mapping import MappingManager
+from iopenpod.sync.transcoder import TranscodeOptions
 
 from sync_orchestrator.playstate import resolve_played_states
 from sync_orchestrator.podcast_removal import build_podcast_removal_items
@@ -59,8 +62,82 @@ from sync_orchestrator.selection import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class SyncError(Exception):
     pass
+
+
+# iopenpod's DeviceInfo.enrich() resolves artwork_formats from a static,
+# hardcoded per-family table (device/capabilities.py's
+# CLASSIC_COVER_ART_FORMATS for the whole "iPod Classic" family) *before*
+# it ever tries reading the device's own SysInfoExtended, and short-
+# circuits on the first non-empty result — so the device's real,
+# authoritative format list is never even consulted for any Classic-family
+# unit. Confirmed live (2026-08-17) against a real "iPod Classic" 7th Gen
+# (MC293): its SysInfoExtended `AlbumArt` array declares 5 formats,
+# including 1069 (142x142, flagged as the primary format via a
+# `AssociatedFormat`/`ExcludedFormats` pair no other entry has — plausibly
+# the actual Now Playing/cover-screen format) that CLASSIC_COVER_ART_FORMATS
+# doesn't define at all, and format 1061 at 55x55 vs the static table's
+# 56x56. Every other layer (iTunesDB<->ArtworkDB link, the mhii missing-
+# chunk workaround below, raw pixel bytes) was independently byte-diffed
+# and confirmed correct — see notes.md — so this format mismatch is the
+# remaining explanation for album art never rendering on-device despite
+# every write completing without error.
+#
+# Apple's own SysInfoExtended XML is invalid plist (`<key>` elements
+# directly inside an `<array>`, one per format, immediately before each
+# format's `<dict>`) — confirmed live: `plistlib.loads()` raises
+# "unexpected key" on the real file, so iopenpod's own regex fallback
+# parser runs instead, which doesn't attempt to extract nested
+# array-of-dicts structures like `AlbumArt` at all and silently returns
+# nothing for it. Rather than patch iopenpod's general-purpose plist
+# parser to tolerate Apple's non-standard shape, this strips just the
+# offending `<key>` elements before parsing so plistlib succeeds, then
+# reuses iopenpod's own `extract_image_formats()` for the actual
+# dimension-field lookup, keeping this workaround minimal.
+_SYSINFO_EXTENDED_ARRAY_KEY_RE = re.compile(rb"<array>(.*?)</array>", re.DOTALL)
+_SYSINFO_EXTENDED_ARRAY_ITEM_KEY_RE = re.compile(rb"<key>[^<]*</key>\s*(?=<dict>)")
+
+
+def _sanitize_sysinfo_extended_plist(raw: bytes) -> bytes:
+    def _strip_keys_in_array(match: re.Match[bytes]) -> bytes:
+        body = _SYSINFO_EXTENDED_ARRAY_ITEM_KEY_RE.sub(b"", match.group(1))
+        return b"<array>" + body + b"</array>"
+
+    return _SYSINFO_EXTENDED_ARRAY_KEY_RE.sub(_strip_keys_in_array, raw)
+
+
+def _read_device_album_art_formats(mount_path: str) -> dict[int, tuple[int, int]]:
+    """Parse the real, on-device `AlbumArt` format list from SysInfoExtended.
+
+    Returns {} (never raises) on any read/parse failure, so callers can
+    safely fall back to iopenpod's static per-family table."""
+    import plistlib
+
+    from iopenpod.device.sysinfo import COVER_ART_KEYS, extract_image_formats
+
+    sysinfo_extended_path = Path(mount_path) / "iPod_Control" / "Device" / "SysInfoExtended"
+    try:
+        raw = sysinfo_extended_path.read_bytes()
+    except OSError:
+        return {}
+
+    try:
+        plist = plistlib.loads(_sanitize_sysinfo_extended_plist(raw))
+    except Exception:
+        logger.debug("Could not parse %s as plist even after sanitizing", sysinfo_extended_path)
+        return {}
+
+    formats = extract_image_formats(plist, COVER_ART_KEYS)
+    if formats:
+        logger.info(
+            "Using device-reported AlbumArt formats from SysInfoExtended: %s",
+            sorted(formats),
+        )
+    return formats
 
 
 class _ThrottledProgressPrinter:
@@ -138,12 +215,30 @@ class _DeviceStorage:
 def _load_podcast_feeds(db_path: str, library_root: Path) -> list[PodcastFeed]:
     """Builds PodcastFeed/PodcastEpisode objects directly from
     podcast-manager's own state DB — no file-tag dependency needed (see
-    docs/m6-ipod-headless-recommendation.md's podcast section)."""
+    docs/m6-ipod-headless-recommendation.md's podcast section).
+
+    Confirmed live (2026-08-18): episodes marked played in our own state
+    db (via Pocket Casts sync or a manual `update_play_state` call) kept
+    getting added to the device anyway. Root cause: this function never
+    set `PodcastEpisode.listened_override`, so iopenpod's own
+    `_episode_was_listened()` (podcasts/podcast_sync.py) had no way to
+    know about our played state at all — it falls back to `play_count`,
+    which only ever gets populated from *device-observed* play history
+    (`_update_episode_playback_from_track`, driven off an iPod track's own
+    play count read back on a previous sync), never from our state db.
+    So an episode only stopped being re-added once the device itself had
+    already recorded a play of it — our own `played` flag was silently
+    ignored by the add/remove decision entirely. Setting
+    `listened_override=True` (not `False`) for played episodes and
+    leaving it `None` otherwise is required — `None` means "trust device
+    history", `False` is a *sticky* override that would block
+    `_update_episode_playback_from_track` from ever recording real
+    on-device play data for an episode we haven't marked played."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT episode_uuid, podcast_uuid, show_name, local_path, "
-        "title, audio_url, duration_seconds FROM episodes"
+        "title, audio_url, duration_seconds, played FROM episodes"
     ).fetchall()
     conn.close()
 
@@ -167,6 +262,7 @@ def _load_podcast_feeds(db_path: str, library_root: Path) -> list[PodcastFeed]:
                 audio_url=row["audio_url"],
                 duration_seconds=row["duration_seconds"],
                 downloaded_path=str(local_path) if local_path.is_file() else "",
+                listened_override=True if row["played"] else None,
             )
         )
 
@@ -252,6 +348,20 @@ def _register_current_device(info: DeviceInfo) -> Any:
     verification."""
     _iopenpod_device.get_current_device_for_path = lambda path: info
 
+    # See _read_device_album_art_formats' docstring: enrich() populates
+    # info.artwork_formats from a static per-family table and never
+    # consults the device's own (real, authoritative) SysInfoExtended
+    # AlbumArt list, so override it here when we can read one. iopenpod's
+    # own resolve_cover_art_format_definitions_for_device() already
+    # treats device.artwork_formats as authoritative "observed" data when
+    # present (device/artwork.py) — falling back correctly per-format to
+    # the static table, the global registry, or a generic RGB565
+    # definition — so populating this one attribute is sufficient; no
+    # other iopenpod code needs patching.
+    device_album_art_formats = _read_device_album_art_formats(info.path)
+    if device_album_art_formats:
+        info.artwork_formats = device_album_art_formats
+
     capabilities = info.capabilities
     if not capabilities.cover_art_formats:
         # Defensive fallback for any genuinely unrecognized device (not
@@ -280,6 +390,36 @@ class PlannedSync:
     # Count of local episodes whose play state changed vs. what was
     # already recorded, per resolve_played_states — see playstate.py.
     play_states_updated: int = 0
+
+
+# common.models.SyncSettings.transcode_format is an unconstrained `str` in
+# the schema (profiles predate this mapping), so validate against a known
+# set here rather than silently guessing at an unrecognized value — same
+# "fail loud" preference as the rest of this module's config handling.
+_TRANSCODE_FORMAT_TO_PREFER_LOSSY = {"alac": False, "aac": True}
+
+
+def _transcode_options_for(profile: ProfileConfig) -> TranscodeOptions:
+    """Maps `profile.sync.transcode_format` to iopenpod's real transcoding
+    knob (`TranscodeOptions.prefer_lossy`), which chooses AAC over ALAC for
+    lossless sources during PC->iPod sync.
+
+    Found live (2026-08-15, setting up a second device with a tighter
+    capacity budget): this mapping never existed — `plan_sync`'s
+    `EngineOptions(...)` never set `transcode_options` at all, so every
+    sync silently used iopenpod's own default (`TranscodeOptions()`,
+    `prefer_lossy=False`) regardless of what a profile's `transcode_format`
+    said. `transcode_format: aac` in a profile was a complete no-op. See
+    notes.md for the full investigation."""
+    try:
+        prefer_lossy = _TRANSCODE_FORMAT_TO_PREFER_LOSSY[profile.sync.transcode_format]
+    except KeyError:
+        raise SyncError(
+            f"profile {profile.profile!r} has sync.transcode_format="
+            f"{profile.sync.transcode_format!r}, but only "
+            f"{sorted(_TRANSCODE_FORMAT_TO_PREFER_LOSSY)} are supported"
+        ) from None
+    return TranscodeOptions(prefer_lossy=prefer_lossy)
 
 
 def plan_sync(
@@ -407,6 +547,7 @@ def plan_sync(
         supports_podcast=capabilities.supports_podcast,
         supports_photo=capabilities.supports_photo,
         fpcalc_path=fpcalc_path,
+        transcode_options=_transcode_options_for(profile),
     )
 
     plan_outcome = SyncEngine().run(
