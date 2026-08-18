@@ -2912,3 +2912,47 @@ unsubscribed+pruned earlier this session — correctly excluded, not a
 bug. The ~10 unmatched episodes are mostly older Louis Theroux ones,
 likely just outside their feed's own returned item window — an inherent
 RSS-source limitation, not something to fix further.
+
+## Album art: "needs root/sudo" hypothesis tested and ruled out
+
+User found a real precedent (iOpenPod GitHub issue #81): two users with
+the identical "byte-correct artwork, nothing displays" symptom fixed it
+by running iopenpod with sudo — their logs showed `SG_IO: permission
+denied` and a USB vendor-control "Pipe error" during device
+identification without root, causing a fallback to a generic/wrong
+identity (`method=usb_pid`, `formats=none`) and, in turn, the wrong
+artwork format table.
+
+**Confirmed our situation has the same underlying permission gap**:
+`/dev/sda`/`/dev/sda1` are `root:disk`, and this user isn't in the
+`disk` group — genuinely no raw SG_IO access, exactly matching the
+issue. The project's own `61-iopenpod.rules` udev rule is deliberately
+scoped to avoid granting raw-disk access at all (its own comment: "...
+without granting users raw-disk access") — it only exposes the product
+serial via a udev property.
+
+**Tested live**: cleared the artwork cache, ran a real device sync
+under `sudo -E`. Confirmed sudo genuinely unlocked additional access
+our normal runs never get — `enrich`'s log showed `reported_volume_format`
+now sourced from a live `linux_scsi` (real SG_IO) probe, overriding the
+file-based value, and the device ejected cleanly with no permission
+warning for the first time all session. So this wasn't a no-op run —
+real additional identification data was obtained.
+
+**Album art still did not display.** This decisively rules out "needs
+root for correct identification" as the cause here — unlike the GitHub
+issue's reporters, our identity resolution was already fully correct
+without root (confirmed extensively already: family/generation/model/
+capacity, and the device's own authoritative `AlbumArt` format spec read
+directly from `SysInfoExtended`), so there was no wrong-identity/wrong-
+format-table failure mode for extra SCSI access to fix. The sudo test
+confirms this rather than leaving it assumed.
+
+**Status: still unresolved**, and this closes out the last cheap,
+untested lever. Every remaining layer this project's tooling can
+inspect or influence has now been verified correct under multiple
+independent conditions (two format sets, mhii-chunk workaround on and
+off, with and without raw SCSI access) — real iTunes byte-diff
+comparison (as eventually solved the equivalent bug on the old 5.5th-gen
+device) remains the only method not yet tried, and requires access to a
+Mac/Windows machine.
