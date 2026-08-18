@@ -354,6 +354,44 @@ def test_rss_metadata_defaults_to_blank_when_not_provided(tmp_path: Path):
         assert fetched.published_at == ""
 
 
+def test_update_episode_metadata_backfills_without_touching_play_state(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        episode = _episode()
+        episode.played = True
+        episode.played_up_to = 900
+        db.record_episode(episode)
+
+        updated = db.update_episode_metadata(
+            "ep-123",
+            description="Backfilled description.",
+            episode_number=5,
+            season_number=1,
+            published_at="2026-01-01T00:00:00Z",
+        )
+
+        assert updated is True
+        fetched = db.get_episode("ep-123")
+        assert fetched.description == "Backfilled description."
+        assert fetched.episode_number == 5
+        assert fetched.season_number == 1
+        assert fetched.published_at == "2026-01-01T00:00:00Z"
+        # Untouched by the backfill.
+        assert fetched.played is True
+        assert fetched.played_up_to == 900
+
+
+def test_update_episode_metadata_returns_false_for_unknown_episode(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        updated = db.update_episode_metadata(
+            "does-not-exist",
+            description="x",
+            episode_number=None,
+            season_number=None,
+            published_at="",
+        )
+        assert updated is False
+
+
 def test_get_last_fetched_returns_none_for_unseen_target(tmp_path: Path):
     with StateDB(tmp_path / "state.sqlite") as db:
         assert db.get_last_fetched("playlist", "Chill") is None

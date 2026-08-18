@@ -2884,3 +2884,31 @@ mocked in several existing `sync_podcast` tests, silently turning a
 sub-second test run into ~100s of real network calls — fixed by mocking
 `resolve_feed_url` in the shared `patched_pipeline` fixture (and the
 few tests that don't use it).
+
+## One-off RSS metadata backfill for pre-existing episodes — shipped
+
+Follow-up to the RSS metadata feature above: user found only 2 episodes
+had a populated `published_at` after the feature shipped. Root cause,
+confirmed live: `record_episode()` only (re)writes metadata for a
+show's *current* top-N candidates each sync run — an already-played/
+archived episode still sitting locally never re-enters that loop, so it
+never gets touched again once it ages out. New
+`podcast_manager.download.backfill_episode_metadata()` walks every
+locally-known episode instead of just current candidates, resolving/
+fetching a show's feed only if it actually has episodes still needing
+backfill (all four fields blank) — skips the network entirely for
+already-enriched shows. New `StateDB.update_episode_metadata()`
+deliberately only touches the four RSS columns, never played state —
+`record_episode()`'s own upsert would risk clobbering play state for an
+episode no longer an active candidate, which is exactly what this exists
+to avoid. Exposed as a new standalone `podcast-manager backfill-metadata`
+CLI command (same shape as `push-play-status`) — a one-off operation,
+not something a normal sync should run every time.
+
+9 new tests. Live-verified against the real account: 75 episodes
+backfilled (up from 12 already covered by the main feature). The two
+shows left at 0 (Dual Boot Diaries, Hard Drive) are the ones already
+unsubscribed+pruned earlier this session — correctly excluded, not a
+bug. The ~10 unmatched episodes are mostly older Louis Theroux ones,
+likely just outside their feed's own returned item window — an inherent
+RSS-source limitation, not something to fix further.

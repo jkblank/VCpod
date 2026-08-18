@@ -1090,3 +1090,156 @@ def test_push_pending_play_status_one_failure_does_not_abort_the_rest(monkeypatc
         # The failed push must stay pending so a later run retries it.
         assert db.get_episode("ep-1").pending_push is True
         assert db.get_episode("ep-2").pending_push is False
+
+
+def _record_episode_needing_backfill(
+    state_db_path, *, episode_uuid, audio_url, podcast_uuid="show-1", **overrides
+):
+    with StateDB(state_db_path) as db:
+        db.record_episode(
+            EpisodeRecord(
+                episode_uuid=episode_uuid,
+                podcast_uuid=podcast_uuid,
+                show_name="Test Show",
+                local_path=f"/does/not/matter-{episode_uuid}.mp3",
+                played=overrides.get("played", False),
+                played_up_to=overrides.get("played_up_to", 0),
+                downloaded_at="2026-07-19T00:00:00+00:00",
+                audio_url=audio_url,
+                description=overrides.get("description", ""),
+                episode_number=overrides.get("episode_number"),
+                season_number=overrides.get("season_number"),
+                published_at=overrides.get("published_at", ""),
+            )
+        )
+
+
+def test_backfill_episode_metadata_updates_episodes_needing_it(monkeypatch, tmp_path):
+    from podcast_manager.rss import RssEpisodeMeta
+
+    state_db_path = tmp_path / "state.sqlite"
+    _record_episode_needing_backfill(
+        state_db_path, episode_uuid="ep-1", audio_url="https://cdn.example/ep1.mp3"
+    )
+
+    monkeypatch.setattr(
+        download_module, "resolve_feed_url", lambda title, author: "https://example.com/feed.xml"
+    )
+    monkeypatch.setattr(
+        download_module,
+        "fetch_rss_episodes",
+        lambda feed_url: [
+            RssEpisodeMeta(
+                enclosure_url="https://cdn.example/ep1.mp3",
+                title="Ep 1",
+                description="Backfilled.",
+                episode_number=3,
+                season_number=1,
+                published="Sun, 01 Mar 2026 00:00:00 -0000",
+            )
+        ],
+    )
+
+    result = download_module.backfill_episode_metadata(
+        [PODCAST], state_db_path=state_db_path
+    )
+
+    assert [e.episode_uuid for e in result.updated] == ["ep-1"]
+    assert result.unresolved_feeds == []
+    assert result.unmatched == 0
+    with StateDB(state_db_path) as db:
+        fetched = db.get_episode("ep-1")
+        assert fetched.description == "Backfilled."
+        assert fetched.episode_number == 3
+        assert fetched.season_number == 1
+
+
+def test_backfill_episode_metadata_does_not_touch_play_state(monkeypatch, tmp_path):
+    from podcast_manager.rss import RssEpisodeMeta
+
+    state_db_path = tmp_path / "state.sqlite"
+    _record_episode_needing_backfill(
+        state_db_path,
+        episode_uuid="ep-1",
+        audio_url="https://cdn.example/ep1.mp3",
+        played=True,
+        played_up_to=900,
+    )
+
+    monkeypatch.setattr(
+        download_module, "resolve_feed_url", lambda title, author: "https://example.com/feed.xml"
+    )
+    monkeypatch.setattr(
+        download_module,
+        "fetch_rss_episodes",
+        lambda feed_url: [
+            RssEpisodeMeta(
+                enclosure_url="https://cdn.example/ep1.mp3",
+                title="Ep 1",
+                description="Backfilled.",
+                episode_number=None,
+                season_number=None,
+                published=None,
+            )
+        ],
+    )
+
+    download_module.backfill_episode_metadata([PODCAST], state_db_path=state_db_path)
+
+    with StateDB(state_db_path) as db:
+        fetched = db.get_episode("ep-1")
+        assert fetched.played is True
+        assert fetched.played_up_to == 900
+
+
+def test_backfill_episode_metadata_skips_shows_with_nothing_to_backfill(monkeypatch, tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    _record_episode_needing_backfill(
+        state_db_path,
+        episode_uuid="ep-1",
+        audio_url="https://cdn.example/ep1.mp3",
+        description="Already enriched.",
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        download_module,
+        "resolve_feed_url",
+        lambda title, author: calls.append(1) or "https://example.com/feed.xml",
+    )
+
+    result = download_module.backfill_episode_metadata([PODCAST], state_db_path=state_db_path)
+
+    assert calls == []  # never even attempted a feed lookup
+    assert result.updated == []
+
+
+def test_backfill_episode_metadata_records_unresolved_feed(monkeypatch, tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    _record_episode_needing_backfill(
+        state_db_path, episode_uuid="ep-1", audio_url="https://cdn.example/ep1.mp3"
+    )
+    monkeypatch.setattr(download_module, "resolve_feed_url", lambda title, author: None)
+
+    result = download_module.backfill_episode_metadata([PODCAST], state_db_path=state_db_path)
+
+    assert result.unresolved_feeds == ["Test Show"]
+    assert result.updated == []
+    with StateDB(state_db_path) as db:
+        assert db.get_episode("ep-1").description == ""
+
+
+def test_backfill_episode_metadata_counts_unmatched_episodes(monkeypatch, tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    _record_episode_needing_backfill(
+        state_db_path, episode_uuid="ep-1", audio_url="https://cdn.example/no-match.mp3"
+    )
+    monkeypatch.setattr(
+        download_module, "resolve_feed_url", lambda title, author: "https://example.com/feed.xml"
+    )
+    monkeypatch.setattr(download_module, "fetch_rss_episodes", lambda feed_url: [])
+
+    result = download_module.backfill_episode_metadata([PODCAST], state_db_path=state_db_path)
+
+    assert result.unmatched == 1
+    assert result.updated == []

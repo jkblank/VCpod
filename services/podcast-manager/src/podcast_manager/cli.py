@@ -11,7 +11,12 @@ from podcast_manager.api import (
     login,
     resolve_show_selection,
 )
-from podcast_manager.download import prune_unsubscribed_shows, push_pending_play_status, sync_shows
+from podcast_manager.download import (
+    backfill_episode_metadata,
+    prune_unsubscribed_shows,
+    push_pending_play_status,
+    sync_shows,
+)
 
 
 def _cmd_list_subscriptions(args: argparse.Namespace) -> int:
@@ -144,6 +149,34 @@ def _cmd_push_play_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_backfill_metadata(args: argparse.Namespace) -> int:
+    # One-off: sync's own record_episode() only (re)writes RSS metadata
+    # for a show's *current* candidates each run, so an episode that's
+    # already played/archived (or otherwise aged out of that window)
+    # never gets touched again by a normal sync -- this walks every
+    # locally-known episode instead. See backfill_episode_metadata's
+    # docstring.
+    try:
+        email, password = load_credentials(args.credentials_path)
+        token = login(email, password)
+        subscriptions = list_subscriptions(token)
+    except (OSError, ValueError, KeyError) as e:
+        print(f"ERROR: could not authenticate with Pocket Casts: {e}")
+        return 1
+
+    result = backfill_episode_metadata(subscriptions, state_db_path=args.state_path)
+
+    print(f"Backfilled metadata for {len(result.updated)} episode(s)")
+    if result.unmatched:
+        print(f"{result.unmatched} episode(s) needed backfill but weren't found in their feed")
+    if result.unresolved_feeds:
+        print(
+            f"Could not resolve a feed for {len(result.unresolved_feeds)} show(s): "
+            f"{', '.join(result.unresolved_feeds)}"
+        )
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="podcast-manager")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -177,6 +210,16 @@ def main() -> None:
     push_parser.add_argument("--credentials-path", required=True)
     push_parser.add_argument("--state-path", required=True)
     push_parser.set_defaults(func=_cmd_push_play_status)
+
+    backfill_parser = subparsers.add_parser(
+        "backfill-metadata",
+        help="One-off: backfill RSS-sourced metadata (description/episode/season "
+        "number/published date) for already-downloaded episodes a normal sync "
+        "will no longer revisit",
+    )
+    backfill_parser.add_argument("--credentials-path", required=True)
+    backfill_parser.add_argument("--state-path", required=True)
+    backfill_parser.set_defaults(func=_cmd_backfill_metadata)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

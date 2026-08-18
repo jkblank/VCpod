@@ -276,6 +276,36 @@ class StateDB:
         self._conn.commit()
         return True
 
+    def update_episode_metadata(
+        self,
+        episode_uuid: str,
+        *,
+        description: str,
+        episode_number: int | None,
+        season_number: int | None,
+        published_at: str,
+    ) -> bool:
+        """Backfills RSS-sourced metadata for an already-recorded episode
+        without touching anything else on the row (played state,
+        pending_push, unsubscribed...). Deliberately separate from
+        record_episode(), which always overwrites played/played_up_to
+        from its caller and would risk clobbering play state for an
+        episode that's no longer an active sync candidate — exactly the
+        case this exists for: backfilling episodes record_episode()
+        itself never revisits once they've aged out of a show's
+        candidate window. Returns False if no row exists for
+        episode_uuid."""
+        existing = self.get_episode(episode_uuid)
+        if existing is None:
+            return False
+        self._conn.execute(
+            "UPDATE episodes SET description = ?, episode_number = ?, "
+            "season_number = ?, published_at = ? WHERE episode_uuid = ?",
+            (description, episode_number, season_number, published_at, episode_uuid),
+        )
+        self._conn.commit()
+        return True
+
     def update_play_state(self, episode_uuid: str, *, played: bool, played_up_to: int) -> bool:
         """Records a device-derived play-state change and marks it
         pending_push, but only if it actually differs from what's already

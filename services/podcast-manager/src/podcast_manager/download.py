@@ -463,3 +463,78 @@ def push_pending_play_status(
             db.clear_pending_push(episode.episode_uuid)
             pushed.append(episode)
     return pushed, failed
+
+
+@dataclass
+class BackfillResult:
+    updated: list[EpisodeRecord] = field(default_factory=list)
+    unresolved_feeds: list[str] = field(default_factory=list)  # show titles
+    unmatched: int = 0  # needed backfill, but not found in the resolved feed
+
+
+def backfill_episode_metadata(
+    subscriptions: list[PodcastSummary],
+    *,
+    state_db_path: Path | str,
+    lock_path: Path | str | None = None,
+    lock_timeout: float = 1800,
+) -> BackfillResult:
+    """One-off backfill for episodes downloaded before RSS-sourced
+    metadata (description/episode/season number/published date) existed,
+    or episodes sync_podcast()'s own candidate loop has since moved past
+    -- record_episode() only ever (re)writes metadata for a show's
+    *current* top-N candidates each run, so an already-played/archived
+    episode still sitting locally (e.g. sync_unplayed_only=False, or not
+    yet pruned) never gets touched by a normal sync again once it drops
+    out of that window. This walks every locally-known episode instead,
+    regardless of candidate status.
+
+    Only resolves/fetches a show's feed if it actually has episodes
+    needing backfill (all four metadata fields still blank/None) --
+    skips the network entirely for shows already fully backfilled.
+    Matched by audio_url against the feed's enclosure URLs, same as
+    sync_podcast(). Best-effort per show: an unresolvable feed is
+    recorded in `unresolved_feeds` and that show's episodes are simply
+    left as-is, same resilience pattern used everywhere else in this
+    module."""
+    if lock_path is None:
+        lock_path = Path(state_db_path).parent / ".podcasts.lock"
+
+    result = BackfillResult()
+    with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
+        episodes_by_show: dict[str, list[EpisodeRecord]] = {}
+        for episode in db.list_episodes():
+            if (
+                not episode.description
+                and episode.episode_number is None
+                and episode.season_number is None
+                and not episode.published_at
+            ):
+                episodes_by_show.setdefault(episode.podcast_uuid, []).append(episode)
+
+        for podcast in subscriptions:
+            needing_backfill = episodes_by_show.get(podcast.uuid)
+            if not needing_backfill:
+                continue
+
+            feed_url = resolve_feed_url(podcast.title, podcast.author)
+            if not feed_url:
+                result.unresolved_feeds.append(podcast.title)
+                continue
+
+            rss_by_enclosure_url = {ep.enclosure_url: ep for ep in fetch_rss_episodes(feed_url)}
+            for episode in needing_backfill:
+                rss_meta = rss_by_enclosure_url.get(episode.audio_url)
+                if rss_meta is None:
+                    result.unmatched += 1
+                    continue
+                db.update_episode_metadata(
+                    episode.episode_uuid,
+                    description=rss_meta.description,
+                    episode_number=rss_meta.episode_number,
+                    season_number=rss_meta.season_number,
+                    published_at=rss_meta.published or "",
+                )
+                result.updated.append(episode)
+
+    return result
