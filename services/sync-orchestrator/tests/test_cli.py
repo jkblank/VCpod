@@ -17,7 +17,12 @@ NOW = datetime(2026, 7, 25, 22, 0, tzinfo=timezone.utc)
 
 
 def _write_profile(
-    directory: Path, filename: str, profile_name: str, *, fetch_schedule: str | None = None
+    directory: Path,
+    filename: str,
+    profile_name: str,
+    *,
+    fetch_schedule: str | None = None,
+    push_play_status_back: bool = False,
 ) -> Path:
     fetch_block = f'fetch:\n  schedule: "{fetch_schedule}"\n' if fetch_schedule else ""
     path = directory / filename
@@ -41,7 +46,7 @@ podcasts:
 sync:
   trigger: manual
   transcode_format: alac
-  push_play_status_back: false
+  push_play_status_back: {"true" if push_play_status_back else "false"}
 """
     )
     return path
@@ -176,6 +181,108 @@ def test_maybe_pre_fetch_failed_subprocess_does_not_record_fetch(monkeypatch, tm
         assert db.get_last_fetched("podcast_show", "__all__") is None
 
 
+# --- _maybe_push_play_status ---------------------------------------------------
+
+
+def test_maybe_push_play_status_skips_when_nothing_updated(monkeypatch, tmp_path):
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    path = _write_profile(profiles_dir, "john.yaml", "john", push_play_status_back=True)
+    from common.config import load_profile_config
+
+    profile = load_profile_config(path)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)))
+
+    cli_module._maybe_push_play_status(
+        _args(), profile, path, tmp_path, play_states_updated=0
+    )
+
+    assert calls == []
+
+
+def test_maybe_push_play_status_skips_when_disabled_in_profile(monkeypatch, tmp_path):
+    # push_play_status_back existed in the schema but was never read by
+    # anything until this feature -- confirm it's a real gate now.
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    path = _write_profile(profiles_dir, "john.yaml", "john", push_play_status_back=False)
+    from common.config import load_profile_config
+
+    profile = load_profile_config(path)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)))
+
+    cli_module._maybe_push_play_status(
+        _args(), profile, path, tmp_path, play_states_updated=2
+    )
+
+    assert calls == []
+
+
+def test_maybe_push_play_status_invokes_subprocess_with_expected_args(monkeypatch, tmp_path):
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    path = _write_profile(profiles_dir, "john.yaml", "john", push_play_status_back=True)
+    from common.config import load_profile_config
+
+    profile = load_profile_config(path)
+
+    captured = {}
+
+    def fake_run(cmd, capture_output, text):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="Pushed play state for 2 episode(s)\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cli_module._maybe_push_play_status(
+        _args(library_root=str(tmp_path / "library"), state_root=str(tmp_path / "state")),
+        profile,
+        path,
+        tmp_path,
+        play_states_updated=2,
+    )
+
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["uv", "run", "--project", "services/music-stack-cli"]
+    assert "music-stack" in cmd
+    assert "sync" in cmd
+    assert "--profile" in cmd and str(path) in cmd
+    assert "--global-config" in cmd and str(tmp_path / "global.yaml") in cmd
+    assert "--source" in cmd and "podcasts" in cmd
+    # Must not pull in music/playlist sources too -- this is purely the
+    # play-state round trip, not a general fetch.
+    assert "apple_music" not in cmd
+    assert "ytmusic" not in cmd
+
+
+def test_maybe_push_play_status_failed_subprocess_does_not_raise(monkeypatch, tmp_path, capsys):
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    path = _write_profile(profiles_dir, "john.yaml", "john", push_play_status_back=True)
+    from common.config import load_profile_config
+
+    profile = load_profile_config(path)
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, capture_output, text: subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="ERROR: could not authenticate"
+        ),
+    )
+
+    # Must not raise -- a failed push is a warning, not a sync failure.
+    cli_module._maybe_push_play_status(
+        _args(), profile, path, tmp_path, play_states_updated=1
+    )
+
+    assert "WARNING: play-status push failed" in capsys.readouterr().out
+
+
 # --- _cmd_auto_sync ------------------------------------------------------------
 
 
@@ -196,9 +303,10 @@ def test_cmd_auto_sync_matches_profile_and_runs_sync_with_removals_allowed(
 
     captured = {}
 
-    def fake_run_sync(args, matched_profile):
+    def fake_run_sync(args, matched_profile, **kwargs):
         captured["args"] = args
         captured["profile"] = matched_profile
+        captured["kwargs"] = kwargs
         return 0
 
     monkeypatch.setattr(cli_module, "_run_sync", fake_run_sync)
@@ -235,7 +343,7 @@ def test_cmd_auto_sync_auto_mounts_before_matching_and_reports_it(
 
     monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: ["/dev/sdb1"])
     monkeypatch.setattr(cli_module, "find_matching_profile", lambda profiles: profile)
-    monkeypatch.setattr(cli_module, "_run_sync", lambda args, matched_profile: 0)
+    monkeypatch.setattr(cli_module, "_run_sync", lambda args, matched_profile, **kwargs: 0)
 
     args = argparse.Namespace(
         config_root=str(config_root),
@@ -265,7 +373,7 @@ def test_cmd_auto_sync_fails_immediately_on_ambiguous_match(monkeypatch, tmp_pat
     monkeypatch.setattr(cli_module, "find_matching_profile", _raise)
     monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
     run_sync_calls = []
-    monkeypatch.setattr(cli_module, "_run_sync", lambda *a: run_sync_calls.append(a))
+    monkeypatch.setattr(cli_module, "_run_sync", lambda *a, **k: run_sync_calls.append(a))
 
     args = argparse.Namespace(
         config_root=str(config_root),
@@ -409,7 +517,12 @@ def test_run_sync_refuses_execute_when_playlist_removal_proposed_without_allow_r
         cli_module, "execute_sync", lambda *a, **k: execute_calls.append(a) or (None, None)
     )
 
-    result = cli_module._run_sync(_run_sync_args(allow_removals=False), profile)
+    result = cli_module._run_sync(
+        _run_sync_args(allow_removals=False),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
 
     assert result == 1
     assert execute_calls == []
@@ -440,7 +553,12 @@ def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
         ),
     )
 
-    result = cli_module._run_sync(_run_sync_args(allow_removals=True), profile)
+    result = cli_module._run_sync(
+        _run_sync_args(allow_removals=True),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
 
     assert result == 0
     assert len(execute_calls) == 1
@@ -457,7 +575,7 @@ def test_cmd_auto_sync_fails_after_wait_seconds_exhausted_with_no_match(monkeypa
     monkeypatch.setattr(cli_module, "find_matching_profile", _raise)
     monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
     run_sync_calls = []
-    monkeypatch.setattr(cli_module, "_run_sync", lambda *a: run_sync_calls.append(a))
+    monkeypatch.setattr(cli_module, "_run_sync", lambda *a, **k: run_sync_calls.append(a))
 
     args = argparse.Namespace(
         config_root=str(config_root),

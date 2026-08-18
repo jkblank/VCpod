@@ -112,14 +112,22 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         return 1
 
     lock_path = Path(args.state_root) / f".sync_{profile.profile}.lock"
+    profile_path = Path(args.profile)
+    # Standard layout: config/profiles/<name>.yaml -> config_root is two
+    # parents up. Only the plain `sync` command needs this derived --
+    # auto-sync already has a real config_root (it discovered the profile
+    # by scanning config_root/profiles/ in the first place).
+    config_root = profile_path.resolve().parent.parent
     try:
         with FileLock(lock_path, timeout=args.lock_timeout):
-            return _run_sync(args, profile)
+            return _run_sync(args, profile, profile_path=profile_path, config_root=config_root)
     except LockTimeoutError as e:
         return _fail(str(e))
 
 
-def _run_sync(args: argparse.Namespace, profile) -> int:
+def _run_sync(
+    args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path
+) -> int:
     start_time = time.monotonic()
     print(f"== Finding device for profile {profile.profile!r} "
           f"({profile.device.match_by}={profile.device.match_value!r}) ==")
@@ -159,7 +167,7 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
     if planned.play_states_updated:
         print(
             f"  {planned.play_states_updated} episode(s) with new local play state "
-            "recorded (run `podcast-manager push-play-status` to sync to Pocket Casts)"
+            "recorded (pushed to Pocket Casts below if this is a real --execute run)"
         )
 
     print(f"== Plan for {profile.profile!r} ==")
@@ -238,6 +246,10 @@ def _run_sync(args: argparse.Namespace, profile) -> int:
     print(
         f"\nPASS: wrote {result.tracks_added} track(s) to a real device. "
         f"{snapshot_note} is available for rollback if needed."
+    )
+
+    _maybe_push_play_status(
+        args, profile, profile_path, config_root, planned.play_states_updated
     )
 
     if not args.skip_eject:
@@ -362,6 +374,58 @@ def _maybe_pre_fetch(
             db.record_fetch(target.target_type, target.target_id, now)
 
 
+def _maybe_push_play_status(
+    args: argparse.Namespace,
+    profile: ProfileConfig,
+    profile_path: Path,
+    config_root: Path,
+    play_states_updated: int,
+) -> None:
+    """After a real device sync, push any locally-confirmed plays (this
+    run's own device read-back, playstate.py) to Pocket Casts right away.
+
+    Until 2026-08-18 this only ever happened via a human remembering to
+    run the separate `podcast-manager push-play-status` command by hand
+    afterward -- which, in this project's entire history, nobody ever
+    had. profile.sync.push_play_status_back existed in the schema this
+    whole time but was never actually read by anything (same "dead
+    config field" shape as the transcode_format/artwork-format bugs
+    elsewhere in notes.md) -- it's the gate here now.
+
+    Shells out to `music-stack sync --source podcasts` rather than
+    importing podcast_manager in-process -- same reasoning as
+    _maybe_pre_fetch: keeps sync-orchestrator's dependency tree isolated
+    from music-stack-cli's heavier one.
+
+    Best-effort: a failed push must not turn an otherwise-successful
+    device sync into a failure. pending_push stays set on any episode
+    that didn't get pushed, so the next podcast sync (scheduled or
+    manual) just retries it."""
+    if play_states_updated == 0 or not profile.sync.push_play_status_back:
+        return
+
+    print(f"== Pushing {play_states_updated} play-state update(s) to Pocket Casts ==")
+    cmd = [
+        "uv", "run", "--project", str(args.music_stack_project_dir),
+        "music-stack", "sync",
+        "--profile", str(profile_path),
+        "--global-config", str(config_root / "global.yaml"),
+        "--library-root", str(args.library_root),
+        "--state-root", str(args.state_root),
+        "--source", "podcasts",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="")
+    if proc.returncode != 0:
+        print(
+            f"WARNING: play-status push failed (exit {proc.returncode}); "
+            "will retry on the next podcast sync"
+        )
+
+
 def _cmd_auto_sync(args: argparse.Namespace) -> int:
     config_root = Path(args.config_root)
     try:
@@ -421,7 +485,12 @@ def _cmd_auto_sync(args: argparse.Namespace) -> int:
     lock_path = Path(args.state_root) / f".sync_{matched_profile.profile}.lock"
     try:
         with FileLock(lock_path, timeout=args.lock_timeout):
-            return _run_sync(args, matched_profile)
+            return _run_sync(
+                args,
+                matched_profile,
+                profile_path=path_by_name[matched_profile.profile],
+                config_root=config_root,
+            )
     except LockTimeoutError as e:
         return _fail(str(e))
 
@@ -502,6 +571,15 @@ def main() -> None:
         action="store_true",
         help="Enable DEBUG-level logging, including playstate.py's "
         "per-track device-play-state resolution trace.",
+    )
+    sync_parser.add_argument(
+        "--music-stack-project-dir",
+        default="services/music-stack-cli",
+        help="Path to the music-stack-cli project, used to invoke "
+        "`music-stack sync --source podcasts` as a subprocess after a "
+        "successful --execute (to push device-observed play state to "
+        "Pocket Casts) — kept out-of-process deliberately, see "
+        "_maybe_push_play_status.",
     )
     sync_parser.set_defaults(func=_cmd_sync)
 

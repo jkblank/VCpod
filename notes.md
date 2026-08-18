@@ -2585,3 +2585,44 @@ Also fixed two stale hardcoded assertions in `common`'s
 `john`'s device serial was updated to the new primary iPod earlier this
 session) — unrelated to this fix, just surfaced by running the full
 suite. Full workspace suite: 272 passing (up from 265).
+
+## Device sync now automatically pushes play status to Pocket Casts afterward
+
+Follow-up to the push-wiring fix above: that fix made `music-stack sync
+--source podcasts` push pending play-state updates automatically, but a
+device sync (`sync-orchestrator sync`) itself still didn't trigger
+anything afterward — a human still had to remember to separately run a
+podcast sync to actually get real on-device listening progress to Pocket
+Casts. User asked for this to happen automatically right after a device
+sync, so Pocket Casts stays as current as possible.
+
+**Fixed**: added `_maybe_push_play_status()` to `sync_orchestrator/cli.py`,
+called right after a successful `--execute` run (both the plain `sync`
+command and the udev-triggered `auto-sync` command share `_run_sync`, so
+this covers both automatically). Gated on `profile.sync.push_play_status_back`
+— which, like `transcode_format` before it, existed in the schema this
+whole time but was never actually read by anything until now — and on
+`planned.play_states_updated > 0` (no point spawning a subprocess when
+the device read-back found nothing new). Shells out to `music-stack sync
+--source podcasts` rather than importing `podcast_manager` in-process,
+matching the exact reasoning `_maybe_pre_fetch` already established for
+keeping sync-orchestrator's dependency tree isolated from
+music-stack-cli's heavier one. Best-effort: a failed push warns but
+doesn't fail an otherwise-successful device sync — `pending_push` stays
+set, so the next podcast sync just retries it.
+
+`_run_sync`'s signature now takes explicit `profile_path`/`config_root`
+keyword args (previously derived nowhere, since only `_maybe_pre_fetch`
+needed them, and only auto-sync ever called that): the plain `sync`
+command derives them from `--profile`'s own path (standard
+`config/profiles/<name>.yaml` layout, `config_root` is two parents up);
+`auto-sync` already had both from its own profile-directory scan.
+
+4 new tests (skip when nothing updated; skip when disabled in profile;
+correct subprocess invocation — scoped to `--source podcasts` only, not
+music sources too; failed push warns without raising). sync-orchestrator
+suite: 98 passing (up from 94) — note this suite is intentionally *not*
+part of the root workspace's `uv run pytest` (see `pyproject.toml`'s
+`testpaths` comment — same "keep iopenpod's dependency tree isolated"
+reasoning), so it must be run separately from
+`services/sync-orchestrator`.
