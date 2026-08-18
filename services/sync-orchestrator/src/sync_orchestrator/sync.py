@@ -78,16 +78,31 @@ class SyncError(Exception):
 # circuits on the first non-empty result — so the device's real,
 # authoritative format list is never even consulted for any Classic-family
 # unit. Confirmed live (2026-08-17) against a real "iPod Classic" 7th Gen
-# (MC293): its SysInfoExtended `AlbumArt` array declares 5 formats,
-# including 1069 (142x142, flagged as the primary format via a
-# `AssociatedFormat`/`ExcludedFormats` pair no other entry has — plausibly
-# the actual Now Playing/cover-screen format) that CLASSIC_COVER_ART_FORMATS
-# doesn't define at all, and format 1061 at 55x55 vs the static table's
-# 56x56. Every other layer (iTunesDB<->ArtworkDB link, the mhii missing-
-# chunk workaround below, raw pixel bytes) was independently byte-diffed
-# and confirmed correct — see notes.md — so this format mismatch is the
-# remaining explanation for album art never rendering on-device despite
-# every write completing without error.
+# (MC293): its SysInfoExtended `AlbumArt` array declares 5 formats, and
+# format 1061 is 55x55 vs the static table's 56x56.
+#
+# Confirmed live (2026-08-18), byte-diffing a real iTunes-authored
+# ArtworkDB pulled straight off this exact device against ours: iTunes
+# only ever writes 3 of those 5 formats per track — 1055 (128x128), 1060
+# (320x320), 1061 (55x55) — every single one of 7/7 real entries checked,
+# no exceptions. The other 2 (1068, 1069) are declared in SysInfoExtended
+# but never appear in any real per-track mhii entry. The plist itself
+# explains why: 1055/1060/1061 all have `AssociatedFormat=0`, while 1068
+# has `AssociatedFormat=2` and 1069 has `AssociatedFormat=131072` +
+# `ExcludedFormats=-1` — i.e. 1068/1069 are reserved for some other,
+# non-track-artwork purpose (Now Playing chrome, video thumbnails,
+# whatever `AssociatedFormat=2`/`131072` denote), not part of the normal
+# per-track thumbnail set. Passing all 5 straight through (as this
+# function used to) makes `_required_device_format_ids()`
+# (artworkdb_writer/artwork_writer.py) treat all 5 as *required* for
+# every entry — writing 2 extra mhod containers real iTunes never
+# writes, corrupting the on-device entry shape in the exact same spirit
+# as the missing-mhod6-chunk bug below, just an addition instead of an
+# omission. `_read_device_album_art_formats()` below now filters to
+# `AssociatedFormat == 0` entries only, matching what real iTunes
+# actually writes. Every other layer (iTunesDB<->ArtworkDB link, the
+# mhii missing-chunk workaround below, raw pixel bytes) was
+# independently byte-diffed and confirmed correct — see notes.md.
 #
 # Apple's own SysInfoExtended XML is invalid plist (`<key>` elements
 # directly inside an `<array>`, one per format, immediately before each
@@ -112,6 +127,50 @@ def _sanitize_sysinfo_extended_plist(raw: bytes) -> bytes:
     return _SYSINFO_EXTENDED_ARRAY_KEY_RE.sub(_strip_keys_in_array, raw)
 
 
+def _filter_to_plain_album_art_formats(
+    plist: dict[str, Any], formats: dict[int, tuple[int, int]]
+) -> dict[int, tuple[int, int]]:
+    """Drop any format id whose SysInfoExtended entry has a nonzero
+    `AssociatedFormat` — see the big comment above for how this was
+    confirmed against a real iTunes-authored ArtworkDB byte-diff.
+    `extract_image_formats()` doesn't preserve `AssociatedFormat` (it
+    only reads FormatId/width/height), so this re-scans the same raw
+    `AlbumArt`-family plist entries directly to recover it. An entry
+    missing the field entirely is kept (treated as unassociated/plain),
+    so devices that don't declare it at all behave exactly as before."""
+    from iopenpod.device.sysinfo import COVER_ART_KEYS
+
+    associated: dict[int, int] = {}
+    for key in COVER_ART_KEYS:
+        value = plist.get(key)
+        if not isinstance(value, list):
+            continue
+        for entry in value:
+            if not isinstance(entry, dict):
+                continue
+            fmt_id = entry.get("FormatId") or entry.get("CorrelationID") or entry.get("format_id")
+            if fmt_id is None:
+                continue
+            try:
+                fmt_int = int(fmt_id)
+            except (TypeError, ValueError):
+                continue
+            try:
+                associated[fmt_int] = int(entry.get("AssociatedFormat", 0) or 0)
+            except (TypeError, ValueError):
+                associated[fmt_int] = 0
+
+    filtered = {fid: dims for fid, dims in formats.items() if associated.get(fid, 0) == 0}
+    dropped = sorted(fid for fid in formats if fid not in filtered)
+    if dropped:
+        logger.info(
+            "Excluding non-plain AlbumArt formats %s (nonzero AssociatedFormat — "
+            "not part of the normal per-track thumbnail set)",
+            dropped,
+        )
+    return filtered
+
+
 def _read_device_album_art_formats(mount_path: str) -> dict[int, tuple[int, int]]:
     """Parse the real, on-device `AlbumArt` format list from SysInfoExtended.
 
@@ -134,6 +193,7 @@ def _read_device_album_art_formats(mount_path: str) -> dict[int, tuple[int, int]
         return {}
 
     formats = extract_image_formats(plist, COVER_ART_KEYS)
+    formats = _filter_to_plain_album_art_formats(plist, formats)
     if formats:
         logger.info(
             "Using device-reported AlbumArt formats from SysInfoExtended: %s",

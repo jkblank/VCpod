@@ -510,11 +510,95 @@ def test_sanitize_sysinfo_extended_plist_makes_apples_shape_parseable():
 
 
 def test_read_device_album_art_formats_parses_real_device_shape(tmp_path):
+    # 1069 has a nonzero AssociatedFormat in the fixture and must be
+    # filtered out — see _filter_to_plain_album_art_formats' docstring.
     _write_sysinfo_extended(tmp_path)
 
     formats = sync_module._read_device_album_art_formats(str(tmp_path))
 
-    assert formats == {1069: (142, 142), 1061: (55, 55)}
+    assert formats == {1061: (55, 55)}
+
+
+def test_read_device_album_art_formats_drops_non_associated_formats(tmp_path):
+    # Full real shape (2026-08-18, same 7th Gen/MC293 unit): SysInfoExtended
+    # declares 5 AlbumArt formats, but a byte-diff of a real iTunes-authored
+    # ArtworkDB pulled off this exact device confirmed iTunes only ever
+    # writes the 3 with AssociatedFormat=0 (1055/1060/1061) into per-track
+    # mhii entries — 1068 (AssociatedFormat=2) and 1069
+    # (AssociatedFormat=131072, ExcludedFormats=-1) never appear. See
+    # notes.md and the module-level comment above _read_device_album_art_formats.
+    content = b"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+<key>AlbumArt</key>
+<array>
+<key>1069</key>
+<dict>
+<key>FormatId</key>
+<integer>1069</integer>
+<key>RenderWidth</key>
+<integer>142</integer>
+<key>RenderHeight</key>
+<integer>142</integer>
+<key>AssociatedFormat</key>
+<integer>131072</integer>
+<key>ExcludedFormats</key>
+<integer>-1</integer>
+</dict>
+<key>1055</key>
+<dict>
+<key>FormatId</key>
+<integer>1055</integer>
+<key>RenderWidth</key>
+<integer>128</integer>
+<key>RenderHeight</key>
+<integer>128</integer>
+<key>AssociatedFormat</key>
+<integer>0</integer>
+</dict>
+<key>1068</key>
+<dict>
+<key>FormatId</key>
+<integer>1068</integer>
+<key>RenderWidth</key>
+<integer>128</integer>
+<key>RenderHeight</key>
+<integer>128</integer>
+<key>AssociatedFormat</key>
+<integer>2</integer>
+</dict>
+<key>1060</key>
+<dict>
+<key>FormatId</key>
+<integer>1060</integer>
+<key>RenderWidth</key>
+<integer>320</integer>
+<key>RenderHeight</key>
+<integer>320</integer>
+<key>AssociatedFormat</key>
+<integer>0</integer>
+</dict>
+<key>1061</key>
+<dict>
+<key>FormatId</key>
+<integer>1061</integer>
+<key>RenderWidth</key>
+<integer>55</integer>
+<key>RenderHeight</key>
+<integer>55</integer>
+<key>AssociatedFormat</key>
+<integer>0</integer>
+</dict>
+</array>
+</dict>
+</plist>
+"""
+    _write_sysinfo_extended(tmp_path, content)
+
+    formats = sync_module._read_device_album_art_formats(str(tmp_path))
+
+    assert formats == {1055: (128, 128), 1060: (320, 320), 1061: (55, 55)}
 
 
 def test_read_device_album_art_formats_returns_empty_when_file_missing(tmp_path):
@@ -524,10 +608,12 @@ def test_read_device_album_art_formats_returns_empty_when_file_missing(tmp_path)
 def test_register_current_device_overrides_artwork_formats_from_real_device(tmp_path):
     # iopenpod's enrich() resolves info.artwork_formats from a static,
     # per-family table (device/capabilities.py's CLASSIC_COVER_ART_FORMATS)
-    # that's missing format 1069 and has the wrong dimensions for 1061 —
-    # confirmed live against a real "iPod Classic" 7th Gen unit, see the
-    # docstring on _read_device_album_art_formats. The device's own
-    # SysInfoExtended is authoritative and must win.
+    # that has the wrong dimensions for 1061 (56x56 vs the device's real
+    # 55x55) — confirmed live against a real "iPod Classic" 7th Gen unit,
+    # see the docstring on _read_device_album_art_formats. The device's own
+    # SysInfoExtended is authoritative and must win. 1069 (AssociatedFormat
+    # != 0 in the fixture) must NOT appear even though it's absent from the
+    # static table too — see _filter_to_plain_album_art_formats.
     _write_sysinfo_extended(tmp_path)
     info = DeviceInfo(path=str(tmp_path))
     info.model_family = "iPod Classic"
@@ -536,7 +622,7 @@ def test_register_current_device_overrides_artwork_formats_from_real_device(tmp_
 
     _register_current_device(info)
 
-    assert info.artwork_formats == {1069: (142, 142), 1061: (55, 55)}
+    assert info.artwork_formats == {1061: (55, 55)}
 
 
 def test_register_current_device_keeps_static_formats_without_sysinfo_extended():

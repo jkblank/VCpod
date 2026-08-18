@@ -2519,6 +2519,57 @@ regarding album art); a restart didn't change anything. Next session
 picking this up should start from hypothesis (3) above (real iTunes
 resync + byte-diff) since inspection alone is exhausted.
 
+**2026-08-18 (later, same day): hypothesis (3) executed — a second real
+root cause found and fixed.** User did a real iTunes sync of this exact
+device (music added via actual iTunes, artwork confirmed visible
+on-device) — the known-good reference this investigation needed.
+Pulled the resulting `iPod_Control/Artwork/ArtworkDB` off the device and
+parsed it with iopenpod's own `artworkdb_parser` (no need to write any
+new parsing code). Byte/structure-diffed every one of 7 real per-track
+`mhli` entries against what this project's own SysInfoExtended-derived
+format list would produce.
+
+**Finding**: real iTunes writes exactly 3 image formats per track —
+1055 (128x128), 1060 (320x320), 1061 (55x55) — 7/7 entries, no
+exceptions, plus the already-known mhod-type-6 filler chunk. The
+device's SysInfoExtended `AlbumArt` array actually declares 5 formats
+(also 1068 and 1069), which is why `_read_device_album_art_formats()`
+was previously passing all 5 through. The plist explains the split:
+1055/1060/1061 all have `AssociatedFormat=0`; 1068 has
+`AssociatedFormat=2`; 1069 has `AssociatedFormat=131072` +
+`ExcludedFormats=-1`. Nonzero `AssociatedFormat` marks a format as
+reserved for something other than normal per-track thumbnails (Now
+Playing chrome, video, whatever `2`/`131072` denote) — iTunes itself
+never writes them into a track's artwork entry. This project's code was
+treating all 5 as *required* per iopenpod's own
+`_required_device_format_ids()` (`sorted(device_formats.keys())`),
+which meant every entry we wrote had 2 extra mhod containers real
+firmware doesn't expect — the same "wrong on-device shape" failure mode
+as the missing-mhod6-chunk bug, just an addition instead of an
+omission, and layered on top of it.
+
+**Fixed**: `_read_device_album_art_formats()`
+(`sync_orchestrator/sync.py`) now filters to `AssociatedFormat == 0`
+entries only via a new `_filter_to_plain_album_art_formats()` helper
+(re-scans the raw plist directly since iopenpod's own
+`extract_image_formats()` doesn't preserve `AssociatedFormat`). Verified
+directly against the live device's real SysInfoExtended file (not just
+the test fixture): resolves to exactly `{1055: (128,128), 1060:
+(320,320), 1061: (55,55)}`, matching the real iTunes-written set
+byte-for-byte. Test suite updated: the two format-override tests that
+previously asserted 1069 survives were wrong under this new
+understanding and now assert it's filtered out; added a new test with
+the full real 5-format shape reproducing the real device's actual
+`AssociatedFormat` values. 109/109 sync-orchestrator tests pass.
+
+**Status**: fix implemented and unit-verified against live device data;
+not yet confirmed to actually produce visible album art on a real
+`--execute` sync (the previous fix attempt also looked individually
+correct and still didn't render — this one is the first fix backed by a
+genuine byte-diff against known-good iTunes output, not inference from
+static tables/docs, but only a real device test settles it). Next step:
+run a real sync and visually check the device.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
