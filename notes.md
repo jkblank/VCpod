@@ -2626,3 +2626,22 @@ part of the root workspace's `uv run pytest` (see `pyproject.toml`'s
 `testpaths` comment — same "keep iopenpod's dependency tree isolated"
 reasoning), so it must be run separately from
 `services/sync-orchestrator`.
+
+## Push-after-sync gate fixed: check real pending_push count, not just this run's delta
+
+Follow-up to the auto-push-after-device-sync feature above. Live-tested
+it (2026-08-18) with a genuinely-played episode ("Open Sauce vs Better
+Software Conference") and found the gate was wrong: `_maybe_push_play_status`
+was keyed on `planned.play_states_updated` (this run's own device-read-
+back delta) rather than the state db's actual `pending_push` count. A
+device's "recent" play delta is effectively consumed the moment a commit
+reads it -- it doesn't persist for a later run to re-detect. So anything
+already pending from *before* this run (a manual override, or an earlier
+device sync whose resulting push got lost to a race with a concurrent
+podcast fetch -- confirmed this happened live, to both Open Sauce and a
+second episode, Malala Yousafzai's) would silently never get pushed by a
+device sync that itself found nothing new on the device: the real signal
+was gone, and the stale `pending_push=1` flag just sat there unflushed.
+Fixed: now checks `StateDB.list_episodes_pending_push()`'s real count
+directly. 5 tests (was 4) rewritten around real state-db fixtures rather
+than a passed-in int. sync-orchestrator suite: 99 passing.

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.config import ConfigError
-from common.state import StateDB
+from common.state import EpisodeRecord, StateDB
 from sync_orchestrator import cli as cli_module
 from sync_orchestrator.device import AmbiguousDeviceMatchError, DeviceNotFoundError
 
@@ -184,7 +184,47 @@ def test_maybe_pre_fetch_failed_subprocess_does_not_record_fetch(monkeypatch, tm
 # --- _maybe_push_play_status ---------------------------------------------------
 
 
-def test_maybe_push_play_status_skips_when_nothing_updated(monkeypatch, tmp_path):
+def _record_pending_episode(state_db_path: Path) -> None:
+    with StateDB(state_db_path) as db:
+        db.record_episode(
+            EpisodeRecord(
+                episode_uuid="ep-1",
+                podcast_uuid="show-1",
+                show_name="Test Show",
+                local_path="/does/not/matter.mp3",
+                played=False,
+                played_up_to=0,
+                downloaded_at="2026-07-19T00:00:00+00:00",
+            )
+        )
+        db.update_play_state("ep-1", played=True, played_up_to=900)
+
+
+def test_maybe_push_play_status_skips_when_nothing_pending(monkeypatch, tmp_path):
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    path = _write_profile(profiles_dir, "john.yaml", "john", push_play_status_back=True)
+    from common.config import load_profile_config
+
+    profile = load_profile_config(path)
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    with StateDB(state_root / "john.sqlite"):
+        pass  # a real db with nothing pending
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)))
+
+    cli_module._maybe_push_play_status(
+        _args(state_root=str(state_root)), profile, path, tmp_path
+    )
+
+    assert calls == []
+
+
+def test_maybe_push_play_status_skips_when_state_db_does_not_exist_yet(monkeypatch, tmp_path):
+    # A device sync's first-ever run for a profile has no state db yet --
+    # must not crash trying to check it for pending pushes.
     profiles_dir = tmp_path / "profiles"
     profiles_dir.mkdir()
     path = _write_profile(profiles_dir, "john.yaml", "john", push_play_status_back=True)
@@ -196,7 +236,7 @@ def test_maybe_push_play_status_skips_when_nothing_updated(monkeypatch, tmp_path
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)))
 
     cli_module._maybe_push_play_status(
-        _args(), profile, path, tmp_path, play_states_updated=0
+        _args(state_root=str(tmp_path / "does-not-exist")), profile, path, tmp_path
     )
 
     assert calls == []
@@ -211,39 +251,48 @@ def test_maybe_push_play_status_skips_when_disabled_in_profile(monkeypatch, tmp_
     from common.config import load_profile_config
 
     profile = load_profile_config(path)
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    _record_pending_episode(state_root / "john.sqlite")
 
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)))
 
     cli_module._maybe_push_play_status(
-        _args(), profile, path, tmp_path, play_states_updated=2
+        _args(state_root=str(state_root)), profile, path, tmp_path
     )
 
     assert calls == []
 
 
-def test_maybe_push_play_status_invokes_subprocess_with_expected_args(monkeypatch, tmp_path):
+def test_maybe_push_play_status_invokes_subprocess_when_something_pending(monkeypatch, tmp_path):
+    # Confirmed live (2026-08-18): gating on just this run's own
+    # play_states_updated missed anything already pending from before
+    # this run (a manual override, or an earlier push lost to a race) --
+    # this must check the state db's real pending_push count instead.
     profiles_dir = tmp_path / "profiles"
     profiles_dir.mkdir()
     path = _write_profile(profiles_dir, "john.yaml", "john", push_play_status_back=True)
     from common.config import load_profile_config
 
     profile = load_profile_config(path)
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    _record_pending_episode(state_root / "john.sqlite")
 
     captured = {}
 
     def fake_run(cmd, capture_output, text):
         captured["cmd"] = cmd
-        return subprocess.CompletedProcess(cmd, 0, stdout="Pushed play state for 2 episode(s)\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="Pushed play state for 1 episode(s)\n", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     cli_module._maybe_push_play_status(
-        _args(library_root=str(tmp_path / "library"), state_root=str(tmp_path / "state")),
+        _args(library_root=str(tmp_path / "library"), state_root=str(state_root)),
         profile,
         path,
         tmp_path,
-        play_states_updated=2,
     )
 
     cmd = captured["cmd"]
@@ -266,6 +315,9 @@ def test_maybe_push_play_status_failed_subprocess_does_not_raise(monkeypatch, tm
     from common.config import load_profile_config
 
     profile = load_profile_config(path)
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    _record_pending_episode(state_root / "john.sqlite")
 
     monkeypatch.setattr(
         subprocess,
@@ -277,7 +329,7 @@ def test_maybe_push_play_status_failed_subprocess_does_not_raise(monkeypatch, tm
 
     # Must not raise -- a failed push is a warning, not a sync failure.
     cli_module._maybe_push_play_status(
-        _args(), profile, path, tmp_path, play_states_updated=1
+        _args(state_root=str(state_root)), profile, path, tmp_path
     )
 
     assert "WARNING: play-status push failed" in capsys.readouterr().out
@@ -534,6 +586,7 @@ def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
     profile = SimpleNamespace(
         profile="john",
         device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+        sync=SimpleNamespace(push_play_status_back=False),
     )
     monkeypatch.setattr(
         cli_module, "find_matching_device",

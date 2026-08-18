@@ -248,9 +248,7 @@ def _run_sync(
         f"{snapshot_note} is available for rollback if needed."
     )
 
-    _maybe_push_play_status(
-        args, profile, profile_path, config_root, planned.play_states_updated
-    )
+    _maybe_push_play_status(args, profile, profile_path, config_root)
 
     if not args.skip_eject:
         # A plain filesystem unmount (the previous manual workflow)
@@ -379,10 +377,9 @@ def _maybe_push_play_status(
     profile: ProfileConfig,
     profile_path: Path,
     config_root: Path,
-    play_states_updated: int,
 ) -> None:
-    """After a real device sync, push any locally-confirmed plays (this
-    run's own device read-back, playstate.py) to Pocket Casts right away.
+    """After a real device sync, push any locally-confirmed plays to
+    Pocket Casts right away.
 
     Until 2026-08-18 this only ever happened via a human remembering to
     run the separate `podcast-manager push-play-status` command by hand
@@ -391,6 +388,16 @@ def _maybe_push_play_status(
     whole time but was never actually read by anything (same "dead
     config field" shape as the transcode_format/artwork-format bugs
     elsewhere in notes.md) -- it's the gate here now.
+
+    Deliberately checks the state db's actual pending_push count, not
+    just this run's own play_states_updated -- confirmed live (2026-08-18)
+    that gating on the latter misses anything already pending from
+    before this run (a manual override, or an earlier device sync whose
+    push got interrupted/lost to a race with a concurrent podcast fetch):
+    the device's own "recent" play delta only exists once and is
+    effectively consumed the moment a commit reads it, so a later run
+    that finds nothing new on the device must still flush whatever's
+    already sitting in pending_push, or that state is lost for good.
 
     Shells out to `music-stack sync --source podcasts` rather than
     importing podcast_manager in-process -- same reasoning as
@@ -401,10 +408,18 @@ def _maybe_push_play_status(
     device sync into a failure. pending_push stays set on any episode
     that didn't get pushed, so the next podcast sync (scheduled or
     manual) just retries it."""
-    if play_states_updated == 0 or not profile.sync.push_play_status_back:
+    if not profile.sync.push_play_status_back:
         return
 
-    print(f"== Pushing {play_states_updated} play-state update(s) to Pocket Casts ==")
+    state_db_path = Path(args.state_root) / f"{profile.profile}.sqlite"
+    if not state_db_path.is_file():
+        return
+    with StateDB(state_db_path) as db:
+        pending_count = len(db.list_episodes_pending_push())
+    if pending_count == 0:
+        return
+
+    print(f"== Pushing {pending_count} play-state update(s) to Pocket Casts ==")
     cmd = [
         "uv", "run", "--project", str(args.music_stack_project_dir),
         "music-stack", "sync",
