@@ -2464,3 +2464,51 @@ mode isn't reliably picking the actual newest episodes), and never
 threads `profile.podcasts.max_episodes_per_show` into `PodcastFeed.episode_slots`
 (silently stuck at the dataclass default of 3, not the profile's
 configured value — e.g. `john.yaml` sets 5).
+
+## Album art still not rendering on iPod Classic 7th Gen — format-set fix ruled out as root cause
+
+Follow-up to "iPod Classic 7th Gen: album art wrote correctly but never
+rendered on-screen — fixed" above. That entry was premature — the format
+fix (adding the missing 1069 format, correcting 1061 to 55x55) never
+actually got a confirmed "art now visible" from the user. When finally
+checked, it still showed nothing.
+
+**Controlled A/B test (2026-08-18)**: reverted the SysInfoExtended-based
+override behind a temporary `VCPOD_DISABLE_ALBUMART_FIX` env var (not
+committed — test-only), wiped the on-device `ArtworkDB`, and did a real
+resync so the device got a *fresh* write using the old, uncorrected
+4-format set (1055/1060/1061 at the wrong 56x56/1068 — no 1069) —
+deliberately reproducing exactly what the very first Rise-Up 48-track
+test had written. **Still no artwork visible at all.** This decisively
+rules out the format mismatch as the actual blocker: both the "broken"
+and "fixed" format sets produce identical results (byte-correct data,
+nothing rendered), so whatever the original Rise-Up test's "it worked"
+report was based on, it wasn't reproducible under a controlled retest —
+possibly a misremembered/mistaken observation, or something unrelated
+(e.g. checking a different screen or a different device state) at the
+time.
+
+The `_read_device_album_art_formats`/`_sanitize_sysinfo_extended_plist`
+fix itself is still correct and worth keeping — it makes the written
+ArtworkDB match this device's own declared capability spec exactly,
+which is objectively more correct regardless — but it is **not** the
+fix for "no album art visible." Reverted the temporary test toggle;
+the real fix stays in place as committed.
+
+**Status: unresolved.** Every software/data layer this project can
+inspect (iTunesDB↔ArtworkDB link, mhii chunk shape, per-format dimensions
+matching the device's own spec, raw decoded pixel bytes) has now been
+verified correct twice, under two different format sets, with identical
+"nothing displays" results both times. This matches the referenced
+iOpenPod GitHub issue #81 ("iPod Classic missing cover on play screen")
+in symptom, which was closed upstream with no documented fix. Remaining
+untested hypotheses, roughly in order of cost: (1) an on-device Settings
+toggle we haven't found (unlikely but unchecked — this device's Settings
+menu hasn't been screen-by-screen audited for anything artwork-related);
+(2) a genuine firmware/model-specific limitation with non-iTunes-authored
+ArtworkDB writes on this particular unit, independent of data
+correctness; (3) a real iTunes resync (as was eventually done for the
+5.5th-gen device) to get a genuine known-good reference to byte-diff
+against — the only method that actually solved the equivalent bug for
+the other device, but requires access to a Mac/Windows machine and would
+require rebuilding the device afterward.
