@@ -2512,3 +2512,9 @@ correctness; (3) a real iTunes resync (as was eventually done for the
 against — the only method that actually solved the equivalent bug for
 the other device, but requires access to a Mac/Windows machine and would
 require rebuilding the device afterward.
+
+**2026-08-18: set aside by user request**, not pursued further this
+session. No settings toggle found on-device either (checked, none
+regarding album art); a restart didn't change anything. Next session
+picking this up should start from hypothesis (3) above (real iTunes
+resync + byte-diff) since inspection alone is exhausted.
