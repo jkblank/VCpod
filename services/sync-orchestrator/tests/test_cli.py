@@ -16,6 +16,22 @@ from sync_orchestrator.device import AmbiguousDeviceMatchError, DeviceNotFoundEr
 NOW = datetime(2026, 7, 25, 22, 0, tzinfo=timezone.utc)
 
 
+def test_default_music_stack_project_dir_is_absolute_and_cwd_independent():
+    # Confirmed live (2026-08-18): a relative "services/music-stack-cli"
+    # default only worked when invoked from the repo root -- every manual
+    # `sync-orchestrator sync` run that session was from inside
+    # services/sync-orchestrator/ instead, where that relative path
+    # resolved to nothing and the play-status push subprocess silently
+    # failed with "No such file or directory", while the device sync
+    # itself still reported PASS.
+    result = cli_module._default_music_stack_project_dir()
+
+    path = Path(result)
+    assert path.is_absolute()
+    assert path.name == "music-stack-cli"
+    assert (path / "pyproject.toml").is_file()
+
+
 def _write_profile(
     directory: Path,
     filename: str,

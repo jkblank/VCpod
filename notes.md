@@ -2645,3 +2645,36 @@ was gone, and the stale `pending_push=1` flag just sat there unflushed.
 Fixed: now checks `StateDB.list_episodes_pending_push()`'s real count
 directly. 5 tests (was 4) rewritten around real state-db fixtures rather
 than a passed-in int. sync-orchestrator suite: 99 passing.
+
+## Play-status push subprocess silently failed: relative project-dir default only worked from repo root
+
+Live-testing the auto-push feature (2026-08-18) with a real on-device
+play surfaced the actual reason Open Sauce/Malala's pushes kept
+disappearing: `--music-stack-project-dir` defaulted to the plain string
+`"services/music-stack-cli"`, resolved relative to whatever the CWD
+happened to be when `sync-orchestrator sync` was invoked. Every manual
+invocation this session was from inside `services/sync-orchestrator/`
+(not the repo root), where that relative path resolves to nothing --
+`uv run --project services/music-stack-cli music-stack sync ...` failed
+with "No such file or directory", *silently*, since the device sync
+itself still reports PASS and only prints a WARNING for the push
+failure -- easy to miss in a long log, and exactly what happened. Only
+`_maybe_pre_fetch` (auto-sync's pre-fetch step, using the same relative
+default) never hit this in practice because auto-sync's systemd unit
+always sets its WorkingDirectory to the repo root.
+
+**Fixed**: added `_default_music_stack_project_dir()`, deriving an
+absolute path from `cli.py`'s own installed location
+(`Path(__file__).resolve().parents[3] / "music-stack-cli"`) rather than
+a CWD-relative guess -- immune to wherever the command is actually
+invoked from. Used as the default for both `sync` and `auto-sync`'s
+`--music-stack-project-dir`. 1 new regression test. sync-orchestrator
+suite: 100 passing.
+
+Once this was fixed, a real device sync correctly detected the on-device
+play (`recent_playcount=1`, confirmed present via direct on-device
+inspection -- an earlier concern that the ephemeral "recent" delta gets
+permanently consumed after one read turned out to be unfounded; it
+persisted across multiple reads/commits in this same investigation) and
+successfully pushed 3 pending play-state updates (Open Sauce, Malala,
+and this run's own detection) to Pocket Casts in the same run.

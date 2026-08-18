@@ -27,6 +27,21 @@ from sync_orchestrator.device import (
 from sync_orchestrator.sync import SyncError, execute_sync, plan_sync
 
 
+def _default_music_stack_project_dir() -> str:
+    """Absolute path to the sibling music-stack-cli project, derived from
+    this installed package's own location rather than a CWD-relative
+    guess. Confirmed live (2026-08-18): the old plain "services/music-
+    stack-cli" default only worked when invoked from the repo root (true
+    for auto-sync's systemd unit, whose WorkingDirectory is fixed there)
+    -- every manual `sync-orchestrator sync` run this session was from
+    inside services/sync-orchestrator/ instead, where that relative path
+    resolves to nothing and the play-status push subprocess silently
+    failed with "No such file or directory" while the device sync itself
+    still reported success. Layout assumed: services/sync-orchestrator/
+    src/sync_orchestrator/cli.py -> services/ is 3 parents up."""
+    return str(Path(__file__).resolve().parents[3] / "music-stack-cli")
+
+
 def _format_duration(seconds: float) -> str:
     minutes, secs = divmod(int(seconds), 60)
     return f"{minutes}m{secs:02d}s"
@@ -589,7 +604,7 @@ def main() -> None:
     )
     sync_parser.add_argument(
         "--music-stack-project-dir",
-        default="services/music-stack-cli",
+        default=_default_music_stack_project_dir(),
         help="Path to the music-stack-cli project, used to invoke "
         "`music-stack sync --source podcasts` as a subprocess after a "
         "successful --execute (to push device-observed play state to "
@@ -632,7 +647,7 @@ def main() -> None:
     )
     auto_sync_parser.add_argument(
         "--music-stack-project-dir",
-        default="services/music-stack-cli",
+        default=_default_music_stack_project_dir(),
         help="Path to the music-stack-cli project, used to invoke "
         "`music-stack sync` as a subprocess for the pre-fetch step — kept "
         "out-of-process deliberately (see README): sync-orchestrator stays "
