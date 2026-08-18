@@ -320,6 +320,38 @@ def test_pre_existing_episodes_table_migrates_new_columns_in_place(tmp_path: Pat
         assert fetched.audio_url == ""
         assert fetched.duration_seconds == 0
         assert fetched.pending_push is False
+        assert fetched.description == ""
+        assert fetched.episode_number is None
+        assert fetched.season_number is None
+        assert fetched.published_at == ""
+
+
+def test_rss_metadata_round_trips_through_record_episode(tmp_path: Path):
+    episode = _episode()
+    episode.description = "A real episode description."
+    episode.episode_number = 42
+    episode.season_number = 3
+    episode.published_at = "2026-08-13T15:00:00Z"
+
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(episode)
+
+        fetched = db.get_episode("ep-123")
+        assert fetched.description == "A real episode description."
+        assert fetched.episode_number == 42
+        assert fetched.season_number == 3
+        assert fetched.published_at == "2026-08-13T15:00:00Z"
+
+
+def test_rss_metadata_defaults_to_blank_when_not_provided(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode())
+
+        fetched = db.get_episode("ep-123")
+        assert fetched.description == ""
+        assert fetched.episode_number is None
+        assert fetched.season_number is None
+        assert fetched.published_at == ""
 
 
 def test_get_last_fetched_returns_none_for_unseen_target(tmp_path: Path):

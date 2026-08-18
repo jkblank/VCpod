@@ -2816,3 +2816,71 @@ sync-orchestrator suite: 102 passing. This is purely additive to
 `resolve_played_states`'s own logic (no `common` involvement), so no
 `uv sync --reinstall-package` gotcha applies here — this is a genuine
 fix from the moment it's on disk in sync-orchestrator's own source.
+
+## Real per-show episode caps + RSS-sourced episode metadata — shipped
+
+Two gaps addressed together (same code path, same schema migration):
+
+**`max_episodes_per_show` now actually caps the local library.**
+`sync_podcast()`'s `candidates[:max_episodes_per_show]` only ever
+limited new *additions* per run — nothing pruned the accumulated
+backlog, so shows built up well past their configured limit (confirmed
+live: Timothy Keller Sermons had 17 local episodes against a limit of
+5). Fixed by extending the existing `delete_played_episodes and
+sync_unplayed_only` pruning block in `podcast_manager/download.py`: an
+episode that's aged out of this run's top-N "wanted" window (still
+eligible per Pocket Casts, just no longer in the newest/next N) now
+gets its local file deleted immediately, same as an already-played one.
+Gated behind the exact same condition as the existing played-based
+pruning, so an explicit archival profile (`sync_unplayed_only=False`)
+is never touched. Live-verified: raising `john.yaml`'s
+`max_episodes_per_show` to 10 and re-running pruned Timothy Keller from
+17 -> 10 in one run.
+
+Separately, `sync_orchestrator/sync.py::_load_podcast_feeds()` built
+every `PodcastFeed` with no `episode_slots`/`fill_mode` at all, silently
+running on iopenpod's dataclass default (`episode_slots=3`) instead of
+the profile's real value — same "config field exists but nothing reads
+it" shape as `transcode_format`/`push_play_status_back` found earlier
+today. Now threads `profile.podcasts.max_episodes_per_show` and
+`profile.podcasts.fill_modes` through (the function gained a `profile`
+parameter). Live-verified via a real device sync after the fetch-side
+fix above.
+
+**Episode description, episode number, season number, and published
+date are now stored.** Pocket Casts' own API doesn't expose any of these
+per-episode (confirmed live against `/podcast/full/` — only title/url/
+duration/published/slug/file_type). New module
+`podcast_manager/rss.py`: `resolve_feed_url()` looks up a show's real
+RSS feed via Apple's public, key-free iTunes Search API (matched by
+title+author; no feed/RSS URL of any kind is exposed by Pocket Casts
+itself); `fetch_rss_episodes()` fetches and parses it with stdlib
+`xml.etree.ElementTree` (no new dependency). Matched to a Pocket Casts
+`FullEpisode` by enclosure URL — confirmed live these are byte-identical
+between Pocket Casts and the real RSS feed. Best-effort throughout: an
+unresolvable show or a malformed feed degrades to blank/`None`
+metadata, never blocks a sync (same resilience pattern already used for
+per-episode download failures). `episode_number`/`season_number` are
+genuinely optional — not every podcast tags them (confirmed live: The
+Standup with ThePrimeagen doesn't). `published_at` falls back to Pocket
+Casts' own `published` field when RSS enrichment doesn't cover a given
+episode (feed unresolved, or the item isn't in the feed's own returned
+window) — always populated one way or the other. Four new
+`EpisodeRecord`/`episodes` columns, same migration pattern as
+`unsubscribed`/`pending_push` before them. Fixed the adjacent `pub_date`
+gap while touching this code anyway: `_load_podcast_feeds` never set
+`PodcastEpisode.pub_date` (stayed `0.0` for every episode, undermining
+`fill_mode="newest"`'s own sort reliability) — now parsed from
+`published_at` (handles both RSS's RFC 822 `pubDate` and Pocket Casts'
+ISO format).
+
+Planned properly first (see the ancient-orbiting-hopcroft plan) —
+spiked both the iTunes Search lookup and RSS parsing live against a
+real show before committing to the approach, rather than assuming it
+would work. 17 new tests across `common`/`podcast-manager`/
+`sync-orchestrator`. Caught and fixed a real test-suite regression along
+the way: the new `resolve_feed_url`/`fetch_rss_episodes` calls weren't
+mocked in several existing `sync_podcast` tests, silently turning a
+sub-second test run into ~100s of real network calls — fixed by mocking
+`resolve_feed_url` in the shared `patched_pipeline` fixture (and the
+few tests that don't use it).

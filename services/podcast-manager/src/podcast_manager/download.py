@@ -19,6 +19,7 @@ from podcast_manager.api import (
     list_full_episodes,
     update_episode_status,
 )
+from podcast_manager.rss import fetch_rss_episodes, resolve_feed_url
 
 _ILLEGAL_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
 
@@ -129,6 +130,20 @@ def sync_podcast(
     full_episodes = list_full_episodes(token, podcast.uuid)
     states_by_uuid = {s.uuid: s for s in list_episode_states(token, podcast.uuid)}
 
+    # Best-effort RSS enrichment (description/episode/season number —
+    # Pocket Casts' own API doesn't expose any of these, confirmed live
+    # against /podcast/full/, see notes.md). Resolved once per show per
+    # run, not per episode. A show whose feed can't be resolved/parsed
+    # just gets no enrichment this run (resolve_feed_url/fetch_rss_episodes
+    # already degrade to None/[] rather than raising) — every episode
+    # still downloads normally either way. Keyed by enclosure URL, which
+    # matches Pocket Casts' own FullEpisode.url byte-for-byte (confirmed
+    # live against a real feed).
+    rss_by_enclosure_url = {}
+    feed_url = resolve_feed_url(podcast.title, podcast.author)
+    if feed_url:
+        rss_by_enclosure_url = {ep.enclosure_url: ep for ep in fetch_rss_episodes(feed_url)}
+
     # "newest" (default): always grab the latest unheard episode(s) —
     # right for news/commentary shows. "next": grab the oldest unheard
     # episode(s) first instead, resuming chronologically — right for
@@ -229,6 +244,7 @@ def sync_podcast(
             # pending_push untouched; this closes the equivalent gap for
             # played/played_up_to.
             played, played_up_to = _merged_played_state(episode.uuid)
+            rss_meta = rss_by_enclosure_url.get(episode.url)
             record = EpisodeRecord(
                 episode_uuid=episode.uuid,
                 podcast_uuid=podcast.uuid,
@@ -240,6 +256,14 @@ def sync_podcast(
                 title=episode.title,
                 audio_url=episode.url,
                 duration_seconds=episode.duration,
+                description=rss_meta.description if rss_meta else "",
+                episode_number=rss_meta.episode_number if rss_meta else None,
+                season_number=rss_meta.season_number if rss_meta else None,
+                # Pocket Casts' own published date is a reliable fallback
+                # when RSS enrichment missed this specific episode (feed
+                # unresolved, or the item aged out of the feed already) —
+                # both are ISO-ish timestamps for the same real value.
+                published_at=(rss_meta.published if rss_meta else None) or episode.published or "",
             )
             db.record_episode(record)
             (result.already_present if already_downloaded else result.downloaded).append(record)
@@ -250,11 +274,31 @@ def sync_podcast(
         # downloaded, e.g. as an archive) must not be undermined by
         # deleting them the instant they land.
         if delete_played_episodes and sync_unplayed_only:
+            candidate_uuids = {episode.uuid for episode in candidates}
+            full_episode_uuids = {episode.uuid for episode in full_episodes}
             for local in local_by_uuid.values():
                 if local.podcast_uuid != podcast.uuid:
                     continue
                 played, _played_up_to = _merged_played_state(local.episode_uuid)
-                if not played:
+                # Prune on either signal: played (original behavior), or
+                # simply no longer in this run's top-max_episodes_per_show
+                # window (confirmed live, 2026-08-18: candidates[:N] only
+                # ever capped *additions* — nothing pruned the accumulated
+                # backlog, so several shows built up well past their
+                # configured limit, e.g. 17 local episodes against a
+                # limit of 5. This closes that gap: an episode that ages
+                # out of the window because newer ones arrived is removed
+                # immediately instead of sitting there forever). Only
+                # candidates still eligible this run (i.e. present in
+                # `full_episodes`) count as "aged out" -- an episode
+                # already excluded from `candidates` because it's done
+                # is handled by the played branch above, not this one.
+                aged_out_of_window = (
+                    local.episode_uuid not in candidate_uuids
+                    and local.episode_uuid in full_episode_uuids
+                    and not _is_done(local.episode_uuid)
+                )
+                if not played and not aged_out_of_window:
                     continue
                 path = Path(local.local_path)
                 if path.is_file():

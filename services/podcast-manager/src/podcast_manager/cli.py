@@ -105,14 +105,15 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             f"{outcome.podcast.title}: {len(result.downloaded)} downloaded, "
             f"{len(result.already_present)} already present"
             + (f", {len(result.failed)} failed" if result.failed else "")
-            + (f", {len(result.deleted)} played episode(s) deleted" if result.deleted else "")
+            + (f", {len(result.deleted)} episode(s) removed" if result.deleted else "")
         )
         for episode, error in result.failed:
             print(f"  FAILED: {episode.title!r} ({error})")
 
     print(
         f"Total: {total_downloaded} downloaded, {total_already} already present, "
-        f"{total_failed} episode(s) failed, {total_deleted} played episode(s) deleted"
+        f"{total_failed} episode(s) failed, {total_deleted} episode(s) removed "
+        "(played or over the per-show limit)"
     )
     if shows_with_errors:
         print(f"Shows that could not be reached at all: {', '.join(shows_with_errors)}")

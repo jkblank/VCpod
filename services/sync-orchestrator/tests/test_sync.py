@@ -247,6 +247,7 @@ def _make_episodes_db(tmp_path: Path, rows: list[dict]) -> Path:
             duration_seconds INTEGER NOT NULL DEFAULT 0,
             pending_push INTEGER NOT NULL DEFAULT 0,
             unsubscribed INTEGER NOT NULL DEFAULT 0,
+            published_at TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (episode_uuid)
         )
         """
@@ -254,8 +255,9 @@ def _make_episodes_db(tmp_path: Path, rows: list[dict]) -> Path:
     for row in rows:
         conn.execute(
             "INSERT INTO episodes (episode_uuid, podcast_uuid, show_name, local_path, "
-            "played, played_up_to, downloaded_at, title, audio_url, duration_seconds) "
-            "VALUES (?, ?, ?, ?, ?, 0, '2026-01-01', ?, '', ?)",
+            "played, played_up_to, downloaded_at, title, audio_url, duration_seconds, "
+            "published_at) "
+            "VALUES (?, ?, ?, ?, ?, 0, '2026-01-01', ?, '', ?, ?)",
             (
                 row["guid"],
                 row.get("podcast_uuid", "show-1"),
@@ -264,6 +266,7 @@ def _make_episodes_db(tmp_path: Path, rows: list[dict]) -> Path:
                 int(row.get("played", False)),
                 row.get("title", ""),
                 row.get("duration_seconds", 0),
+                row.get("published_at", ""),
             ),
         )
     conn.commit()
@@ -281,8 +284,9 @@ def test_load_podcast_feeds_sets_listened_override_for_played_episodes(tmp_path)
         tmp_path,
         [{"guid": "ep-played", "local_path": audio, "played": True, "title": "Played episode"}],
     )
+    profile = _make_profile(tmp_path, str(tmp_path))
 
-    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path)
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path, profile)
 
     (episode,) = feeds[0].episodes
     assert episode.listened_override is True
@@ -298,11 +302,102 @@ def test_load_podcast_feeds_leaves_unplayed_episodes_untouched(tmp_path):
         tmp_path,
         [{"guid": "ep-unplayed", "local_path": audio, "played": False, "title": "Unplayed episode"}],
     )
+    profile = _make_profile(tmp_path, str(tmp_path))
 
-    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path)
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path, profile)
 
     (episode,) = feeds[0].episodes
     assert episode.listened_override is None
+
+
+def test_load_podcast_feeds_wires_episode_slots_and_fill_mode_from_profile(tmp_path):
+    # Confirmed live (2026-08-18): PodcastFeed was always built with no
+    # episode_slots/fill_mode, silently running on iopenpod's dataclass
+    # default (episode_slots=3) instead of the profile's real
+    # max_episodes_per_show -- same "config field exists but nothing
+    # reads it" shape as transcode_format/push_play_status_back.
+    audio = tmp_path / "ep.mp3"
+    audio.write_bytes(b"")
+    db_path = _make_episodes_db(
+        tmp_path,
+        [{"guid": "ep-1", "podcast_uuid": "show-1", "local_path": audio, "title": "Ep"}],
+    )
+    profile = _make_profile(tmp_path, str(tmp_path))
+    profile.podcasts.max_episodes_per_show = 9
+    profile.podcasts.fill_modes = {"show-1": "next"}
+
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path, profile)
+
+    (feed,) = feeds
+    assert feed.episode_slots == 9
+    assert feed.fill_mode == "next"
+    assert feed.clear_when_listened is True
+
+
+def test_load_podcast_feeds_defaults_fill_mode_to_newest_when_not_overridden(tmp_path):
+    audio = tmp_path / "ep.mp3"
+    audio.write_bytes(b"")
+    db_path = _make_episodes_db(
+        tmp_path,
+        [{"guid": "ep-1", "podcast_uuid": "show-1", "local_path": audio, "title": "Ep"}],
+    )
+    profile = _make_profile(tmp_path, str(tmp_path))
+    # profile.podcasts.fill_modes has no entry for "show-1"
+
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path, profile)
+
+    (feed,) = feeds
+    assert feed.fill_mode == "newest"
+
+
+def test_load_podcast_feeds_sets_pub_date_from_published_at_column(tmp_path):
+    # Confirmed live (2026-08-18): pub_date was never set at all (stayed
+    # 0.0 for every episode), undermining fill_mode="newest"'s own sort
+    # reliability.
+    audio = tmp_path / "ep.mp3"
+    audio.write_bytes(b"")
+    db_path = _make_episodes_db(
+        tmp_path,
+        [
+            {
+                "guid": "ep-1",
+                "local_path": audio,
+                "title": "Ep",
+                "published_at": "Sun, 01 Mar 2026 00:00:00 -0000",
+            }
+        ],
+    )
+    profile = _make_profile(tmp_path, str(tmp_path))
+
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path, profile)
+
+    (episode,) = feeds[0].episodes
+    assert episode.pub_date > 0.0
+
+
+def test_load_podcast_feeds_pub_date_defaults_to_zero_when_blank(tmp_path):
+    audio = tmp_path / "ep.mp3"
+    audio.write_bytes(b"")
+    db_path = _make_episodes_db(
+        tmp_path,
+        [{"guid": "ep-1", "local_path": audio, "title": "Ep"}],  # no published_at
+    )
+    profile = _make_profile(tmp_path, str(tmp_path))
+
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path, profile)
+
+    (episode,) = feeds[0].episodes
+    assert episode.pub_date == 0.0
+
+
+def test_parse_published_at_handles_rss_and_pocket_casts_formats():
+    # download.py can populate published_at from either an RSS pubDate
+    # (RFC 822) or a Pocket Casts ISO timestamp, depending on which
+    # source actually provided a given episode's metadata.
+    assert sync_module._parse_published_at("Sun, 01 Mar 2026 00:00:00 -0000") > 0.0
+    assert sync_module._parse_published_at("2026-03-01T00:00:00Z") > 0.0
+    assert sync_module._parse_published_at("") == 0.0
+    assert sync_module._parse_published_at("not a date") == 0.0
 
 
 # --- device-reported AlbumArt formats (SysInfoExtended) ----------------------

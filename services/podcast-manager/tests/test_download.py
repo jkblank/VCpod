@@ -61,6 +61,12 @@ def patched_pipeline(monkeypatch):
     )
     # Retries use real time.sleep() backoff — not wanted in tests.
     monkeypatch.setattr(download_module.time, "sleep", lambda seconds: None)
+    # No feed resolved by default -- tests that care about RSS enrichment
+    # override this themselves. Without it, resolve_feed_url/
+    # fetch_rss_episodes make real network calls against the iTunes
+    # Search API / a real feed on every test run (confirmed live: this
+    # slowed the whole suite from under a second to ~100s).
+    monkeypatch.setattr(download_module, "resolve_feed_url", lambda title, author: None)
 
 
 def _fetch(**overrides):
@@ -318,6 +324,123 @@ def test_sync_podcast_deletes_file_for_played_episode(monkeypatch, patched_pipel
     assert [r.episode_uuid for r in result.deleted] == ["ep-1"]
 
 
+def test_sync_podcast_prunes_episode_aged_out_of_window_even_if_unplayed(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # Confirmed live, 2026-08-18: candidates[:max_episodes_per_show] only
+    # ever capped new *additions* -- an already-downloaded, still-unplayed
+    # episode that ages out of the top-N window because newer ones
+    # arrived was never pruned, so shows built up well past their
+    # configured limit (17 local episodes against a limit of 5, in one
+    # real case). ep-2 is the oldest of the 3 FULL_EPISODES and is NOT
+    # played -- with max_episodes_per_show=2, it falls out of the
+    # (ep-0, ep-1) window and must be pruned even though unplayed.
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    state_db_path = tmp_path / "state.sqlite"
+    existing_path = tmp_path / "library" / "Test Show" / "Oldest Episode [ep-2].mp3"
+    existing_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", existing_path)
+    _record_existing_episode(
+        state_db_path, episode_uuid="ep-2", local_path=existing_path, played=False
+    )
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        max_episodes_per_show=2,
+    )
+
+    assert not existing_path.exists()
+    assert "ep-2" in {r.episode_uuid for r in result.deleted}
+    assert {r.episode_uuid for r in result.downloaded} == {"ep-0", "ep-1"}
+
+
+def test_sync_podcast_does_not_prune_aged_out_episode_when_sync_unplayed_only_false(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # sync_unplayed_only=False means the profile deliberately wants
+    # everything kept (e.g. an archive) -- the cap-pruning must respect
+    # the exact same gate the existing played-based pruning already does.
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    state_db_path = tmp_path / "state.sqlite"
+    existing_path = tmp_path / "library" / "Test Show" / "Oldest Episode [ep-2].mp3"
+    existing_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", existing_path)
+    _record_existing_episode(
+        state_db_path, episode_uuid="ep-2", local_path=existing_path, played=False
+    )
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=state_db_path,
+        max_episodes_per_show=2,
+        sync_unplayed_only=False,
+    )
+
+    assert existing_path.exists()
+    assert result.deleted == []
+
+
+def test_sync_podcast_attaches_rss_metadata_matched_by_enclosure_url(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    from podcast_manager.rss import RssEpisodeMeta
+
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    monkeypatch.setattr(
+        download_module, "resolve_feed_url", lambda title, author: "https://example.com/feed.xml"
+    )
+    monkeypatch.setattr(
+        download_module,
+        "fetch_rss_episodes",
+        lambda feed_url: [
+            RssEpisodeMeta(
+                enclosure_url="https://cdn.example/ep0.mp3",  # matches FULL_EPISODES[0].url
+                title="Newest Episode",
+                description="Real show notes.",
+                episode_number=7,
+                season_number=2,
+                published="Sun, 01 Mar 2026 00:00:00 -0000",
+            )
+        ],
+    )
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    record = result.downloaded[0]
+    assert record.episode_uuid == "ep-0"
+    assert record.description == "Real show notes."
+    assert record.episode_number == 7
+    assert record.season_number == 2
+    assert record.published_at == "Sun, 01 Mar 2026 00:00:00 -0000"
+
+
+def test_sync_podcast_falls_back_to_pocket_casts_published_when_rss_unresolved(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # resolve_feed_url returning None (patched_pipeline's default) must
+    # not leave published_at blank -- Pocket Casts' own `published` field
+    # is a real, always-available fallback for that one field specifically.
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    record = result.downloaded[0]
+    assert record.description == ""
+    assert record.episode_number is None
+    assert record.published_at == "2026-03-01T00:00:00Z"  # FULL_EPISODES[0].published
+
+
 def test_sync_podcast_keeps_file_when_delete_played_episodes_disabled(
     monkeypatch, patched_pipeline, tmp_path
 ):
@@ -401,6 +524,7 @@ def test_sync_podcast_orders_newest_first_regardless_of_input_order(monkeypatch,
     shuffled = [FULL_EPISODES[2], FULL_EPISODES[0], FULL_EPISODES[1]]
     monkeypatch.setattr(download_module, "list_full_episodes", lambda token, uuid: shuffled)
     monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    monkeypatch.setattr(download_module, "resolve_feed_url", lambda title, author: None)
     monkeypatch.setattr(
         httpx, "stream", lambda method, url, **kwargs: FakeStreamResponse()
     )
@@ -454,6 +578,7 @@ def test_sync_podcast_writes_correct_state_db_row(monkeypatch, patched_pipeline,
 def test_sync_podcast_skips_download_for_existing_shared_file(monkeypatch, tmp_path):
     monkeypatch.setattr(download_module, "list_full_episodes", lambda token, uuid: FULL_EPISODES[:1])
     monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    monkeypatch.setattr(download_module, "resolve_feed_url", lambda title, author: None)
 
     library_root = tmp_path / "library"
     show_dir = library_root / "Test Show"
@@ -542,6 +667,7 @@ def test_sync_podcast_one_episode_download_failure_does_not_abort_others(
     # loop exhausting all attempts before finally giving up.
     monkeypatch.setattr(download_module, "list_full_episodes", lambda token, uuid: FULL_EPISODES)
     monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    monkeypatch.setattr(download_module, "resolve_feed_url", lambda title, author: None)
     monkeypatch.setattr(download_module.time, "sleep", lambda seconds: None)
 
     def _stream(method, url, **kwargs):

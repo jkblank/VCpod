@@ -36,6 +36,14 @@ class EpisodeRecord:
     # show is no longer in the account's Pocket Casts subscriptions.
     # Per-profile (unlike the shared local file) — see notes.md.
     unsubscribed: bool = False
+    # RSS-sourced metadata (podcast_manager/rss.py) -- Pocket Casts' own
+    # API doesn't expose any of these. Best-effort: blank/None when the
+    # show's feed couldn't be resolved or doesn't tag them (not every
+    # podcast sets itunes:episode/itunes:season). See notes.md.
+    description: str = ""
+    episode_number: int | None = None
+    season_number: int | None = None
+    published_at: str = ""
 
 
 class StateDB:
@@ -71,6 +79,10 @@ class StateDB:
                 duration_seconds INTEGER NOT NULL DEFAULT 0,
                 pending_push INTEGER NOT NULL DEFAULT 0,
                 unsubscribed INTEGER NOT NULL DEFAULT 0,
+                description TEXT NOT NULL DEFAULT '',
+                episode_number INTEGER,
+                season_number INTEGER,
+                published_at TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (episode_uuid)
             )
             """
@@ -100,6 +112,10 @@ class StateDB:
             ("duration_seconds", "INTEGER NOT NULL DEFAULT 0"),
             ("pending_push", "INTEGER NOT NULL DEFAULT 0"),
             ("unsubscribed", "INTEGER NOT NULL DEFAULT 0"),
+            ("description", "TEXT NOT NULL DEFAULT ''"),
+            ("episode_number", "INTEGER"),
+            ("season_number", "INTEGER"),
+            ("published_at", "TEXT NOT NULL DEFAULT ''"),
         ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE episodes ADD COLUMN {column} {ddl}")
@@ -157,7 +173,8 @@ class StateDB:
     _EPISODE_COLUMNS = (
         "episode_uuid, podcast_uuid, show_name, local_path, played, "
         "played_up_to, downloaded_at, title, audio_url, duration_seconds, "
-        "pending_push, unsubscribed"
+        "pending_push, unsubscribed, description, episode_number, "
+        "season_number, published_at"
     )
 
     @staticmethod
@@ -175,6 +192,10 @@ class StateDB:
             duration_seconds=row[9],
             pending_push=bool(row[10]),
             unsubscribed=bool(row[11]),
+            description=row[12],
+            episode_number=row[13],
+            season_number=row[14],
+            published_at=row[15],
         )
 
     def get_episode(self, episode_uuid: str) -> EpisodeRecord | None:
@@ -199,8 +220,8 @@ class StateDB:
             """
             INSERT INTO episodes (episode_uuid, podcast_uuid, show_name, local_path,
                 played, played_up_to, downloaded_at, title, audio_url, duration_seconds,
-                unsubscribed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                unsubscribed, description, episode_number, season_number, published_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
             ON CONFLICT (episode_uuid) DO UPDATE SET
                 podcast_uuid = excluded.podcast_uuid,
                 show_name = excluded.show_name,
@@ -211,7 +232,11 @@ class StateDB:
                 title = excluded.title,
                 audio_url = excluded.audio_url,
                 duration_seconds = excluded.duration_seconds,
-                unsubscribed = 0
+                unsubscribed = 0,
+                description = excluded.description,
+                episode_number = excluded.episode_number,
+                season_number = excluded.season_number,
+                published_at = excluded.published_at
             """,
             (
                 record.episode_uuid,
@@ -224,6 +249,10 @@ class StateDB:
                 record.title,
                 record.audio_url,
                 record.duration_seconds,
+                record.description,
+                record.episode_number,
+                record.season_number,
+                record.published_at,
             ),
         )
         self._conn.commit()

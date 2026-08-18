@@ -21,6 +21,7 @@ the reasoning terse and points there instead of repeating it.
 from __future__ import annotations
 
 import dataclasses
+import email.utils
 import logging
 import re
 import shutil
@@ -29,6 +30,7 @@ import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -212,7 +214,28 @@ class _DeviceStorage:
         )
 
 
-def _load_podcast_feeds(db_path: str, library_root: Path) -> list[PodcastFeed]:
+def _parse_published_at(value: str) -> float:
+    """published_at can be an RSS pubDate (RFC 822, e.g. "Sun, 01 Mar 2026
+    00:00:00 -0000") or a Pocket Casts ISO timestamp (e.g.
+    "2026-03-01T00:00:00Z") — download.py falls back between the two
+    depending on which source actually provided this episode's metadata.
+    Returns 0.0 (never raises) on anything else, including a blank
+    string for episodes fetched before this field existed."""
+    if not value:
+        return 0.0
+    try:
+        return email.utils.parsedate_to_datetime(value).timestamp()
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _load_podcast_feeds(
+    db_path: str, library_root: Path, profile: ProfileConfig
+) -> list[PodcastFeed]:
     """Builds PodcastFeed/PodcastEpisode objects directly from
     podcast-manager's own state DB — no file-tag dependency needed (see
     docs/m6-ipod-headless-recommendation.md's podcast section).
@@ -233,12 +256,21 @@ def _load_podcast_feeds(db_path: str, library_root: Path) -> list[PodcastFeed]:
     leaving it `None` otherwise is required — `None` means "trust device
     history", `False` is a *sticky* override that would block
     `_update_episode_playback_from_track` from ever recording real
-    on-device play data for an episode we haven't marked played."""
+    on-device play data for an episode we haven't marked played.
+
+    Also confirmed live the same day: PodcastFeed was always built with
+    no episode_slots/fill_mode, silently running on iopenpod's dataclass
+    default (episode_slots=3) instead of the profile's real
+    max_episodes_per_show -- same "config field exists but nothing reads
+    it" shape as transcode_format/push_play_status_back. And pub_date was
+    never set at all (stayed 0.0 for every episode), undermining
+    fill_mode="newest"'s own sort reliability -- now populated from the
+    published_at column. See notes.md."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT episode_uuid, podcast_uuid, show_name, local_path, "
-        "title, audio_url, duration_seconds, played FROM episodes"
+        "title, audio_url, duration_seconds, played, published_at FROM episodes"
     ).fetchall()
     conn.close()
 
@@ -249,6 +281,9 @@ def _load_podcast_feeds(db_path: str, library_root: Path) -> list[PodcastFeed]:
             feed = PodcastFeed(
                 feed_url=f"podcast-manager:{row['podcast_uuid']}",
                 title=row["show_name"],
+                episode_slots=profile.podcasts.max_episodes_per_show,
+                fill_mode=profile.podcasts.fill_modes.get(row["podcast_uuid"], "newest"),
+                clear_when_listened=True,
             )
             feeds_by_show[row["podcast_uuid"]] = feed
 
@@ -263,6 +298,7 @@ def _load_podcast_feeds(db_path: str, library_root: Path) -> list[PodcastFeed]:
                 duration_seconds=row["duration_seconds"],
                 downloaded_path=str(local_path) if local_path.is_file() else "",
                 listened_override=True if row["played"] else None,
+                pub_date=_parse_published_at(row["published_at"]),
             )
         )
 
@@ -583,7 +619,7 @@ def plan_sync(
 
     if not skip_podcasts:
         if state_db_path.is_file():
-            for feed in _load_podcast_feeds(str(state_db_path), library_root):
+            for feed in _load_podcast_feeds(str(state_db_path), library_root, profile):
                 episode_feed_pairs = [
                     (ep, feed) for ep in feed.episodes if ep.downloaded_path
                 ]
