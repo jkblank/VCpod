@@ -2518,3 +2518,22 @@ session. No settings toggle found on-device either (checked, none
 regarding album art); a restart didn't change anything. Next session
 picking this up should start from hypothesis (3) above (real iTunes
 resync + byte-diff) since inspection alone is exhausted.
+
+## Future: a single podcast episode's played state reverted unexpectedly
+
+Observed live (2026-08-18): "Malala Yousafzai..." (The Louis Theroux
+Podcast) was manually marked played via `StateDB.update_play_state`,
+confirmed committed at the time, but later showed `played=0` again after
+running `music-stack sync --source podcasts` a couple more times.
+Several other episodes marked played in the exact same batch (Gary
+Stevenson, Olivia Wilde, David Byrne) correctly stayed played across the
+same runs, so this isn't a uniform reset bug. Checked the one call site
+that refreshes played state from Pocket Casts
+(`podcast_manager/download.py::sync_podcast`, via
+`_merged_played_state`/`record_remote_play_state`) — it's correctly
+OR-merged (local `played=True` should never be downgraded by a remote
+`False`), so that's not directly it, at least not obviously. Not
+root-caused; worth a real repro (mark one episode played, run the fetch
+step step-by-step with logging/breakpoints around `record_episode` and
+`record_remote_play_state`) before trusting manual play-state marks to
+survive repeated podcast fetch runs.
