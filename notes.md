@@ -421,6 +421,25 @@ just the PC side, or every sync against a large library pays close to an
 hour of USB-bound fingerprinting regardless of how little actually
 changed — confirmed this is no longer the case once the cache is warm.
 
+## Future: parallel device-side hashing (iOpenPod PR, not yet investigated)
+
+User flagged (2026-08-18) an open iOpenPod PR that runs device-side
+hashing with 4 parallel workers for devices without a mechanical hard
+drive (i.e. flash/SSD-based iPods, where the hashing bottleneck is CPU/
+USB-protocol overhead rather than physical seek time, so parallelizing
+actually helps instead of thrashing a spinning disk). Relevant to the
+exact cold-cache cost documented above (a first-time hash of ~6,300
+files over USB took most of an hour even with the cache-flush workaround
+in place, since a from-scratch reformat/full-resync has no warm cache to
+hit yet). Not yet located/reviewed — no PR number or link captured yet.
+
+**Status**: not investigated. Next session: find the actual PR on
+https://github.com/TheRealSavi/iOpenPod, check whether it's merged into
+a version newer than what this project currently pins, and whether this
+device's own drive (mechanical vs flash — worth confirming for this
+exact iPod Classic 7th Gen/MC293 unit before assuming the speedup
+applies) would actually benefit.
+
 ## iopenpod (PyPI `iopenpod==1.66.2`): 5th/5.5th-gen "iPod Video" artwork — fixed (finding below was stale)
 
 Confirmed live against a real device (`lsusb`: "ID 05ac:1209 Apple, Inc.
