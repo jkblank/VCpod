@@ -2733,3 +2733,52 @@ against raw device Play Counts data"). Not attempted further this
 session — flagging for whoever picks this up next, since it directly
 affects whether `resolve_played_states` can be trusted to correctly
 detect a genuine completion when the position signal is misleading.
+
+## Real root cause of every "impossible" Malala revert: sync-orchestrator's venv silently ran stale `common` code
+
+After three separate "corrections" to Malala's played state all silently
+reverted despite `update_play_state`'s OR-merge fix looking correct on
+paper (and covered by passing tests), got a `--debug` trace showing
+`resolve_played_states` computing `played=False` for her (real: her
+`bookmark_time=572ms` vs a known 3963s duration — position-based check
+correctly says "not played by position"), followed by the local db
+actually reverting to that value. Checked `inspect.getsource(StateDB
+.update_play_state)` from *inside a real sync-orchestrator run* — it
+was still the **old, pre-fix, raw-overwrite version**, despite the fix
+being correctly committed, present in `services/common/src/common/state.py`
+on disk, and covered by passing tests in `services/common`'s own test
+suite.
+
+**Root cause**: `services/sync-orchestrator` has its own standalone
+`.venv`, deliberately isolated from the main workspace (kept separate so
+its `iopenpod` dependency tree never merges with anything else — see
+`_maybe_pre_fetch`'s docstring). Its `common` path dependency
+(`[tool.uv.sources] common = { path = "../common" }`) was installed
+**non-editable** (`direct_url.json`: `"editable":false`) — a real,
+immutable snapshot copied at install time, not a live link to the
+source. The main workspace's own root `.venv` (used by `music-stack-cli`/
+`podcast-manager`/etc.) has `common` installed **editable** (`true`) —
+so every OTHER service picks up `common` edits immediately, and only
+`sync-orchestrator` silently doesn't. `uv sync` alone did not refresh
+it either (reported "Resolved... Checked..." with no actual reinstall);
+`uv sync --reinstall-package common` was required to force a real
+rebuild+reinstall.
+
+This explains the exact asymmetry that made this so hard to pin down:
+Open Sauce's fix "stuck" (her `bookmark_time` had reset to exactly 0,
+so `resolve_played_states`' very first check —
+`if not recent_playcount and not bookmark_time_ms: continue` — skipped
+her entirely, never calling the stale `update_play_state` at all) while
+Malala's nonzero `bookmark_time=572` meant she was *always* re-evaluated
+and always hit the broken raw-overwrite path.
+
+**Action for future sessions**: after editing anything in
+`services/common` (or any other path-dependency service), run
+`cd services/sync-orchestrator && uv sync --reinstall-package common`
+(or `--reinstall` for a broader refresh) before trusting a
+sync-orchestrator run to reflect the change — a plain `uv sync` is not
+sufficient and gives no warning that it didn't actually update anything.
+Worth checking whether this same gotcha affects any other standalone-
+venv service in this project (fetcher-spotify is the other one
+documented as deliberately standalone) before relying on a similar fix
+there without re-verifying.
