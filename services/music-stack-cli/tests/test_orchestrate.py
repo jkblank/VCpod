@@ -248,3 +248,70 @@ def test_run_sync_podcasts_uses_show_names_not_raw_shows_entries(monkeypatch, tm
     )
 
     assert captured["wanted"] == ["Daily News", "Weekly Deep Dive"]
+
+
+def test_run_sync_podcasts_pushes_play_status_before_pruning(monkeypatch, tmp_path):
+    # push_pending_play_status must run before prune_unsubscribed_shows so
+    # a locally-confirmed play (device read-back or a manual override)
+    # reaches Pocket Casts before this same run's subsequent state reads --
+    # this used to only happen via a separate, never-automatically-invoked
+    # CLI command (podcast-manager push-play-status). See
+    # push_pending_play_status's own docstring.
+    config_root = tmp_path / "config"
+    (config_root / "secrets").mkdir(parents=True)
+    credentials_path = config_root / "secrets" / "pocketcasts.json"
+    credentials_path.write_text('{"email": "a@example.com", "password": "x"}')
+
+    global_config = _global_config(tmp_path, oauth_file="/config/secrets/ytmusic_oauth.json")
+    profile = ProfileConfig(
+        profile="john",
+        device=DeviceMatch(match_by="volume_label", match_value="TEST"),
+        playlists=[],
+        podcasts=ProfilePodcastsConfig(
+            pocketcasts=ProfilePocketCastsConfig(
+                credentials_file="/config/secrets/pocketcasts.json"
+            ),
+            sync_unplayed_only=True,
+            max_episodes_per_show=5,
+            shows="all",
+        ),
+        sync=SyncSettings(trigger="manual", transcode_format="alac", push_play_status_back=True),
+    )
+    roots = resolve_roots(tmp_path / "library", tmp_path / "state", "john")
+
+    call_order = []
+
+    monkeypatch.setattr(
+        orchestrate_module, "load_credentials", lambda path: ("a@example.com", "x")
+    )
+    monkeypatch.setattr(orchestrate_module, "login", lambda email, password: "the-token")
+    monkeypatch.setattr(orchestrate_module, "list_subscriptions", lambda token: [])
+
+    fake_pushed = [object()]
+    fake_failed = [(object(), "network blip")]
+
+    def fake_push(token, *, state_db_path, lock_timeout):
+        assert token == "the-token"
+        call_order.append("push")
+        return fake_pushed, fake_failed
+
+    def fake_prune(subscriptions, *, state_db_path, lock_timeout):
+        call_order.append("prune")
+        return []
+
+    monkeypatch.setattr(orchestrate_module, "push_pending_play_status", fake_push)
+    monkeypatch.setattr(orchestrate_module, "prune_unsubscribed_shows", fake_prune)
+
+    result = run_sync(
+        profile=profile,
+        global_config=global_config,
+        config_root=config_root,
+        roots=roots,
+        sources={"podcasts"},
+        playlist_names=None,
+        show_selectors=None,
+    )
+
+    assert call_order == ["push", "prune"]
+    assert result.pushed_play_status is fake_pushed
+    assert result.failed_play_status_pushes is fake_failed

@@ -118,6 +118,11 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             f"{len(shows)} unsubscribed show(s): {', '.join(shows)}"
         )
 
+    if result.pushed_play_status:
+        print(f"[podcasts] Pushed play status to Pocket Casts for {len(result.pushed_play_status)} episode(s)")
+    for episode, error in result.failed_play_status_pushes:
+        print(f"WARNING: could not push play status for {episode.title!r}: {error}")
+
     for name in result.unmatched_playlists:
         print(f"WARNING: no playlist matched --playlist {name!r}")
     for name in result.unmatched_shows:

@@ -3,19 +3,15 @@ from __future__ import annotations
 import argparse
 import sys
 
-import httpx
-
 from common.config import ConfigError, load_profile_config
-from common.state import StateDB
 
 from podcast_manager.api import (
     list_subscriptions,
     load_credentials,
     login,
     resolve_show_selection,
-    update_episode_status,
 )
-from podcast_manager.download import prune_unsubscribed_shows, sync_shows
+from podcast_manager.download import prune_unsubscribed_shows, push_pending_play_status, sync_shows
 
 
 def _cmd_list_subscriptions(args: argparse.Namespace) -> int:
@@ -124,6 +120,9 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 
 
 def _cmd_push_play_status(args: argparse.Namespace) -> int:
+    # Kept as a manual/standalone entrypoint (e.g. to flush pending pushes
+    # without running a full podcast sync) — the normal automated path is
+    # run_sync calling push_pending_play_status directly, see its docstring.
     try:
         email, password = load_credentials(args.credentials_path)
         token = login(email, password)
@@ -131,37 +130,16 @@ def _cmd_push_play_status(args: argparse.Namespace) -> int:
         print(f"ERROR: could not authenticate with Pocket Casts: {e}")
         return 1
 
-    pushed = 0
-    failed: list[tuple[str, str]] = []
-    with StateDB(args.state_path) as db:
-        pending = db.list_episodes_pending_push()
-        if not pending:
-            print("No pending play-state updates.")
-            return 0
+    pushed, failed = push_pending_play_status(token, state_db_path=args.state_path)
+    if not pushed and not failed:
+        print("No pending play-state updates.")
+        return 0
 
-        for episode in pending:
-            try:
-                update_episode_status(
-                    token,
-                    episode_uuid=episode.episode_uuid,
-                    podcast_uuid=episode.podcast_uuid,
-                    played=episode.played,
-                    played_up_to=episode.played_up_to,
-                )
-            except httpx.HTTPError as e:
-                # One episode's push failing (e.g. a transient network
-                # blip) must not abort the rest of the batch — same
-                # resilience pattern as sync's per-show error handling.
-                failed.append((episode.title or episode.episode_uuid, str(e)))
-                continue
-            db.clear_pending_push(episode.episode_uuid)
-            pushed += 1
-
-    print(f"Pushed play state for {pushed} episode(s)")
+    print(f"Pushed play state for {len(pushed)} episode(s)")
     if failed:
         print(f"Failed to push {len(failed)} episode(s):")
-        for label, error in failed:
-            print(f"  {label}: {error}")
+        for episode, error in failed:
+            print(f"  {episode.title or episode.episode_uuid}: {error}")
     return 0
 
 

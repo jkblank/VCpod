@@ -19,7 +19,12 @@ from fetcher_ytmusic.download import (
     fetch_playlists as fetch_ytmusic_playlists,
 )
 from podcast_manager.api import list_subscriptions, load_credentials, login, resolve_show_selection
-from podcast_manager.download import ShowSyncOutcome, prune_unsubscribed_shows, sync_shows
+from podcast_manager.download import (
+    ShowSyncOutcome,
+    prune_unsubscribed_shows,
+    push_pending_play_status,
+    sync_shows,
+)
 
 SUPPORTED_SOURCES = ("apple_music", "ytmusic", "podcasts")
 UNSUPPORTED_SOURCES = ("spotify",)
@@ -77,6 +82,8 @@ class SyncAllResult:
     ytmusic_outcomes: list[YtPlaylistSyncOutcome] = field(default_factory=list)
     podcast_outcomes: list[ShowSyncOutcome] = field(default_factory=list)
     pruned_unsubscribed: list[EpisodeRecord] = field(default_factory=list)
+    pushed_play_status: list[EpisodeRecord] = field(default_factory=list)
+    failed_play_status_pushes: list[tuple[EpisodeRecord, str]] = field(default_factory=list)
     unmatched_playlists: list[str] = field(default_factory=list)
     unmatched_shows: list[str] = field(default_factory=list)
     source_errors: list[str] = field(default_factory=list)
@@ -177,6 +184,18 @@ def run_sync(
         except (OSError, ValueError, KeyError, httpx.HTTPError) as e:
             result.source_errors.append(f"podcasts: could not authenticate ({e})")
         else:
+            # Push locally-confirmed plays (device read-back or a manual
+            # override) to Pocket Casts *before* pulling/using its state
+            # below, so this same run's remote reads already reflect them
+            # instead of racing a future run. See push_pending_play_status's
+            # docstring -- this used to only happen via a separate,
+            # never-automatically-invoked CLI command.
+            result.pushed_play_status, result.failed_play_status_pushes = (
+                push_pending_play_status(
+                    token, state_db_path=roots.state_db_path, lock_timeout=lock_timeout
+                )
+            )
+
             # Must run against the full, unfiltered subscriptions list
             # above -- before any --show narrowing below, which is a
             # per-run scope choice, not an unsubscribe signal. See

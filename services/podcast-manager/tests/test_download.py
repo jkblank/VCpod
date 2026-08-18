@@ -872,3 +872,95 @@ def test_prune_narrowed_show_filter_is_not_mistaken_for_unsubscribe(tmp_path):
     # prune here. The safety is entirely in the caller passing the full
     # list (see cli.py/orchestrate.py call sites).
     assert [e.episode_uuid for e in pruned] == ["ep-1"]
+
+
+def test_push_pending_play_status_pushes_and_clears_flag(monkeypatch, tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    with StateDB(state_db_path) as db:
+        db.record_episode(
+            EpisodeRecord(
+                episode_uuid="ep-1",
+                podcast_uuid="show-1",
+                show_name="Test Show",
+                local_path="/does/not/matter.mp3",
+                played=False,
+                played_up_to=0,
+                downloaded_at="2026-07-19T00:00:00+00:00",
+            )
+        )
+        db.update_play_state("ep-1", played=True, played_up_to=900)
+
+    captured = {}
+
+    def fake_update_episode_status(token, *, episode_uuid, podcast_uuid, played, played_up_to):
+        captured["args"] = (token, episode_uuid, podcast_uuid, played, played_up_to)
+
+    monkeypatch.setattr(download_module, "update_episode_status", fake_update_episode_status)
+
+    pushed, failed = download_module.push_pending_play_status(
+        "the-token", state_db_path=state_db_path
+    )
+
+    assert [e.episode_uuid for e in pushed] == ["ep-1"]
+    assert failed == []
+    assert captured["args"] == ("the-token", "ep-1", "show-1", True, 900)
+    with StateDB(state_db_path) as db:
+        assert db.get_episode("ep-1").pending_push is False
+
+
+def test_push_pending_play_status_skips_when_nothing_pending(tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    with StateDB(state_db_path) as db:
+        db.record_episode(
+            EpisodeRecord(
+                episode_uuid="ep-1",
+                podcast_uuid="show-1",
+                show_name="Test Show",
+                local_path="/does/not/matter.mp3",
+                played=False,
+                played_up_to=0,
+                downloaded_at="2026-07-19T00:00:00+00:00",
+            )
+        )
+
+    pushed, failed = download_module.push_pending_play_status(
+        "the-token", state_db_path=state_db_path
+    )
+
+    assert pushed == []
+    assert failed == []
+
+
+def test_push_pending_play_status_one_failure_does_not_abort_the_rest(monkeypatch, tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    with StateDB(state_db_path) as db:
+        for uuid in ("ep-1", "ep-2"):
+            db.record_episode(
+                EpisodeRecord(
+                    episode_uuid=uuid,
+                    podcast_uuid="show-1",
+                    show_name="Test Show",
+                    local_path=f"/does/not/matter-{uuid}.mp3",
+                    played=False,
+                    played_up_to=0,
+                    downloaded_at="2026-07-19T00:00:00+00:00",
+                )
+            )
+            db.update_play_state(uuid, played=True, played_up_to=100)
+
+    def fake_update_episode_status(token, *, episode_uuid, podcast_uuid, played, played_up_to):
+        if episode_uuid == "ep-1":
+            raise httpx.HTTPError("network blip")
+
+    monkeypatch.setattr(download_module, "update_episode_status", fake_update_episode_status)
+
+    pushed, failed = download_module.push_pending_play_status(
+        "the-token", state_db_path=state_db_path
+    )
+
+    assert [e.episode_uuid for e in pushed] == ["ep-2"]
+    assert [e.episode_uuid for e, _err in failed] == ["ep-1"]
+    with StateDB(state_db_path) as db:
+        # The failed push must stay pending so a later run retries it.
+        assert db.get_episode("ep-1").pending_push is True
+        assert db.get_episode("ep-2").pending_push is False

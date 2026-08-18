@@ -252,16 +252,30 @@ class StateDB:
         pending_push, but only if it actually differs from what's already
         recorded — avoids flagging every episode as pending on every sync
         just because it was seen again with unchanged state. Returns False
-        if no row exists for episode_uuid (nothing to update)."""
+        if no row exists for episode_uuid (nothing to update).
+
+        Only ever merges upward (OR's played, max's played_up_to) — same
+        reasoning as record_remote_play_state, and just as necessary here:
+        confirmed live (2026-08-18) that a raw overwrite let stray/minor
+        on-device activity (e.g. a few seconds of incidental playback,
+        well under PLAYED_THRESHOLD) silently downgrade an episode a user
+        had already finished through Pocket Casts or a manual override
+        back to unplayed on every subsequent device sync, before the
+        pending_push it should have triggered ever got a chance to reach
+        Pocket Casts. A real device read-back should only ever be able to
+        *confirm* a play, never erase one a more authoritative source
+        already recorded."""
         existing = self.get_episode(episode_uuid)
         if existing is None:
             return False
-        if existing.played == played and existing.played_up_to == played_up_to:
+        merged_played = existing.played or played
+        merged_played_up_to = max(existing.played_up_to, played_up_to)
+        if existing.played == merged_played and existing.played_up_to == merged_played_up_to:
             return True
         self._conn.execute(
             "UPDATE episodes SET played = ?, played_up_to = ?, pending_push = 1 "
             "WHERE episode_uuid = ?",
-            (int(played), played_up_to, episode_uuid),
+            (int(merged_played), merged_played_up_to, episode_uuid),
         )
         self._conn.commit()
         return True

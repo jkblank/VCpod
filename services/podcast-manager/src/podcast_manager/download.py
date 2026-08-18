@@ -17,6 +17,7 @@ from podcast_manager.api import (
     PodcastSummary,
     list_episode_states,
     list_full_episodes,
+    update_episode_status,
 )
 
 _ILLEGAL_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
@@ -371,3 +372,50 @@ def prune_unsubscribed_shows(
             db.mark_unsubscribed(episode.episode_uuid)
             pruned.append(episode)
     return pruned
+
+
+def push_pending_play_status(
+    token: str,
+    *,
+    state_db_path: Path | str,
+    lock_path: Path | str | None = None,
+    lock_timeout: float = 1800,
+) -> tuple[list[EpisodeRecord], list[tuple[EpisodeRecord, str]]]:
+    """Pushes every locally-confirmed play (`pending_push=1` — set by
+    sync-orchestrator's on-device read-back, or a manual
+    `StateDB.update_play_state` call) to Pocket Casts, clearing the flag
+    on success.
+
+    This existed only as the standalone `podcast-manager push-play-status`
+    CLI command until 2026-08-18 -- never wired into the normal
+    `music-stack sync --source podcasts` flow, so real on-device listening
+    progress never actually reached Pocket Casts unless someone remembered
+    to run that command by hand. `run_sync` now calls this before syncing
+    episodes, so a routine podcast sync round-trips: push what the device
+    already confirmed, then pull Pocket Casts' now-current state.
+
+    Returns (pushed, failed) — failed as (episode, error message) pairs,
+    same shape as sync_podcast's own per-episode failure handling, so one
+    episode's push failing (e.g. a transient network blip) doesn't abort
+    the rest of the batch."""
+    if lock_path is None:
+        lock_path = Path(state_db_path).parent / ".podcasts.lock"
+
+    pushed: list[EpisodeRecord] = []
+    failed: list[tuple[EpisodeRecord, str]] = []
+    with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
+        for episode in db.list_episodes_pending_push():
+            try:
+                update_episode_status(
+                    token,
+                    episode_uuid=episode.episode_uuid,
+                    podcast_uuid=episode.podcast_uuid,
+                    played=episode.played,
+                    played_up_to=episode.played_up_to,
+                )
+            except httpx.HTTPError as exc:
+                failed.append((episode, str(exc)))
+                continue
+            db.clear_pending_push(episode.episode_uuid)
+            pushed.append(episode)
+    return pushed, failed

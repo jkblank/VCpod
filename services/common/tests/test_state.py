@@ -252,6 +252,23 @@ def test_record_remote_play_state_never_downgrades_locally_confirmed_play(tmp_pa
         assert fetched.played_up_to == 900
 
 
+def test_update_play_state_never_downgrades_already_confirmed_play(tmp_path: Path):
+    # Confirmed live (2026-08-18): a raw overwrite here let stray/minor
+    # on-device activity (well under PLAYED_THRESHOLD) silently clobber
+    # an episode already marked played through Pocket Casts or a manual
+    # override back to unplayed on every subsequent device sync.
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode())
+        db.update_play_state("ep-123", played=True, played_up_to=3765)
+
+        updated = db.update_play_state("ep-123", played=False, played_up_to=12)
+
+        assert updated is True  # merge is a no-op, still a valid call
+        fetched = db.get_episode("ep-123")
+        assert fetched.played is True
+        assert fetched.played_up_to == 3765
+
+
 def test_record_episode_does_not_reset_pending_push(tmp_path: Path):
     # A podcast-manager re-sync (record_episode's own upsert) must not
     # silently clobber a pending_push flag set by sync-orchestrator's

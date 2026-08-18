@@ -2537,3 +2537,51 @@ root-caused; worth a real repro (mark one episode played, run the fetch
 step step-by-step with logging/breakpoints around `record_episode` and
 `record_remote_play_state`) before trusting manual play-state marks to
 survive repeated podcast fetch runs.
+
+## Device-observed plays never actually reached Pocket Casts — the push step existed but was never wired in
+
+Follow-up to the Malala Yousafzai played-state mystery above: user asked
+to extend the logic so a play observed on the iPod actually gets marked
+played on Pocket Casts too. Turned out this already existed in code —
+`podcast-manager push-play-status` reads `pending_push=1` rows (set by
+sync-orchestrator's device read-back, `playstate.py`, or a manual
+`update_play_state` call) and pushes them via Pocket Casts'
+`update_episode_status` API — but it was only ever a standalone CLI
+command. Neither `music-stack sync` (`orchestrate.py::run_sync`) nor
+`sync-orchestrator sync` ever called it automatically, so real on-device
+listening progress never reached Pocket Casts unless someone remembered
+to run that command by hand — which nobody ever had, in this project's
+history. **Fixed**: extracted the push logic into a reusable
+`podcast_manager.download.push_pending_play_status()` (the CLI command
+now just calls it), and wired it into `run_sync`'s podcast handling,
+right after authenticating and *before* `prune_unsubscribed_shows`/
+`sync_shows` — so a normal `music-stack sync --source podcasts` run now
+round-trips properly: push what the device/local db already confirmed,
+then pull Pocket Casts' now-current state.
+
+**A second, related bug found and fixed while root-causing the Malala
+revert**: `StateDB.update_play_state()` (the function sync-orchestrator's
+device read-back calls) did a raw overwrite, unlike
+`record_remote_play_state()` (which correctly OR-merges so a remote read
+can never downgrade a locally-confirmed play). Confirmed live: this let
+stray/minor on-device play activity — e.g. a few incidental seconds well
+under `PLAYED_THRESHOLD` — silently clobber an episode already marked
+played through Pocket Casts or a manual override back to unplayed on
+every subsequent device sync, before the very `pending_push` flag that
+should have gotten it pushed to Pocket Casts ever had a chance. This is
+the most likely (though not independently, byte-level confirmed) real
+explanation for Malala Yousafzai's episode repeatedly reverting earlier
+today, and would have quietly undermined the push-wiring fix above even
+once it existed — a device sync could keep re-clobbering a play before
+it ever got pushed. `update_play_state` now OR-merges the same way
+`record_remote_play_state` does.
+
+6 new tests across `common`/`podcast-manager`/`music-stack-cli` (never-
+downgrades merge behavior; push-and-clear; skip-when-nothing-pending;
+one-failure-doesn't-abort-the-batch, with the failed episode correctly
+staying `pending_push=True` for retry; push-runs-before-prune wiring).
+Also fixed two stale hardcoded assertions in `common`'s
+`test_example_profiles_load` (profile set now includes `john-copy`;
+`john`'s device serial was updated to the new primary iPod earlier this
+session) — unrelated to this fix, just surfaced by running the full
+suite. Full workspace suite: 272 passing (up from 265).
