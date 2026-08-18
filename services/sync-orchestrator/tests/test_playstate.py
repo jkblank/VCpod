@@ -107,6 +107,41 @@ def test_near_end_position_marks_played_even_with_zero_playcount():
     assert result == {"/library/podcasts/Show/ep.mp3": (True, 3540)}
 
 
+def test_cumulative_play_count_overrides_consumed_ephemeral_delta():
+    # Confirmed live (2026-08-18): a genuinely, fully completed episode
+    # can have zero ephemeral delta (recent_playcount/bookmark_time) if
+    # an earlier commit already merged and cleared it, while play_count_1
+    # (the device's own cumulative, never-reset counter) still shows the
+    # real play. Without this, such an episode became permanently
+    # undetectable -- required manual db reconciliation every time.
+    before = {
+        "mhlt": [
+            {"db_track_id": 1, "recent_playcount": 0, "bookmark_time": 0, "play_count_1": 2}
+        ]
+    }
+    mapping = _FakeMappingFile({1: "/library/podcasts/Show/ep.mp3"})
+
+    result = resolve_played_states(before, mapping, {"/library/podcasts/Show/ep.mp3": 3963})
+
+    assert result == {"/library/podcasts/Show/ep.mp3": (True, 0)}
+
+
+def test_zero_cumulative_play_count_does_not_affect_partial_play_result():
+    # A zero play_count_1 must never *downgrade* an existing position/
+    # delta-based result -- it's purely an additional positive signal,
+    # never a veto.
+    before = {
+        "mhlt": [
+            {"db_track_id": 1, "recent_playcount": 1, "bookmark_time": 300_000, "play_count_1": 0}
+        ]
+    }
+    mapping = _FakeMappingFile({1: "/library/podcasts/Show/ep.mp3"})
+
+    result = resolve_played_states(before, mapping, {"/library/podcasts/Show/ep.mp3": 1800})
+
+    assert result == {"/library/podcasts/Show/ep.mp3": (False, 300)}
+
+
 def test_bare_filename_source_path_hint_matches_full_local_path():
     # Regression: iopenpod's own mapping file (iOpenPod.json) stores
     # TrackMapping.source_path_hint as a bare filename, not the absolute

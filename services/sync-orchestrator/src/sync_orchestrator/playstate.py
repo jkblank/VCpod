@@ -63,23 +63,39 @@ def resolve_played_states(
     for track in before.get("mhlt", []):
         recent_playcount = track.get("recent_playcount", 0)
         bookmark_time_ms = track.get("bookmark_time", 0)
-        if not recent_playcount and not bookmark_time_ms:
+        # play_count_1 is the device's own cumulative, persistent play
+        # counter (iopenpod's itunesdb_parser/playcounts.py: "the new
+        # cumulative play count", incremented by and never reset by a
+        # merge) -- unlike recent_playcount/bookmark_time (this run's
+        # ephemeral Play Counts-file delta, confirmed reset to 0 once an
+        # earlier commit has already merged it), it's the only reliable
+        # signal left once that delta is gone. Confirmed live (2026-08-18):
+        # several episodes were genuinely, fully played on-device
+        # (play_count_1 > 0) but their own commit had already consumed
+        # the ephemeral delta before our local db ever recorded the
+        # play, silently leaving them "unplayed" locally and on Pocket
+        # Casts with no further signal to detect it by -- required
+        # manual reconciliation every time. See notes.md.
+        cumulative_play_count = track.get("play_count_1", 0) or 0
+        if not recent_playcount and not bookmark_time_ms and not cumulative_play_count:
             continue
 
         db_track_id = track.get("db_track_id", track.get("db_id"))
         if not db_track_id:
             logger.debug(
-                "activity but no db_track_id: recent_playcount=%r bookmark_time_ms=%r",
-                recent_playcount, bookmark_time_ms,
+                "activity but no db_track_id: recent_playcount=%r bookmark_time_ms=%r "
+                "play_count_1=%r",
+                recent_playcount, bookmark_time_ms, cumulative_play_count,
             )
             continue
 
         entry = mapping.get_by_db_track_id(db_track_id)
         if entry is None:
             logger.debug(
-                "db_track_id=%s recent_playcount=%r bookmark_time_ms=%r: "
-                "no mapping entry (iOpenPod.json has no TrackMapping for this id)",
-                db_track_id, recent_playcount, bookmark_time_ms,
+                "db_track_id=%s recent_playcount=%r bookmark_time_ms=%r "
+                "play_count_1=%r: no mapping entry (iOpenPod.json has no "
+                "TrackMapping for this id)",
+                db_track_id, recent_playcount, bookmark_time_ms, cumulative_play_count,
             )
             continue
         _fingerprint, track_mapping = entry
@@ -127,11 +143,24 @@ def resolve_played_states(
             # against — report progress, not "played".
             played = False
 
+        if cumulative_play_count > 0:
+            # Overrides the position/delta-based result above: a nonzero
+            # cumulative play_count_1 means this track has completed at
+            # least one real play *ever*, even if this run's own
+            # ephemeral delta and position say otherwise (already
+            # consumed by an earlier commit, or reset to 0 after a
+            # natural completion). Never the reverse — a zero
+            # cumulative count must not downgrade a played=True the
+            # position/delta check already established (e.g. a partial
+            # re-listen of an episode already fully completed once
+            # before should still count as played).
+            played = True
+
         logger.debug(
             "db_track_id=%s local_path=%r: recent_playcount=%r bookmark_time_ms=%r "
-            "duration=%r -> played=%r played_up_to=%r",
+            "play_count_1=%r duration=%r -> played=%r played_up_to=%r",
             db_track_id, local_path, recent_playcount, bookmark_time_ms,
-            duration, played, played_up_to,
+            cumulative_play_count, duration, played, played_up_to,
         )
         results[local_path] = (played, played_up_to)
 

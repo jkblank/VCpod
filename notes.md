@@ -2782,3 +2782,37 @@ Worth checking whether this same gotcha affects any other standalone-
 venv service in this project (fetcher-spotify is the other one
 documented as deliberately standalone) before relying on a similar fix
 there without re-verifying.
+
+## Permanent fix: play_count_1 fallback closes the "undetectable completed play" gap for good
+
+Direct answer to "how do we ensure this doesn't happen in the future?"
+after repeatedly having to manually reconcile fully-completed episodes
+(Open Sauce, Malala, then Mike D and Marina Abramovic — same pattern
+each time) that `resolve_played_states` couldn't detect.
+
+**Fixed properly this time**: `playstate.py` now also checks
+`track["play_count_1"]` — iopenpod's own documented "new cumulative"
+play counter (`itunesdb_parser/playcounts.py`), which is incremented on
+every merge and **never reset** — as an unconditional fallback signal.
+Previously the function only ever looked at `recent_playcount`/
+`bookmark_time`, both sourced from the ephemeral per-sync Play Counts
+delta file, which iopenpod itself zeroes out once merged
+(`playcounts.py` line 258, `track["play_count_2"] = 0`) — so a genuine
+completed play became permanently invisible to this function the moment
+its own triggering commit had already consumed the delta, with no
+further signal left to catch it by. `play_count_1 > 0` now always forces
+`played = True`, regardless of what the position/delta check computed —
+one-directional only (never downgrades an already-True result), so it
+can't reintroduce the earlier reverted `recent_playcount`-based bug
+(that used the ephemeral delta field, which genuinely can be nonzero for
+a real partial play too, per the still-passing `test_partial_play_with_
+known_duration_is_in_progress_not_played`; `play_count_1` is a different,
+persistent field with different semantics — "has ever completed" not
+"active this session").
+
+2 new tests (cumulative count overrides a fully-consumed delta;
+zero cumulative count never downgrades an existing partial-play result).
+sync-orchestrator suite: 102 passing. This is purely additive to
+`resolve_played_states`'s own logic (no `common` involvement), so no
+`uv sync --reinstall-package` gotcha applies here — this is a genuine
+fix from the moment it's on disk in sync-orchestrator's own source.
