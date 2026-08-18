@@ -2519,7 +2519,16 @@ regarding album art); a restart didn't change anything. Next session
 picking this up should start from hypothesis (3) above (real iTunes
 resync + byte-diff) since inspection alone is exhausted.
 
-## Future: a single podcast episode's played state reverted unexpectedly
+## RESOLVED: a single podcast episode's played state reverted unexpectedly
+
+**Status**: root-caused and fixed later the same session — see "Real
+root cause of every 'impossible' Malala revert: sync-orchestrator's
+venv silently ran stale `common` code" below. Cause was
+`sync-orchestrator`'s standalone `.venv` running a stale, non-editable
+build of `common` that still had the pre-fix raw-overwrite
+`update_play_state`; `uv sync --reinstall-package common` is now the
+documented fix/prevention. Left below verbatim as the original
+investigation notes.
 
 Observed live (2026-08-18): "Malala Yousafzai..." (The Louis Theroux
 Podcast) was manually marked played via `StateDB.update_play_state`,
@@ -2679,7 +2688,16 @@ persisted across multiple reads/commits in this same investigation) and
 successfully pushed 3 pending play-state updates (Open Sauce, Malala,
 and this run's own detection) to Pocket Casts in the same run.
 
-## Pocket Casts push kept losing already-confirmed plays — root-caused, partially fixed, one real bug still open
+## RESOLVED: Pocket Casts push kept losing already-confirmed plays — root-caused, partially fixed, one real bug still open
+
+**Status**: the "real, still-open bug" flagged below (ambiguous
+`recent_playcount`/position signal on completed-but-low-position plays)
+was fixed later the same session — see "Permanent fix: play_count_1
+fallback closes the 'undetectable completed play' gap for good" below.
+`playstate.py` now also checks the cumulative, never-reset
+`play_count_1` counter as a fallback, without regressing the existing
+partial-play test this entry's own fix attempt broke. Left below
+verbatim as the original investigation notes.
 
 User confirmed on-device UI showed both episodes ("Open Sauce vs Better
 Software Conference", Malala Yousafzai's Louis Theroux episode) as
