@@ -426,6 +426,49 @@ def _apply_missing_artwork_index_chunk_workaround() -> None:
     _artworkdb_chunks._write_mhii = _write_mhii_with_missing_index_chunk
 
 
+# iopenpod's _write_mhfd() (the ArtworkDB root/mhfd header) hardcodes byte
+# offset 16 ("unk2" in artworkdb_parser/mhfd_parser.py, commented there as
+# "1 until iTunes 4.9, 2 after") to a fixed 2, unconditionally. Confirmed
+# live (2026-08-18): byte-diffing a real iTunes-authored ArtworkDB (pulled
+# straight off this device) against ours — after the AssociatedFormat fix
+# above already made every mhli entry byte-for-byte structurally identical
+# (same field layout, same dimensions, same mhod count/order) — turned up
+# exactly one remaining top-level difference: this field is 6 in the real
+# file, 2 in ours. The stale "1 until iTunes 4.9, 2 after" comment clearly
+# doesn't hold for whatever iTunes version wrote this device's file, so 2
+# is very likely just wrong for this device family rather than a
+# deliberately-chosen default.
+#
+# iopenpod already preserves two OTHER header ranges (bytes 32:48 and
+# 60:68) from a caller-supplied reference_mhfd (the device's own existing
+# ArtworkDB, read before it gets overwritten) — presumably for the same
+# "firmware validates header continuity" reason. This field would be a
+# natural third range to preserve the same way, *except* the device's
+# ArtworkDB has already been overwritten once this session with our own
+# (wrong) value of 2 — so from now on, "preserve whatever's already on the
+# device" would just perpetuate our own bug forever instead of fixing it.
+# Hardcoding the one real value observed, the same way the mhod6 chunk
+# workaround above hardcodes its own empirically-confirmed constant, is
+# the only option that actually self-corrects on the very next sync.
+_write_mhfd_original = _artworkdb_chunks._write_mhfd
+_MHFD_UNK2_REAL_ITUNES_VALUE = 6
+
+
+def _write_mhfd_with_real_unk2(
+    datasets: list[bytes], next_mhii_id: int, reference_mhfd: bytes | None = None
+) -> bytes:
+    data = bytearray(_write_mhfd_original(datasets, next_mhii_id, reference_mhfd))
+    struct.pack_into("<I", data, 16, _MHFD_UNK2_REAL_ITUNES_VALUE)
+    return bytes(data)
+
+
+def _apply_mhfd_unk2_workaround() -> None:
+    """Patch iopenpod's ArtworkDB mhfd writer to match real iTunes' header
+    byte 16 instead of iopenpod's own hardcoded (and, per live evidence,
+    wrong) 2 — see _write_mhfd_with_real_unk2 above for the full writeup."""
+    _artworkdb_chunks._write_mhfd = _write_mhfd_with_real_unk2
+
+
 def _register_current_device(info: DeviceInfo) -> Any:
     """EngineRequest.device_capabilities doesn't reach the actual
     write-time decision: iopenpod.sync._db_io and the real ArtworkDB
@@ -648,6 +691,7 @@ def plan_sync(
 
     capabilities = _register_current_device(device_info)
     _apply_missing_artwork_index_chunk_workaround()
+    _apply_mhfd_unk2_workaround()
     storage = _DeviceStorage.from_device_info(device_info)
     options = EngineOptions(
         supports_video=capabilities.supports_video,

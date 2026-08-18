@@ -23,12 +23,15 @@ from sync_orchestrator import sync as sync_module
 from sync_orchestrator.sync import (
     SyncError,
     _apply_missing_artwork_index_chunk_workaround,
+    _apply_mhfd_unk2_workaround,
     _backup_progress_adapter,
     _engine_progress_adapter,
+    _MHFD_UNK2_REAL_ITUNES_VALUE,
     _MHII_MISSING_INDEX_CHUNK,
     _register_current_device,
     _ThrottledProgressPrinter,
     _transcode_options_for,
+    _write_mhfd_original,
     _write_mhii_original,
     plan_sync,
 )
@@ -697,3 +700,57 @@ def test_apply_missing_artwork_index_chunk_workaround_is_idempotent(monkeypatch)
     expected = sync_module._write_mhii_with_missing_index_chunk(entry, format_locations)
     assert result == expected
     assert result.count(_MHII_MISSING_INDEX_CHUNK) == 1
+
+
+# --- mhfd header byte-16 ("unk2") workaround ---------------------------------
+
+
+def test_write_mhfd_with_real_unk2_overrides_hardcoded_value():
+    # iopenpod's own _write_mhfd() always writes 2 at byte offset 16;
+    # real iTunes writes 6 for this device — confirmed live via byte-diff.
+    # See _MHFD_UNK2_REAL_ITUNES_VALUE's docstring in sync.py.
+    original_bytes = _write_mhfd_original([], next_mhii_id=1)
+    assert struct.unpack_from("<I", original_bytes, 16)[0] == 2
+
+    patched_bytes = sync_module._write_mhfd_with_real_unk2([], next_mhii_id=1)
+
+    assert struct.unpack_from("<I", patched_bytes, 16)[0] == _MHFD_UNK2_REAL_ITUNES_VALUE
+    assert _MHFD_UNK2_REAL_ITUNES_VALUE == 6
+    # Nothing else in the header should change.
+    assert patched_bytes[:16] == original_bytes[:16]
+    assert patched_bytes[20:] == original_bytes[20:]
+
+
+def test_write_mhfd_with_real_unk2_ignores_reference_mhfd():
+    # The device's own on-device ArtworkDB has already been overwritten
+    # once with iopenpod's wrong hardcoded 2 this session — preserving
+    # "whatever's already there" would just perpetuate that. Always force
+    # the known-real value regardless of what reference_mhfd contains.
+    reference = bytearray(_write_mhfd_original([], next_mhii_id=1))
+    struct.pack_into("<I", reference, 16, 999)
+
+    patched_bytes = sync_module._write_mhfd_with_real_unk2(
+        [], next_mhii_id=1, reference_mhfd=bytes(reference)
+    )
+
+    assert struct.unpack_from("<I", patched_bytes, 16)[0] == _MHFD_UNK2_REAL_ITUNES_VALUE
+
+
+def test_apply_mhfd_unk2_workaround_patches_module(monkeypatch):
+    monkeypatch.setattr(artworkdb_chunks_module, "_write_mhfd", _write_mhfd_original)
+
+    _apply_mhfd_unk2_workaround()
+
+    assert artworkdb_chunks_module._write_mhfd is sync_module._write_mhfd_with_real_unk2
+
+
+def test_apply_mhfd_unk2_workaround_is_idempotent(monkeypatch):
+    monkeypatch.setattr(artworkdb_chunks_module, "_write_mhfd", _write_mhfd_original)
+
+    _apply_mhfd_unk2_workaround()
+    _apply_mhfd_unk2_workaround()
+
+    result = artworkdb_chunks_module._write_mhfd([], next_mhii_id=1)
+    expected = sync_module._write_mhfd_with_real_unk2([], next_mhii_id=1)
+    assert result == expected
+    assert struct.unpack_from("<I", result, 16)[0] == _MHFD_UNK2_REAL_ITUNES_VALUE

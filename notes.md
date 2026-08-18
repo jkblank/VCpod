@@ -2570,6 +2570,59 @@ genuine byte-diff against known-good iTunes output, not inference from
 static tables/docs, but only a real device test settles it). Next step:
 run a real sync and visually check the device.
 
+**2026-08-18 (later, same day): full real sync run (6250 tracks, ~107
+minutes, device previously reformatted so no backup taken) — still no
+album art.** A new, previously-unseen warning appeared during this run:
+`format 1061 has mixed payload sizes [6050, 6160]; using most common
+6050 in MHIF` (8/5790 tracks got a 55x56 payload instead of 55x55 —
+minor, separate bug, not investigated further since it's far too small
+a fraction to explain total absence of art across the whole library).
+
+Pulled the freshly-written on-device ArtworkDB and byte-diffed it
+directly against the real iTunes reference captured earlier (same
+device). Result: the two format lists are now **exactly** identical —
+both write 1055/1060/1061 only, matching mhod count (4), matching mhod
+type/order, matching every per-format dimension/imgSize field, mhod6
+present in 100% of entries. The earlier raw-byte diff of a first entry
+that looked alarming (~9 differing ranges) turned out to be entirely
+expected per-track data (songId, srcImgSize, ithmbOffset — genuinely
+different between the real device's first synced track and ours) once
+compared field-by-field via the structured parser instead of raw offsets.
+
+**A second real difference found, at the top level this time**: the
+mhfd (ArtworkDB root header) byte at offset 16 — `mhfd_parser.py` calls
+it `unk2`, commented "1 until iTunes 4.9, 2 after iTunes 4.9" — is `6`
+in the real file, `2` in ours. `artworkdb_writer/artworkdb_chunks.py`'s
+`_write_mhfd()` hardcodes this to `2` unconditionally; the stale comment
+clearly doesn't hold for whatever iTunes version wrote this device's
+real file. iopenpod already preserves two *other* header ranges (bytes
+32:48 and 60:68) from a `reference_mhfd` (the device's own prior
+ArtworkDB, read before being overwritten) for what's presumably the
+same "firmware validates header continuity" reason — this one range was
+simply missed.
+
+**Fixed**: new workaround, same pattern as the mhod6-chunk fix —
+`_write_mhfd_with_real_unk2()` wraps iopenpod's `_write_mhfd()` and
+force-writes `6` at byte 16 (`sync_orchestrator/sync.py`). Deliberately
+*hardcoded* rather than "preserve from reference_mhfd" (the more elegant
+option in principle, matching how the other two ranges are already
+handled) — because the device's on-device ArtworkDB has already been
+overwritten once this session with our own wrong `2`, so preserving
+"whatever's already there" would now just perpetuate our own bug
+forever instead of correcting it. 4 new tests added (override,
+reference-ignored, module-patch, idempotency — mirroring the existing
+mhod6-workaround test shape). 113/113 sync-orchestrator tests pass.
+
+**Status**: fix implemented and unit-verified; not yet tested against a
+real device — the current sync already ran and wrote the wrong value
+before this fix landed, so the device needs a re-sync (any run, even a
+no-op metadata pass, will rewrite the mhfd header via the patched
+writer) before checking again. Only one real device/one real data point
+observed for the `6` value — unverified whether this is fixed across
+all iPod Classic-family units or specific to this one; worth keeping in
+mind if a different Classic unit is ever synced and still shows no art
+despite this fix.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
