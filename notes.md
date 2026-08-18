@@ -2678,3 +2678,58 @@ permanently consumed after one read turned out to be unfounded; it
 persisted across multiple reads/commits in this same investigation) and
 successfully pushed 3 pending play-state updates (Open Sauce, Malala,
 and this run's own detection) to Pocket Casts in the same run.
+
+## Pocket Casts push kept losing already-confirmed plays — root-caused, partially fixed, one real bug still open
+
+User confirmed on-device UI showed both episodes ("Open Sauce vs Better
+Software Conference", Malala Yousafzai's Louis Theroux episode) as
+played, but Pocket Casts still showed them unplayed even after the
+auto-push feature ran (with the CWD fix from the entry above applied,
+push genuinely reported success: "Pushed play status to Pocket Casts
+for 3 episode(s)").
+
+**Root cause, confirmed**: `update_episode_status()` itself works
+correctly — verified with a direct, isolated API call (before: real
+Pocket Casts state `played=False`; after: `played=True`, immediate
+re-read confirms it stuck). The push mechanism pushes whatever value is
+*currently in the local row* at push time, correctly. The problem: two
+rows still had a **stale** `pending_push=1` flag left over from the
+earlier session-long investigation (a race between a device sync and a
+concurrently-running podcast fetch clobbered their `played` value back
+to `False`, well before the push-wiring/OR-merge fixes above existed) —
+`played` was `False` on those rows, so the "successful" push correctly
+sent `False`, overwriting Pocket Casts' state with the wrong value.
+This is stale corrupted data from earlier in the same investigation, not
+a new instance of a live bug in the current, already-fixed code path.
+
+**Fixed for real**: pushed `played=True` directly via `update_episode_status`
+for both episodes (confirmed via `list_episode_states` immediately after
+each), then reconciled the local db to match via
+`StateDB.update_play_state`. Both now correctly show played on Pocket
+Casts and locally.
+
+**A real, still-open bug found and NOT fixed**: while investigating
+Malala's case (real device data: `play_count_1=2` but `bookmark_time=572ms`
+— barely into a 66-minute episode), tried changing `playstate.py`'s
+duration-known branch to also trust `recent_playcount > 0` regardless of
+position (theory: iPod resets bookmark to near-zero after a track
+naturally completes). **This broke an existing, deliberately-designed
+test** (`test_partial_play_with_known_duration_is_in_progress_not_played`,
+`recent_playcount=1` + 16.7% position must stay "in progress," not
+"played") — meaning `recent_playcount` can genuinely be nonzero for a
+real partial play too, not just full completions, so trusting it
+unconditionally would cause false positives. Reverted the change; full
+suite passes again (100 in sync-orchestrator).
+
+This means Malala's real device signal is **genuinely ambiguous** under
+this project's own already-vetted logic — it's not possible to tell,
+from `play_count_1`/`recent_playcount`/`bookmark_time` alone, whether
+"play_count incremented but position is low" means "finished, then
+position reset" or "briefly sampled/skipped without finishing." Fixing
+this properly needs a device with a known, controlled play/skip/finish
+sequence to observe real `Play Counts` file behavior directly (matching
+the existing code comment's own caveat: "not independently verified
+against raw device Play Counts data"). Not attempted further this
+session — flagging for whoever picks this up next, since it directly
+affects whether `resolve_played_states` can be trusted to correctly
+detect a genuine completion when the position signal is misleading.
