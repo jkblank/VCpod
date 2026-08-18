@@ -1,0 +1,85 @@
+profile: john-copy
+device:
+  # New iPod (previously owned by someone else — volume label read back as
+  # "ANDRE PEEL KOP" at match time, serial confirmed via `udisksctl status`
+  # / lsblk). Real Apple product serial (SCSI VPD page 0x80), not the
+  # FireWire GUID and not the volume label (which changes if the device is
+  # ever relabeled, e.g. by a real iTunes resync — see notes.md). Requires
+  # iopenpod's own udev rule (61-iopenpod.rules) to be installed on this
+  # host so `enrich()` can read it without root — confirmed live via
+  # `iopenpod --linux-identity-status <mount>`.
+  match_by: serial
+  match_value: "000A27001303021C"
+  # match_by: volume_label
+  # match_value: "ANDRE PEEL KOP"
+
+# Profile-default fetch schedule (cron expression) — applies to every
+# playlist/show below unless overridden. Sundays at 23:55.
+fetch:
+  schedule: "55 23 * * 0"
+
+# Trimmed to just 3 playlists (2026-08-15) to fit the new iPod's 80GB
+# capacity alongside external_library — see notes.md. The other 10
+# playlists from john.yaml are deliberately left out here, not fetched
+# for this profile.
+playlists:
+  - name: "Rise Up"
+    source: apple_music
+    source_id: "pl.20f46341ada44a549c7c56118e642cb8"
+  - name: "Songs to vape to"
+    source: apple_music
+    source_id: "pl.u-76oNPJyt4GgLYa"
+    # source: spotify
+    # source_id: "07nXuVDzsdtzjglNc8F1UI"
+  - name: "Inspired Chill"
+    source: apple_music
+    source_id: pl.d838ab1729e94005ab6d16d090580d26
+
+# Podcasts intentionally disabled for this profile (2026-08-15, capacity
+# trim) — shows: [] means the fetch step subscribes to/downloads nothing
+# for john-copy, regardless of the real account's actual Pocket Casts
+# subscriptions. pocketcasts.credentials_file/sync_unplayed_only/
+# episode_filter/max_episodes_per_show are still required by the schema
+# even though nothing will ever be selected.
+podcasts:
+  pocketcasts:
+    credentials_file: /config/secrets/pocketcasts/john.json
+  sync_unplayed_only: true
+  episode_filter: archived
+  max_episodes_per_show: 5
+  shows: []
+
+external_library:
+  path: /home/john/Music/MusicLibrary
+  mode: exclude         # 'include' or 'exclude' - defaults to 'include'
+  selections:
+    - "Alanis Morissette"
+    - "King Gizzard & The Lizard Wizard"
+    - "Talking Heads":
+        - "Popular Favorites 1976 - 1992 _ Sand in the Vaseline"
+        - "Performance"
+        - "Remixed"
+        - "The Collection"
+
+# Audiobooks intentionally disabled for this profile (2026-08-15,
+# capacity trim). AudiobooksConfig has no "sync nothing" mode directly —
+# `audiobooks: null`/omitted defaults to "sync everything", same as
+# mode: include with empty selections (see AudiobooksConfig's docstring
+# in common/models.py) — so this excludes every author currently under
+# library/audiobooks by name instead. Update this list if new audiobooks
+# get added and should also stay off this device.
+audiobooks:
+  mode: exclude
+  selections:
+    - "Franz Kafka"
+    - "George Orwell"
+    - "Marcus Aurelius"
+    - "Neil Postman"
+
+sync:
+  trigger: on_connect
+  # Lossy (2026-08-15, capacity trim) — unlike john.yaml's lossless alac,
+  # this device doesn't have room for the whole external_library at
+  # lossless size. See notes.md for the full capacity investigation.
+  transcode_format: aac
+  push_play_status_back: false
