@@ -265,12 +265,20 @@ def _load_podcast_feeds(
     it" shape as transcode_format/push_play_status_back. And pub_date was
     never set at all (stayed 0.0 for every episode), undermining
     fill_mode="newest"'s own sort reliability -- now populated from the
-    published_at column. See notes.md."""
+    published_at column.
+
+    description/episode_number/season_number are threaded through too
+    (added to EpisodeRecord for RSS-sourced metadata, see notes.md) --
+    iopenpod's own _track_conversion.py genuinely writes these into the
+    real on-device track (season_number/episode_number as mhit fields,
+    description as the "Description Text" mhod shown in the device's own
+    Podcasts UI), not just used for sync-planning like pub_date is."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT episode_uuid, podcast_uuid, show_name, local_path, "
-        "title, audio_url, duration_seconds, played, published_at FROM episodes"
+        "title, audio_url, duration_seconds, played, published_at, "
+        "description, episode_number, season_number FROM episodes"
     ).fetchall()
     conn.close()
 
@@ -294,8 +302,11 @@ def _load_podcast_feeds(
             PodcastEpisode(
                 guid=row["episode_uuid"],
                 title=row["title"] or Path(row["local_path"]).stem,
+                description=row["description"],
                 audio_url=row["audio_url"],
                 duration_seconds=row["duration_seconds"],
+                episode_number=row["episode_number"],
+                season_number=row["season_number"],
                 downloaded_path=str(local_path) if local_path.is_file() else "",
                 listened_override=True if row["played"] else None,
                 pub_date=_parse_published_at(row["published_at"]),

@@ -248,6 +248,9 @@ def _make_episodes_db(tmp_path: Path, rows: list[dict]) -> Path:
             pending_push INTEGER NOT NULL DEFAULT 0,
             unsubscribed INTEGER NOT NULL DEFAULT 0,
             published_at TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            episode_number INTEGER,
+            season_number INTEGER,
             PRIMARY KEY (episode_uuid)
         )
         """
@@ -256,8 +259,8 @@ def _make_episodes_db(tmp_path: Path, rows: list[dict]) -> Path:
         conn.execute(
             "INSERT INTO episodes (episode_uuid, podcast_uuid, show_name, local_path, "
             "played, played_up_to, downloaded_at, title, audio_url, duration_seconds, "
-            "published_at) "
-            "VALUES (?, ?, ?, ?, ?, 0, '2026-01-01', ?, '', ?, ?)",
+            "published_at, description, episode_number, season_number) "
+            "VALUES (?, ?, ?, ?, ?, 0, '2026-01-01', ?, '', ?, ?, ?, ?, ?)",
             (
                 row["guid"],
                 row.get("podcast_uuid", "show-1"),
@@ -267,6 +270,9 @@ def _make_episodes_db(tmp_path: Path, rows: list[dict]) -> Path:
                 row.get("title", ""),
                 row.get("duration_seconds", 0),
                 row.get("published_at", ""),
+                row.get("description", ""),
+                row.get("episode_number"),
+                row.get("season_number"),
             ),
         )
     conn.commit()
@@ -373,6 +379,37 @@ def test_load_podcast_feeds_sets_pub_date_from_published_at_column(tmp_path):
 
     (episode,) = feeds[0].episodes
     assert episode.pub_date > 0.0
+
+
+def test_load_podcast_feeds_threads_description_and_episode_season_number(tmp_path):
+    # Confirmed live (2026-08-18): these were added to EpisodeRecord for
+    # RSS-sourced metadata but never actually threaded into PodcastEpisode
+    # -- iopenpod's own _track_conversion.py genuinely writes them into
+    # the real on-device track (not just used for sync-planning like
+    # pub_date), so the backfilled metadata never reached the device.
+    audio = tmp_path / "ep.mp3"
+    audio.write_bytes(b"")
+    db_path = _make_episodes_db(
+        tmp_path,
+        [
+            {
+                "guid": "ep-1",
+                "local_path": audio,
+                "title": "Ep",
+                "description": "Real show notes.",
+                "episode_number": 7,
+                "season_number": 2,
+            }
+        ],
+    )
+    profile = _make_profile(tmp_path, str(tmp_path))
+
+    feeds = sync_module._load_podcast_feeds(str(db_path), tmp_path, profile)
+
+    (episode,) = feeds[0].episodes
+    assert episode.description == "Real show notes."
+    assert episode.episode_number == 7
+    assert episode.season_number == 2
 
 
 def test_load_podcast_feeds_pub_date_defaults_to_zero_when_blank(tmp_path):
