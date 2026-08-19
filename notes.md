@@ -2851,6 +2851,32 @@ before commit), so "no album art" observed afterward reflects the
 *previous* successful write (our own sync-orchestrator, with all three
 fixes), not this run. Needs a retry now that the blocking file is fixed.
 
+**2026-08-19: retried after the fix — sudo + pure vanilla iopenpod 1.68.1
+completed a real write. Still no album art.** This is the decisive test:
+zero of this project's code involved (real GUI, unpatched), root/raw-SCSI
+access confirmed genuinely active, latest upstream release. Rules out
+every remaining hypothesis this project's tooling can influence —
+identification, permissions, our three ArtworkDB/iTunesDB workarounds,
+and iopenpod version currency all ruled out as the cause. What's left is
+either a genuine upstream iopenpod bug specific to this device/generation
+that no combination of correct data has been able to trigger correctly,
+or a firmware-level limitation on this exact unit.
+
+**Decision: filing an upstream GitHub issue** on TheRealSavi/iOpenPod.
+This project's own investigation (byte-diffed real iTunes output at
+every layer: ArtworkDB entry shape, mhfd header, iTunesDB "_2" Store
+fields; decoded raw pixel data and visually confirmed correct; confirmed
+iTunesDB↔ArtworkDB linkage; ruled out permissions/sudo/hard-resets/
+device-identification) is itself a genuinely valuable bug report — two
+real, previously-undocumented findings came out of it that would help
+any iPod Classic 7th Gen user of iopenpod even independent of whether
+they explain this specific symptom: (1) real iTunes only ever writes
+the 3 `AssociatedFormat=0` formats (1055/1060/1061) per track, never the
+other 2 declared in SysInfoExtended (1068/1069) — iopenpod's own
+`CLASSIC_COVER_ART_FORMATS` table still includes 1068; (2) the mhfd
+header byte at offset 16 is `6` in real iTunes output for this device,
+not iopenpod's hardcoded `2`.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
