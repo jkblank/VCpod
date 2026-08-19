@@ -2802,6 +2802,55 @@ this library's content), or (b) accepting this may be a firmware-level
 limitation specific to this exact unit that no known software fix
 addresses.
 
+**2026-08-19: attempted sudo + pure vanilla iopenpod (GUI, none of our
+sync-orchestrator patches) — inconclusive, real unrelated bug found.**
+User correctly pointed out the earlier sudo re-test used our own
+sync-orchestrator CLI, which unconditionally applies all three of our
+workarounds — the "sudo + zero modifications" combination was never
+actually tried. Launched the real iOpenPod GUI under sudo instead.
+
+Hit a real, separate problem first: iopenpod's Linux device scanner
+looks in `/run/media/{getpass.getuser()}`, which resolves to `root`
+under sudo (even with `-E`, since the username lookup is UID-based, not
+`$USER`) — so it was looking in `/run/media/root` while the device is
+actually mounted at `/run/media/john`. A symlink workaround was rejected
+by the write-safety guard ("refusing orphan cleanup through a symlink or
+reparse point") — deliberate, sensible protection. Fixed by mounting the
+same block device a second time directly at `/run/media/root/JOHN_S
+IPOD` (`sudo mount /dev/sda1 ...` — safe, a block device can be mounted
+at multiple points simultaneously).
+
+Once detected, the GUI's own device resolution (unpatched) reported
+`formats=[1055, 1060, 1061, 1068]` — iopenpod's static
+`CLASSIC_COVER_ART_FORMATS` table, i.e. **not** 1069, but **still
+includes 1068** (which our own `AssociatedFormat`-filtered override
+excludes). A genuinely different format set than what our own pipeline
+produces — would have been an interesting real comparison point.
+
+**But the sync never completed.** It aborted during iTunesDB
+serialization: `iPod u32 Mac timestamps end at local 2040-02-06
+06:28:15; cannot encode 4070901600 ... (track: 'Linux Matters' – '87:
+Herding online exams')`. Root cause: that one MP3's embedded ID3 `TDRC`
+tag was literally `2099-01` — a garbage placeholder date baked into the
+file by the podcast's own host/CMS (confirmed: `podcast-manager` never
+writes `TDRC` at all, and our own state db already has the correct real
+value, `Tue, 04 Aug 2026 15:30:00 +0000`, for this exact episode — so
+this is upstream bad data carried through untouched, not a bug in our
+code). Scanned all 61 local podcast MP3s for the same pattern — only
+this one file was affected. Our own sync-orchestrator never hits this
+because `_load_podcast_feeds()` builds episode dates from our state db,
+not by reading each file's embedded tags the way the vanilla GUI's
+generic folder scan does — so this bug is real, but inert for every
+sync path this project's own tooling actually uses. Fixed the one file's
+`TDRC` directly to `2026-08-04` (the correct value) so the vanilla-GUI
+test can be retried without hitting this again.
+
+**Status of the sudo+vanilla test itself: not yet actually completed** —
+this run never got far enough to write anything to the device (aborted
+before commit), so "no album art" observed afterward reflects the
+*previous* successful write (our own sync-orchestrator, with all three
+fixes), not this run. Needs a retry now that the blocking file is fixed.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
