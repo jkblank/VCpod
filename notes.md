@@ -103,7 +103,7 @@ discovered by the user checking their device.
 rows + a live re-sync verification still pending (device needs to be
 reconnected to confirm "Semaphore" actually populates this time).
 
-## Future: CLI ergonomics — no "sync everything for this profile" entrypoint
+## CLI ergonomics — no "sync everything for this profile" entrypoint — shipped
 
 Noticed live (2026-07-20): pulling all of a profile's playlists means one
 `fetcher-apple fetch --playlist "X" --cookies-path ... --library-root ...
@@ -137,9 +137,56 @@ needed is already derivable from just `--profile <path>` +
    fetch functions directly rather than shelling out, or shell out to
    each service's own CLI with paths filled in on the caller's behalf).
 
-**Status**: not started, noted 2026-07-20 — real usability gap, not
-urgent, but worth doing before this is handed to anyone other than the
-one person who already knows every flag by heart.
+**Status (2026-08-19): level 2 shipped, in two parts.**
+
+`music-stack sync --profile <path>` (services/music-stack-cli) already
+closed most of this gap before this entry was revisited — it resolves
+every path from `--global-config`/the profile itself and loops every
+playlist/show for a source in one call, with only `--profile` required.
+`sync-orchestrator auto-sync` goes further, chaining fetch + device sync
++ play-status push automatically — but it's unattended-only (udev-
+triggered, no profile choice, no `--playlist`/`--show`, always forces
+`--execute --allow-removals`), the wrong tool for a human at a terminal.
+
+Added `sync-orchestrator full-sync` as the interactive sibling: fetch +
+device sync in one command, `--profile` accepts a bare name (e.g.
+`john`, resolved via the new `common.config.resolve_profile_path`
+against `--config-root/profiles/`) as well as a literal path,
+`--library-root`/`--state-root` default next to `--config-root` the same
+way `music-stack sync` already does, and `--source`/`--playlist`/`--show`
+narrow the fetch stage for a quick partial check (`--fetch-only` skips
+the device stage entirely, e.g. for a fetch-side-only sanity check).
+`--execute`/`--allow-removals` deliberately stay plain opt-ins rather
+than being forced on like `auto-sync` — this is an interactive command,
+not the unattended "wake up synced" path, so the existing safety gate
+(see the `docs/m6-ipod-headless-recommendation.md` near-miss) stays
+intact.
+
+Implementation reuses existing pieces rather than duplicating logic:
+`_maybe_pre_fetch`'s subprocess command-building was factored out into
+`_build_music_stack_sync_cmd` (now shared by `auto-sync`'s due-soon
+pre-fetch, `full-sync`'s on-demand fetch, and `_maybe_push_play_status`);
+the device stage calls the exact same `_run_sync` the plain `sync`
+command uses, so play-status push-back after a real `--execute` comes
+for free. 3 new tests in `services/common` (`resolve_profile_path`:
+bare-name resolution, literal-path passthrough, unknown-name error
+listing available profiles), 8 new tests in `sync-orchestrator`
+(`_build_music_stack_sync_cmd` forwarding/sorting;
+`full-sync`'s bare-name resolution, unknown-profile failure,
+`--fetch-only`, failed-fetch short-circuit, execute/allow-removals
+staying plain opt-ins, literal-path passthrough). 296/296 passing across
+the whole workspace.
+
+Live-verified end-to-end: `full-sync --profile john --config-root
+../../config --playlist "Rise Up" --fetch-only` — bare name resolved,
+Apple Music fetch correctly narrowed to just that playlist (3 new
+tracks), podcasts synced per existing default behavior (no `--show`
+filter given), stopped cleanly before the device stage.
+
+Level 1 (a per-fetcher `sync-profile` subcommand, e.g.
+`fetcher-apple sync-profile`) was never built and is now superseded —
+`music-stack sync`'s cross-fetcher orchestration already gives the same
+result at a higher level, so there's no remaining need for it.
 
 M8's acceptance criterion: *"Episodes played on-device are correctly
 marked played in Pocket Casts after next sync."* Scoped to podcast

@@ -7,6 +7,7 @@ from common.config import (
     load_all_profiles,
     load_global_config,
     load_profile_config,
+    resolve_profile_path,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -89,3 +90,26 @@ def test_reserved_profile_name_global_raises():
     # silently collide with it via resolve_roots.
     with pytest.raises(ConfigError, match="reserved"):
         load_profile_config(FIXTURES / "profile_reserved_name.yaml")
+
+
+def test_resolve_profile_path_by_bare_name():
+    resolved = resolve_profile_path("john", REPO_ROOT / "config")
+    assert resolved == REPO_ROOT / "config" / "profiles" / "john.yaml"
+
+
+def test_resolve_profile_path_literal_path_passthrough():
+    literal = REPO_ROOT / "config" / "profiles" / "bob.yaml"
+    assert resolve_profile_path(str(literal), REPO_ROOT / "config") == literal
+    # A relative literal path that happens to resolve from CWD also wins
+    # over name resolution — same "always accept a literal path" behavior
+    # every existing --profile flag already has.
+    assert resolve_profile_path(literal, REPO_ROOT / "config") == literal
+
+
+def test_resolve_profile_path_unknown_name_lists_available():
+    with pytest.raises(ConfigError) as exc_info:
+        resolve_profile_path("nonexistent-profile", REPO_ROOT / "config")
+    message = str(exc_info.value)
+    assert "nonexistent-profile" in message
+    assert "john" in message
+    assert "alice" in message

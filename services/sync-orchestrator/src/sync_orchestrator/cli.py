@@ -6,10 +6,11 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from common.config import ConfigError, load_profile_config
+from common.config import ConfigError, load_profile_config, resolve_profile_path
 from common.lock import FileLock, LockTimeoutError
 from common.models import ProfileConfig
 from common.schedule import is_due_within, iter_fetch_targets, resolve_fetch_scope
@@ -307,6 +308,37 @@ def _load_profiles_with_paths(directory: Path) -> list[tuple[Path, ProfileConfig
     return pairs
 
 
+def _build_music_stack_sync_cmd(
+    args: argparse.Namespace,
+    profile_path: Path,
+    config_root: Path,
+    *,
+    sources: Iterable[str] = (),
+    playlist_names: Iterable[str] = (),
+    show_names: Iterable[str] = (),
+) -> list[str]:
+    """Build a `music-stack sync` subprocess command — shared by
+    _maybe_pre_fetch (auto-sync's due-soon-only pre-fetch) and
+    _cmd_full_sync (an on-demand full or narrowed fetch). See
+    _maybe_pre_fetch's docstring for why this is always a subprocess,
+    never an in-process import."""
+    cmd = [
+        "uv", "run", "--project", str(args.music_stack_project_dir),
+        "music-stack", "sync",
+        "--profile", str(profile_path),
+        "--global-config", str(config_root / "global.yaml"),
+        "--library-root", str(args.library_root),
+        "--state-root", str(args.state_root),
+    ]
+    for source in sorted(sources):
+        cmd += ["--source", source]
+    for name in playlist_names:
+        cmd += ["--playlist", name]
+    for name in show_names:
+        cmd += ["--show", name]
+    return cmd
+
+
 def _maybe_pre_fetch(
     args: argparse.Namespace,
     profile: ProfileConfig,
@@ -352,20 +384,14 @@ def _maybe_pre_fetch(
             f"== Pre-fetching (due within {args.pre_fetch_horizon_hours}h): "
             f"{', '.join(target.target_id for target in due_soon)} =="
         )
-        cmd = [
-            "uv", "run", "--project", str(args.music_stack_project_dir),
-            "music-stack", "sync",
-            "--profile", str(profile_path),
-            "--global-config", str(config_root / "global.yaml"),
-            "--library-root", str(args.library_root),
-            "--state-root", str(args.state_root),
-        ]
-        for source in sorted(scope.sources):
-            cmd += ["--source", source]
-        for name in scope.playlist_names or []:
-            cmd += ["--playlist", name]
-        for name in scope.show_names or []:
-            cmd += ["--show", name]
+        cmd = _build_music_stack_sync_cmd(
+            args,
+            profile_path,
+            config_root,
+            sources=scope.sources,
+            playlist_names=scope.playlist_names or [],
+            show_names=scope.show_names or [],
+        )
 
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.stdout:
@@ -435,15 +461,9 @@ def _maybe_push_play_status(
         return
 
     print(f"== Pushing {pending_count} play-state update(s) to Pocket Casts ==")
-    cmd = [
-        "uv", "run", "--project", str(args.music_stack_project_dir),
-        "music-stack", "sync",
-        "--profile", str(profile_path),
-        "--global-config", str(config_root / "global.yaml"),
-        "--library-root", str(args.library_root),
-        "--state-root", str(args.state_root),
-        "--source", "podcasts",
-    ]
+    cmd = _build_music_stack_sync_cmd(
+        args, profile_path, config_root, sources=["podcasts"]
+    )
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.stdout:
         print(proc.stdout, end="")
@@ -454,6 +474,72 @@ def _maybe_push_play_status(
             f"WARNING: play-status push failed (exit {proc.returncode}); "
             "will retry on the next podcast sync"
         )
+
+
+def _cmd_full_sync(args: argparse.Namespace) -> int:
+    """Interactive sibling of `sync` (device-only) and `auto-sync`
+    (unattended, no profile choice, always executes): one command a
+    human can type to fetch + sync a chosen profile, with --profile
+    accepting a bare name (resolved via resolve_profile_path) instead of
+    requiring a full path, and --playlist/--show for narrowing to a
+    quick partial check. Unlike auto-sync, --execute/--allow-removals
+    stay plain opt-ins here — see the safety-gate comment in _run_sync
+    for why that pair is deliberately never forced on."""
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(name)s: %(message)s")
+
+    config_root = Path(args.config_root)
+    try:
+        profile_path = resolve_profile_path(args.profile, config_root)
+        profile = load_profile_config(profile_path)
+    except ConfigError as e:
+        print(f"ERROR {e.path}")
+        for line in e.errors:
+            print(f"  {line}")
+        return 1
+
+    library_root = Path(args.library_root) if args.library_root else config_root.parent / "library"
+    state_root = Path(args.state_root) if args.state_root else config_root.parent / "state"
+    # _run_sync/plan_sync and the fetch subprocess both read these off
+    # args directly (same as every other command here) — resolve once
+    # and write the concrete paths back rather than threading two more
+    # parameters through everything downstream.
+    args.library_root = str(library_root)
+    args.state_root = str(state_root)
+
+    lock_path = state_root / f".sync_{profile.profile}.lock"
+    try:
+        with FileLock(lock_path, timeout=args.lock_timeout):
+            return _run_full_sync(args, profile, profile_path=profile_path, config_root=config_root)
+    except LockTimeoutError as e:
+        return _fail(str(e))
+
+
+def _run_full_sync(
+    args: argparse.Namespace, profile: ProfileConfig, *, profile_path: Path, config_root: Path
+) -> int:
+    print(f"== Fetching for profile {profile.profile!r} ==")
+    cmd = _build_music_stack_sync_cmd(
+        args,
+        profile_path,
+        config_root,
+        sources=args.source or (),
+        playlist_names=args.playlist or (),
+        show_names=args.show or (),
+    )
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="")
+    if proc.returncode != 0:
+        return _fail(f"fetch failed (exit {proc.returncode})")
+
+    if args.fetch_only:
+        print("Fetch complete. Skipping device sync (--fetch-only passed).")
+        return 0
+
+    return _run_sync(args, profile, profile_path=profile_path, config_root=config_root)
 
 
 def _cmd_auto_sync(args: argparse.Namespace) -> int:
@@ -612,6 +698,93 @@ def main() -> None:
         "_maybe_push_play_status.",
     )
     sync_parser.set_defaults(func=_cmd_sync)
+
+    full_sync_parser = subparsers.add_parser(
+        "full-sync",
+        help="Interactive one-command sync: fetch (music + podcasts) for a "
+        "profile, then sync the result to a connected iPod. --profile "
+        "accepts a bare profile name (e.g. 'john') in addition to a path. "
+        "Unlike auto-sync, --execute/--allow-removals are still plain "
+        "opt-ins, and --playlist/--show/--fetch-only support a quick "
+        "narrowed check instead of always syncing everything.",
+    )
+    full_sync_parser.add_argument(
+        "--profile",
+        required=True,
+        help="Profile name (resolved against --config-root/profiles/) or a path to a profile YAML.",
+    )
+    full_sync_parser.add_argument(
+        "--config-root",
+        default="config",
+        help="Root containing global.yaml and profiles/*.yaml (default 'config').",
+    )
+    full_sync_parser.add_argument(
+        "--library-root",
+        default=None,
+        help="Host path to the library root. Defaults to a 'library' "
+        "directory next to --config-root, same convention as `music-stack sync`.",
+    )
+    full_sync_parser.add_argument(
+        "--state-root",
+        default=None,
+        help="Host path to the state root. Defaults to a 'state' "
+        "directory next to --config-root, same convention as `music-stack sync`.",
+    )
+    full_sync_parser.add_argument(
+        "--source",
+        action="append",
+        help="Restrict fetch to this source (repeatable). Defaults to every "
+        "configured source, forwarded to `music-stack sync`.",
+    )
+    full_sync_parser.add_argument(
+        "--playlist",
+        action="append",
+        help="Restrict apple_music/ytmusic fetch to this playlist name (repeatable).",
+    )
+    full_sync_parser.add_argument(
+        "--show",
+        action="append",
+        help="Restrict podcast fetch to this show, by UUID or title (repeatable).",
+    )
+    full_sync_parser.add_argument(
+        "--fetch-only",
+        action="store_true",
+        help="Stop after fetching — skip the device sync stage entirely. "
+        "Useful with --playlist for a quick fetch-side check.",
+    )
+    full_sync_parser.add_argument(
+        "--pc-folder", dest="pc_folders", action="append", default=None
+    )
+    full_sync_parser.add_argument("--skip-backup", action="store_true")
+    full_sync_parser.add_argument("--skip-eject", action="store_true")
+    full_sync_parser.add_argument("--skip-podcasts", action="store_true")
+    full_sync_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually write the computed device plan. Without this flag, "
+        "the fetch runs for real but the device stage is plan-only.",
+    )
+    full_sync_parser.add_argument(
+        "--allow-removals",
+        action="store_true",
+        help="Same meaning as on `sync` — required alongside --execute "
+        "whenever the device plan proposes removals.",
+    )
+    full_sync_parser.add_argument("--lock-timeout", type=float, default=1800)
+    full_sync_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable DEBUG-level logging, same as `sync --debug`.",
+    )
+    full_sync_parser.add_argument(
+        "--music-stack-project-dir",
+        default=_default_music_stack_project_dir(),
+        help="Path to the music-stack-cli project, used to invoke "
+        "`music-stack sync` as a subprocess for both the fetch stage and "
+        "the post-execute play-status push — kept out-of-process "
+        "deliberately, see _maybe_pre_fetch.",
+    )
+    full_sync_parser.set_defaults(func=_cmd_full_sync)
 
     auto_sync_parser = subparsers.add_parser(
         "auto-sync",

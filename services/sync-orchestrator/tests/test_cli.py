@@ -661,3 +661,194 @@ def test_cmd_auto_sync_fails_after_wait_seconds_exhausted_with_no_match(monkeypa
 
     assert result == 1
     assert run_sync_calls == []
+
+
+# --- _build_music_stack_sync_cmd -----------------------------------------------
+
+
+def test_build_music_stack_sync_cmd_forwards_sources_playlists_shows():
+    cmd = cli_module._build_music_stack_sync_cmd(
+        _args(music_stack_project_dir="services/music-stack-cli"),
+        Path("/config/profiles/john.yaml"),
+        Path("/config"),
+        sources=["podcasts", "apple_music"],
+        playlist_names=["Chill"],
+        show_names=["Linux Matters"],
+    )
+
+    assert cmd[:4] == ["uv", "run", "--project", "services/music-stack-cli"]
+    assert cmd[4:6] == ["music-stack", "sync"]
+    assert "--profile" in cmd and "/config/profiles/john.yaml" in cmd
+    assert "--global-config" in cmd and str(Path("/config/global.yaml")) in cmd
+    # sorted() -- forwarded source order must not depend on caller order
+    source_positions = [i for i, tok in enumerate(cmd) if tok == "--source"]
+    assert [cmd[i + 1] for i in source_positions] == ["apple_music", "podcasts"]
+    assert "--playlist" in cmd and "Chill" in cmd
+    assert "--show" in cmd and "Linux Matters" in cmd
+
+
+def test_build_music_stack_sync_cmd_no_filters_means_no_flags():
+    cmd = cli_module._build_music_stack_sync_cmd(
+        _args(), Path("/config/profiles/john.yaml"), Path("/config")
+    )
+
+    assert "--source" not in cmd
+    assert "--playlist" not in cmd
+    assert "--show" not in cmd
+
+
+# --- _cmd_full_sync -------------------------------------------------------------
+
+
+def _full_sync_args(**overrides) -> argparse.Namespace:
+    base = dict(
+        profile="john",
+        config_root=None,  # set per-test to tmp_path/"config"
+        library_root=None,
+        state_root=None,
+        source=None,
+        playlist=None,
+        show=None,
+        fetch_only=False,
+        pc_folders=None,
+        skip_backup=False,
+        skip_eject=False,
+        skip_podcasts=False,
+        execute=False,
+        allow_removals=False,
+        lock_timeout=5,
+        debug=False,
+        music_stack_project_dir="services/music-stack-cli",
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _write_full_sync_config_root(tmp_path: Path) -> Path:
+    config_root = tmp_path / "config"
+    (config_root / "profiles").mkdir(parents=True)
+    _write_profile(config_root / "profiles", "john.yaml", "john")
+    return config_root
+
+
+def test_cmd_full_sync_resolves_bare_profile_name_and_runs_device_sync(monkeypatch, tmp_path):
+    config_root = _write_full_sync_config_root(tmp_path)
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, capture_output, text: subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr=""),
+    )
+    captured = {}
+
+    def fake_run_sync(args, profile, *, profile_path, config_root):
+        captured["args"] = args
+        captured["profile"] = profile
+        captured["profile_path"] = profile_path
+        return 0
+
+    monkeypatch.setattr(cli_module, "_run_sync", fake_run_sync)
+
+    args = _full_sync_args(profile="john", config_root=str(config_root))
+    result = cli_module._cmd_full_sync(args)
+
+    assert result == 0
+    assert captured["profile"].profile == "john"
+    assert captured["profile_path"] == config_root / "profiles" / "john.yaml"
+    # library/state roots defaulted next to config_root, same convention
+    # as `music-stack sync`'s own _cmd_sync.
+    assert captured["args"].library_root == str(config_root.parent / "library")
+    assert captured["args"].state_root == str(config_root.parent / "state")
+
+
+def test_cmd_full_sync_unknown_profile_name_fails_before_any_subprocess(monkeypatch, tmp_path):
+    config_root = _write_full_sync_config_root(tmp_path)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(cli_module, "_run_sync", lambda *a, **k: calls.append("run_sync"))
+
+    args = _full_sync_args(profile="nonexistent", config_root=str(config_root))
+    result = cli_module._cmd_full_sync(args)
+
+    assert result == 1
+    assert calls == []
+
+
+def test_cmd_full_sync_fetch_only_skips_device_sync(monkeypatch, tmp_path):
+    config_root = _write_full_sync_config_root(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, capture_output, text: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    run_sync_calls = []
+    monkeypatch.setattr(cli_module, "_run_sync", lambda *a, **k: run_sync_calls.append(a))
+
+    args = _full_sync_args(profile="john", config_root=str(config_root), fetch_only=True)
+    result = cli_module._cmd_full_sync(args)
+
+    assert result == 0
+    assert run_sync_calls == []
+
+
+def test_cmd_full_sync_failed_fetch_skips_device_sync(monkeypatch, tmp_path):
+    config_root = _write_full_sync_config_root(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, capture_output, text: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom"),
+    )
+    run_sync_calls = []
+    monkeypatch.setattr(cli_module, "_run_sync", lambda *a, **k: run_sync_calls.append(a))
+
+    args = _full_sync_args(profile="john", config_root=str(config_root))
+    result = cli_module._cmd_full_sync(args)
+
+    assert result == 1
+    assert run_sync_calls == []
+
+
+def test_cmd_full_sync_does_not_force_execute_or_allow_removals(monkeypatch, tmp_path):
+    # Unlike auto-sync, full-sync must leave --execute/--allow-removals as
+    # plain opt-ins -- this is an interactive command, not the unattended
+    # "wake up synced" path.
+    config_root = _write_full_sync_config_root(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, capture_output, text: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    captured = {}
+    monkeypatch.setattr(
+        cli_module,
+        "_run_sync",
+        lambda args, profile, **kwargs: captured.setdefault("args", args) and 0,
+    )
+
+    args = _full_sync_args(profile="john", config_root=str(config_root))
+    cli_module._cmd_full_sync(args)
+
+    assert captured["args"].execute is False
+    assert captured["args"].allow_removals is False
+
+
+def test_cmd_full_sync_literal_profile_path_still_works(monkeypatch, tmp_path):
+    config_root = _write_full_sync_config_root(tmp_path)
+    literal_path = config_root / "profiles" / "john.yaml"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, capture_output, text: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    captured = {}
+    monkeypatch.setattr(
+        cli_module,
+        "_run_sync",
+        lambda args, profile, **kwargs: captured.setdefault("profile", profile) and 0,
+    )
+
+    args = _full_sync_args(profile=str(literal_path), config_root=str(config_root))
+    result = cli_module._cmd_full_sync(args)
+
+    assert result == 0
+    assert captured["profile"].profile == "john"

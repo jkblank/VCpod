@@ -84,3 +84,27 @@ def load_all_profiles(directory: Path | str) -> dict[str, ProfileConfig]:
         profiles[profile.profile] = profile
         seen_paths[profile.profile] = path
     return profiles
+
+
+def resolve_profile_path(value: Path | str, config_root: Path | str) -> Path:
+    """Resolve a CLI-supplied `--profile` value to a concrete YAML path.
+
+    Accepts either a literal path (existing behavior everywhere this
+    lands, preserved as-is) or a bare profile name (e.g. "john"), which
+    is resolved against `config_root/profiles/{name}.yaml`. Raises
+    ConfigError listing the profile names actually found under
+    config_root/profiles/ when neither resolves, so a typo gets a
+    helpful list instead of a raw file-not-found.
+    """
+    literal = Path(value)
+    if literal.is_file():
+        return literal
+
+    profiles_dir = Path(config_root) / "profiles"
+    by_name = profiles_dir / f"{value}.yaml"
+    if by_name.is_file():
+        return by_name
+
+    available = sorted(p.stem for p in profiles_dir.glob("*.yaml")) if profiles_dir.is_dir() else []
+    hint = f"available profiles: {', '.join(available)}" if available else f"no profiles found under {profiles_dir}"
+    raise ConfigError(by_name, [f"no such file, and no profile named '{value}' — {hint}"])
