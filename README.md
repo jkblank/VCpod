@@ -145,7 +145,7 @@ Pocket Casts, running dedup on demand, plan-only device syncs, etc.):
 | [`podcast-manager`](services/podcast-manager/README.md) | Pocket Casts client, episode downloader, play-state push-back |
 | [`music-stack-cli`](services/music-stack-cli/README.md) | The unified `music-stack sync` command |
 | [`fetch-scheduler`](services/fetch-scheduler/README.md) | Cron-scheduled fetching + automatic library/backup maintenance |
-| [`sync-orchestrator`](services/sync-orchestrator/README.md) | Device sync engine (bare metal) + `auto-sync`/udev automation |
+| [`sync-orchestrator`](services/sync-orchestrator/README.md) | Device sync engine (bare metal) + `auto-sync`/udev automation + `full-sync` (interactive fetch+device in one command) |
 | [`audiobook-manager`](services/audiobook-manager/README.md) | Merges manually-acquired MP3 parts into a tagged, chaptered `.m4b` (ffmpeg + beets-audible) |
 
 Device sync (`sync-orchestrator`) needs the iPod connected/mounted and
@@ -165,6 +165,14 @@ uv run sync-orchestrator sync \
     --library-root ../../library \
     --state-root ../../state \
     --execute
+```
+
+For fetch + device sync in one interactive command instead (bare
+profile name, no other paths needed) see `full-sync` in
+[`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#one-command-fetch--device-full-sync):
+
+```bash
+uv run sync-orchestrator full-sync --profile <you> --config-root ../../config
 ```
 
 ### Running with Docker

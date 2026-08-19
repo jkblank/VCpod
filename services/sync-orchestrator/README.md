@@ -178,6 +178,46 @@ required together — `--execute` alone still refuses on any removal,
 (`BackupManager.create_backup`) runs before every write unless
 `--skip-backup` is passed.
 
+## One command, fetch + device: `full-sync`
+
+`sync-orchestrator sync` (above) only writes to the device — it assumes
+whatever's already in `library/` is what you want synced. Getting fresh
+content there first means running `music-stack sync` separately, with
+its own full path flags. `full-sync` does both in one command, built for
+an interactive human at a terminal (as opposed to `auto-sync` below,
+which is unattended-only):
+
+```bash
+# Fetches + syncs the whole profile, plan-only (no --execute passed):
+uv run sync-orchestrator full-sync --profile john --config-root ../../config
+
+# Same, but actually write the device plan:
+uv run sync-orchestrator full-sync --profile john --config-root ../../config --execute
+
+# Narrow to one playlist, fetch-only (no device stage at all) — a quick
+# way to check a single playlist's fetch without touching the device:
+uv run sync-orchestrator full-sync --profile john --config-root ../../config \
+    --playlist "Rise Up" --fetch-only
+```
+
+- `--profile` accepts a bare profile name (resolved against
+  `--config-root/profiles/{name}.yaml` via
+  `common.config.resolve_profile_path`) as well as a literal path — both
+  work everywhere `--profile` appears in this project, this is just the
+  first command where the name form is genuinely convenient.
+- `--library-root`/`--state-root` default to `library`/`state` next to
+  `--config-root` when omitted — same convention `music-stack sync`
+  already uses, so the common case needs no path flags at all beyond
+  `--config-root`.
+- `--source`/`--playlist`/`--show` (repeatable) narrow the fetch stage,
+  forwarded straight to the `music-stack sync` subprocess — same
+  semantics as that command's own flags.
+- `--fetch-only` stops after fetching, skipping the device stage
+  entirely.
+- `--execute`/`--allow-removals` are still plain, separate opt-ins here
+  (unlike `auto-sync`) — this command runs interactively, so the same
+  "review the plan first" safety gate `sync` has applies unchanged.
+
 ## Automation (M9): `auto-sync` + udev
 
 `sync-orchestrator sync` (above) always takes an explicit `--profile` and
