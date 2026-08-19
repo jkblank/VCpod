@@ -2747,6 +2747,61 @@ rule out this being somehow specific to this one library's content
 rather than universal; (4) genuine firmware-level limitation specific to
 this unit, independent of anything a config/software layer can fix.
 
+**2026-08-19: crawled iOpenPod's GitHub issues for every prior album-art
+report, cross-checked our implementation against each.** Findings:
+- **#81** ("iPod Classic 6/6.5/7 gen missing cover on play screen") — the
+  known one. Fuller read of the thread than before: maintainer added
+  format `1044` to the Classic table speculatively, found it broke
+  rendering ("maybe the ipod refuses to read 1061 when 1044 is
+  present"), removed it in v1.0.53. `1044` doesn't appear anywhere in
+  our device's real SysInfoExtended format list — not a live issue for
+  us, and moot regardless now that `AssociatedFormat` filtering only
+  keeps 1055/1060/1061.
+- **#69** ("Album Art not showing, iPod Nano 7") — same thread family as
+  #81. New detail found: `maxileith`, an **iPod Classic** user (not
+  Nano), reported the exact "works in list view, not on play screen"
+  split symptom, was told to file a new issue — that new issue is #81
+  itself. maxileith's case was fully resolved by the same 1044 removal.
+  **Confirmed with the user this session: our symptom is "missing
+  everywhere" (list view included), not this list-view-only split** — so
+  this precedent's specific fix doesn't map onto our case even though
+  the device family matches.
+- **Choff3** in #81/#69 (the old 5.5th-gen "iPod Video" device from
+  earlier in this project's history) — root cause was a *different*
+  failure mode: total device misidentification (`formats=none`) from a
+  Linux permission gap, fixed by sudo. This is the precedent the earlier
+  "needs root/sudo" hypothesis (tested and ruled out, see above) was
+  based on. Doesn't apply here either — our device's identification is
+  already correct without root, confirmed again this session (see below).
+- **#89** (art deleted after sync — pruning bug), **#100** (wrong art on
+  wrong tracks), **#111** (artwork rewritten every sync — perf only,
+  works correctly for that user), **#94** (artwork never extracted from
+  certain files at all), **#9** (source files with no embedded artwork
+  silently skipped) — all different bugs than ours (deletion,
+  wrong-track mismatch, extraction failure, performance), not "byte-
+  correct data present, never renders." None apply.
+- No currently **open** GitHub issues about artwork not rendering — this
+  isn't a live, still-unresolved bug others are actively hitting on
+  current versions.
+
+**Re-tested sudo + iopenpod 1.68.1 combined** (user's specific request,
+believing this was the one untried combination): confirmed the same
+genuine additional SG_IO access as the original sudo test
+(`reported_volume_format from linux_scsi overrides 'Unknown' from
+sysinfo_extended`), clean device eject with no permission warning. Plan
+was small and safe (`to_remove=0`, 186 metadata updates). **Still no
+album art.** This closes out the last candidate found either in our own
+byte-level investigation or in upstream's issue history.
+
+**Status: still unresolved, GitHub issue history exhausted too.**
+Between this project's own byte-diff investigation and every relevant
+upstream issue (open or closed), there is no remaining known lever to
+pull without either (a) the real-iTunes-vs-ours ArtworkDB comparison
+using a *different* device/library (to rule out something specific to
+this library's content), or (b) accepting this may be a firmware-level
+limitation specific to this exact unit that no known software fix
+addresses.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
