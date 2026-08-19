@@ -2642,6 +2642,111 @@ all iPod Classic-family units or specific to this one; worth keeping in
 mind if a different Classic unit is ever synced and still shows no art
 despite this fix.
 
+**2026-08-19: mhfd fix confirmed applied via a real device sync — still
+no album art.** A no-op-ish metadata pass (188 tracks) rewrote the whole
+ArtworkDB through the patched writer; pulled it back off the device and
+confirmed byte 16 really is `6` now. No visible change. Hard reset #2
+(Menu+Select) also retried at this point, this time against genuinely
+byte-correct data (unlike hard reset #1, tried earlier against the old
+broken format-set) — still no change.
+
+**2026-08-19: real iTunesDB byte-diff (the one remaining untried
+comparison) — found real differences, tried the most plausible one, still
+no art.** Lost the real iTunes-written `iTunesDB` (only `ArtworkDB` had
+been saved before it was overwritten), so had the user do a second,
+smaller selective real-iTunes sync specifically to capture one. Diffed
+25 real tracks against our own current `iTunesDB` (8/25 matched by
+`db_track_id`; the other 17 matched by title+artist instead — confirmed
+`db_track_id` is regenerated fresh per-machine by real iTunes, not a
+stable cross-sync join key, so title+artist is the correct comparison
+key). User confirmed none of these 25 tracks are actual Store purchases
+— they're pre-existing library / stack-downloaded content, same file
+source as the rest of the library, so this sample is representative of
+the library generally, not an edge case.
+
+**Real, consistent differences found** (all 8 id-matched tracks): real
+iTunesDB has `child_count=14` per track vs our `13`; two extra string
+mhods real always writes that we never do (type 37 — ISRC, e.g.
+`umgglobal:isrc:...`; type 39 — copyright notice, e.g. `℗ 2018 ...`);
+one extra mhod we write that real doesn't (type 10, lyrics); a full
+"duplicate Store metadata" block (`movie_flag_2`, `purchased_aac_flag_2`,
+`store_track_id_2`/`store_encoder_version_2`/`store_artist_id_2`/
+`store_album_id_2`/`store_content_flag_2`) that real always populates as
+an exact low-word mirror of the already-correct primary fields, ours
+always leaves zeroed; `sort_mhod_indicators` uses a different bit
+pattern (`0x03...` vs our `0x81...`); `date_released` off by exactly 12
+hours (timezone); `artwork_size` off by 1 byte.
+
+**Important caveat found before implementing anything**:
+`itunesdb_shared/mhit_defs.py` has detailed prior research (a "Classic
+6.5G firmware snapshot" analysis) on nearly every one of these fields,
+and almost all of them — `unk0xC4`, `unk0xEC`, the `store_*_2` block,
+`purchased_aac_flag_2`, `unk0x168`, `unk0x197`, `unk0x20C` — carry the
+same note: "Not visibly promoted by the 2.0.1 MHIT loader." iopenpod's
+own maintainers already reverse-engineered the firmware loader and
+concluded the device doesn't actually read these fields — meaning even
+a perfect fix here was flagged in advance as likely inert for rendering,
+not a confident candidate. Tried anyway per explicit user direction
+("do both, we'll see which one makes the difference").
+
+**Fixed (low confidence, by design)**: added
+`_write_mhit_with_duplicate_store_fields()` (`sync_orchestrator/sync.py`),
+same monkeypatch pattern as the two ArtworkDB fixes — mirrors
+`movie_flag`/`purchased_aac_flag`/`store_track_id`/`store_encoder_version`/
+`store_artist_id`/`store_album_id`/`store_content_flag` into their real-
+iTunes-observed "_2" offsets. Deliberately narrow: only fields with a
+documented "exact mirror of an already-correct field" relationship were
+populated; `unk0xC4`/`unk0x154`/`unk0x164`/`unk0x168`/`unk0x197`/
+`unk0x20C` have no confirmed derivation and were left untouched rather
+than guessed. Had to patch `itunesdb_writer/mhlt_writer.write_mhit`
+specifically (not `mhit_writer.write_mhit`, the defining module) — same
+"caller's own bound name from a direct import doesn't see a later patch
+to the origin module" class of gotcha already documented for
+`services/common`'s non-editable venv install. 5 new tests
+(mirror-values, unpurchased-track-stays-zeroed, module-patch,
+idempotency). 117/117 sync-orchestrator tests pass.
+
+Deliberately did NOT attempt to write mhod types 37/39 (ISRC/copyright)
+or change `sort_mhod_indicators` — no known-correct value/format to
+derive them from (a single real sample isn't enough to safely guess
+either one), and both have an even weaker causal story for "gates
+artwork rendering" than the header fields already tried (ISRC/copyright
+are informational-only mhods with no established connection to
+ArtworkDB linkage; sort indicators govern alphabetical list order, and
+iopenpod's own code already has independently-verified-correct logic
+there per a comment citing "exhaustive bit-correlation across 9
+databases" — changing it without equal rigor risks breaking something
+that already works, just via a different encoding than this one real
+sample happened to use).
+
+**Live test**: real device sync required a full 6233-track/111GB re-add
+(2h46m) because the intervening real-iTunes sync reset our tool's
+device-mapping state — it no longer recognized any of our own
+already-present tracks (to_remove=0 throughout, so nothing was actually
+lost, just very slow). Confirmed via ArtworkDB pull that the "_2" fields
+are genuinely populated correctly post-sync. **Still no album art.**
+Matches the "not visibly promoted by the loader" prediction — implemented
+correctly, verified data-correct, no rendering change.
+
+**Status: still unresolved.** Every angle available without access to
+real iTunes/a Mac has now been tried: mhii chunk shape, format-set
+correctness (byte-diffed against real iTunes twice), mhfd header byte
+16 (byte-diffed and fixed), raw pixel data (decoded and visually
+confirmed correct), iTunesDB↔ArtworkDB linkage, sudo/raw-SCSI access,
+two hard resets, on-device Settings audit, and now the mhit "_2"
+duplicate Store block (byte-diffed against real iTunesDB and fixed).
+Remaining untried, in rough order of plausibility: (1) writing the
+missing ISRC/copyright mhods (37/39) — mechanically low-risk since
+they're standard string mhods using the same write path as
+title/artist/etc., but no known-correct value/format and a weak causal
+story; (2) matching real iTunes' `sort_mhod_indicators` bit encoding —
+same weak causal story, plus risk of regressing already-correct sort
+behavior; (3) the still-never-tried real ArtworkDB-vs-ours byte-diff
+using an iTunes-authored file from a *different* real device/library, to
+rule out this being somehow specific to this one library's content
+rather than universal; (4) genuine firmware-level limitation specific to
+this unit, independent of anything a config/software layer can fix.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real

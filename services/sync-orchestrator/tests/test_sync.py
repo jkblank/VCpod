@@ -20,10 +20,14 @@ from iopenpod.device.info import DeviceInfo
 from iopenpod.sync.transcoder import TranscodeOptions
 
 from sync_orchestrator import sync as sync_module
+from iopenpod.itunesdb_writer import mhlt_writer as mhlt_writer_module
+from iopenpod.itunesdb_writer.mhit_writer import TrackInfo
+
 from sync_orchestrator.sync import (
     SyncError,
     _apply_missing_artwork_index_chunk_workaround,
     _apply_mhfd_unk2_workaround,
+    _apply_mhit_duplicate_store_fields_workaround,
     _backup_progress_adapter,
     _engine_progress_adapter,
     _MHFD_UNK2_REAL_ITUNES_VALUE,
@@ -33,6 +37,7 @@ from sync_orchestrator.sync import (
     _transcode_options_for,
     _write_mhfd_original,
     _write_mhii_original,
+    _write_mhit_original,
     plan_sync,
 )
 
@@ -754,3 +759,73 @@ def test_apply_mhfd_unk2_workaround_is_idempotent(monkeypatch):
     expected = sync_module._write_mhfd_with_real_unk2([], next_mhii_id=1)
     assert result == expected
     assert struct.unpack_from("<I", result, 16)[0] == _MHFD_UNK2_REAL_ITUNES_VALUE
+
+
+# --- mhit "_2" duplicate Store metadata fields workaround --------------------
+
+
+def _make_purchased_track() -> TrackInfo:
+    return TrackInfo(
+        title="Moon",
+        location=":iPod_Control:Music:F00:ABCD.m4a",
+        filetype="m4a",
+        movie_file_flag=0,
+        purchased_aac_flag=1,
+        store_track_id=1415688729,
+        store_encoder_version=20,
+        store_artist_id=1278891155,
+        store_album_id=1415688226,
+        store_content_flag=143472,
+    )
+
+
+def test_write_mhit_with_duplicate_store_fields_mirrors_primary_values():
+    track = _make_purchased_track()
+
+    original_bytes = _write_mhit_original(track, track_id=1)
+    patched_bytes = sync_module._write_mhit_with_duplicate_store_fields(track, track_id=1)
+
+    assert original_bytes[0x194] == 0  # movie_flag_2 unset in iopenpod's own writer
+    assert original_bytes[0x195] == 0  # purchased_aac_flag_2 unset
+    assert struct.unpack_from("<Q", original_bytes, 0x1B0)[0] == 0
+
+    assert patched_bytes[0x194] == patched_bytes[0xB1]  # movie_flag_2 == movie_flag
+    assert patched_bytes[0x195] == patched_bytes[0x93]  # purchased_aac_flag_2 == purchased_aac_flag
+    assert patched_bytes[0x195] == 1
+    assert struct.unpack_from("<Q", patched_bytes, 0x1B0)[0] == 1415688729
+    assert struct.unpack_from("<Q", patched_bytes, 0x1B8)[0] == 20
+    assert struct.unpack_from("<Q", patched_bytes, 0x1C0)[0] == 1278891155
+    assert struct.unpack_from("<Q", patched_bytes, 0x1D0)[0] == 1415688226
+    assert struct.unpack_from("<Q", patched_bytes, 0x1D8)[0] == 143472
+    # Nothing outside the "_2" range should change.
+    assert patched_bytes[:0x194] == original_bytes[:0x194]
+
+
+def test_write_mhit_with_duplicate_store_fields_leaves_unpurchased_track_zeroed():
+    track = TrackInfo(title="Some Song", location=":iPod_Control:Music:F00:XYZW.m4a", filetype="m4a")
+
+    patched_bytes = sync_module._write_mhit_with_duplicate_store_fields(track, track_id=1)
+
+    assert patched_bytes[0x195] == 0
+    assert struct.unpack_from("<Q", patched_bytes, 0x1B0)[0] == 0
+
+
+def test_apply_mhit_duplicate_store_fields_workaround_patches_module(monkeypatch):
+    monkeypatch.setattr(mhlt_writer_module, "write_mhit", _write_mhit_original)
+
+    _apply_mhit_duplicate_store_fields_workaround()
+
+    assert mhlt_writer_module.write_mhit is sync_module._write_mhit_with_duplicate_store_fields
+
+
+def test_apply_mhit_duplicate_store_fields_workaround_is_idempotent(monkeypatch):
+    monkeypatch.setattr(mhlt_writer_module, "write_mhit", _write_mhit_original)
+    track = _make_purchased_track()
+
+    _apply_mhit_duplicate_store_fields_workaround()
+    _apply_mhit_duplicate_store_fields_workaround()
+
+    result = mhlt_writer_module.write_mhit(track, track_id=1)
+    expected = sync_module._write_mhit_with_duplicate_store_fields(track, track_id=1)
+    assert result == expected
+    assert struct.unpack_from("<Q", result, 0x1B0)[0] == 1415688729

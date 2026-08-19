@@ -39,6 +39,7 @@ from common.models import ProfileConfig
 from common.state import StateDB
 from iopenpod.artworkdb_writer import artworkdb_chunks as _artworkdb_chunks
 from iopenpod.device.info import DeviceInfo, resolve_itdb_path
+from iopenpod.itunesdb_writer import mhlt_writer as _mhlt_writer
 from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
 from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
 from iopenpod.podcasts.podcast_sync import build_podcast_sync_plan
@@ -469,6 +470,77 @@ def _apply_mhfd_unk2_workaround() -> None:
     _artworkdb_chunks._write_mhfd = _write_mhfd_with_real_unk2
 
 
+# iopenpod's write_mhit() never populates a widened "duplicate Store
+# metadata" block real iTunes always writes for these tracks: bytes 0x194
+# (movie_flag_2), 0x195 (purchased_aac_flag_2), and the four u64 fields at
+# 0x1B0/0x1B8/0x1C0/0x1D0/0x1D8 (store_track_id_2/store_encoder_version_2/
+# store_artist_id_2/store_album_id_2/store_content_flag_2) — all left at
+# their FieldDef default of 0. Confirmed live (2026-08-19): byte-diffed a
+# real iTunes-written iTunesDB against ours for every track shared between
+# them (8/8) — real always has these populated as an exact low-word mirror
+# of the corresponding primary field already at 0xB1/0x93/0xE0/0xE4/0xE8/
+# 0xF0/0xF4 (itunesdb_shared/mhit_defs.py's own research notes confirm
+# this: "Low words exactly mirror +0xE0..+0xF4"), ours always has them
+# zeroed. child_count is 14 in every real entry, 13 in every one of ours —
+# this missing block is exactly the accounting for that gap.
+#
+# Low-confidence fix, tried anyway per explicit request: mhit_defs.py's own
+# research notes mark nearly every one of these fields "not visibly
+# promoted by the 2.0.1 MHIT loader" — i.e. iopenpod's own prior firmware
+# reverse-engineering concluded the device doesn't actually read them, so
+# this may turn out to be real-but-inert data rather than the artwork
+# rendering fix. Deliberately narrow: only the fields with a documented,
+# unambiguous "exact mirror of an already-correct primary field" relationship
+# are populated — fields with no confirmed derivation (unk0xC4, unk0x154,
+# unk0x164, unk0x168, unk0x197, unk0x20C) are left untouched rather than
+# guessed, consistent with this project's "abort rather than guess" stance
+# elsewhere (e.g. supports_artwork=False handling).
+#
+# write_mhit is called via `from .mhit_writer import write_mhit` inside
+# itunesdb_writer/mhlt_writer.py — a direct name import, so patching
+# mhit_writer.write_mhit alone would NOT affect mhlt_writer's own
+# already-bound reference (the same "caller's own bound name doesn't
+# see a later patch to the origin module" gotcha this project already
+# documented for services/common's non-editable venv install — see
+# notes.md). Patching _mhlt_writer.write_mhit directly, the actual call
+# site, is what's required for this to take effect.
+_write_mhit_original = _mhlt_writer.write_mhit
+
+
+def _write_mhit_with_duplicate_store_fields(
+    track: Any, track_id: int, db_id_2: int = 0, capabilities: Any = None, db_version: int = 0
+) -> bytes:
+    data = bytearray(
+        _write_mhit_original(
+            track, track_id, db_id_2, capabilities=capabilities, db_version=db_version
+        )
+    )
+    if len(data) >= 0x1E0:
+        movie_flag = data[0xB1]
+        purchased_aac_flag = data[0x93]
+        store_track_id = struct.unpack_from("<I", data, 0xE0)[0]
+        store_encoder_version = struct.unpack_from("<I", data, 0xE4)[0]
+        store_artist_id = struct.unpack_from("<I", data, 0xE8)[0]
+        store_album_id = struct.unpack_from("<I", data, 0xF0)[0]
+        store_content_flag = struct.unpack_from("<I", data, 0xF4)[0]
+
+        data[0x194] = movie_flag
+        data[0x195] = purchased_aac_flag
+        struct.pack_into("<Q", data, 0x1B0, store_track_id)
+        struct.pack_into("<Q", data, 0x1B8, store_encoder_version)
+        struct.pack_into("<Q", data, 0x1C0, store_artist_id)
+        struct.pack_into("<Q", data, 0x1D0, store_album_id)
+        struct.pack_into("<Q", data, 0x1D8, store_content_flag)
+    return bytes(data)
+
+
+def _apply_mhit_duplicate_store_fields_workaround() -> None:
+    """Patch iopenpod's MHIT writer to mirror movie_flag/purchased_aac_flag/
+    store_* into their real-iTunes-observed "_2" duplicate slots — see
+    _write_mhit_with_duplicate_store_fields above for the full writeup."""
+    _mhlt_writer.write_mhit = _write_mhit_with_duplicate_store_fields
+
+
 def _register_current_device(info: DeviceInfo) -> Any:
     """EngineRequest.device_capabilities doesn't reach the actual
     write-time decision: iopenpod.sync._db_io and the real ArtworkDB
@@ -692,6 +764,7 @@ def plan_sync(
     capabilities = _register_current_device(device_info)
     _apply_missing_artwork_index_chunk_workaround()
     _apply_mhfd_unk2_workaround()
+    _apply_mhit_duplicate_store_fields_workaround()
     storage = _DeviceStorage.from_device_info(device_info)
     options = EngineOptions(
         supports_video=capabilities.supports_video,
