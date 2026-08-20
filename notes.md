@@ -3153,6 +3153,29 @@ these two framings if it matters.
 for this 6th Gen/80GB device. Next: binary-search further within that
 range on the same disposable device to narrow the actual threshold.
 
+**2026-08-20: binary search, round 1.** Switched to a much faster
+reset method between checkpoints: rather than a full `mkfs.vfat`
+reformat + rebuilding `iPod_Control/Device/SysInfo` from scratch each
+time, just delete `iPod_Control/Artwork/` and `iPod_Control/iTunes/
+iTunesDB` (+ `.backup`/`Play Counts`) directly and rewrite a fresh empty
+`iTunesDB` via `iopenpod.itunesdb_writer.mhbd_writer.write_mhbd(tracks=[])`
+— `SysInfo` survives untouched so device identity/matching needs no
+rebuilding either. Confirmed equivalent to a full reformat for this
+test's purposes (same "zero prior ArtworkDB/iTunesDB content" starting
+state).
+
+Tested the midpoint of [110MB, 397MB] — a fresh, isolated 1,100-track
+library (no removals, same methodology as before): **1,086 tracks
+synced, 236MB artwork footprint, album art displayed correctly.** Range
+narrowed to **[236MB, 397MB]**. Byte-per-track ratio has stayed
+remarkably consistent across every checkpoint so far (~0.215-0.222 MB/
+track: 110/495, 397/1842, 236/1086), suggesting whatever the ceiling
+is, it scales fairly linearly with track count for this library's
+typical art-sharing/dedup ratio — continuing to narrow via track count
+as a reasonable proxy for byte size.
+
+**Status**: continuing binary search, next target ~316MB (~1,450 tracks).
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
