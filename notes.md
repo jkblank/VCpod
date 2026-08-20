@@ -3095,6 +3095,25 @@ primary device, given a primary-device reformat costs ~2-3 hours to
 rebuild and this device family's constraints may not transfer 1:1 to
 7th Gen's larger capacity/possibly-different RAM.
 
+**2026-08-20: a second hypothesis to disentangle alongside pure size —
+orphaned/unlinked `.ithmb` data, not scale itself.** User's framing:
+since `.ithmb` files are confirmed never compacted on removal (see
+above — 488MB survived a 6,000→88 track reduction), maybe the *real*
+primary-device trigger isn't "6,000 tracks" in the abstract but the
+messy history of dozens of add/remove/resync cycles this session
+(real iTunes syncs, mapping resets, force remove+re-add tests, etc.)
+each leaving unreclaimed orphaned bytes behind — i.e. staleness/
+corruption from churn, not sheer final size.
+
+This test's growth methodology (48 → 500 → 1,882, pure adds only, zero
+removals) happens to already isolate this cleanly: if album art
+survives all the way to filling the device or exhausting the available
+library with **no removals ever performed**, that points at orphaned-
+data/history as the primary device's real problem, not track count
+itself. If it breaks at some number well before that despite the clean
+growth-only history, that's a genuine size/count ceiling independent of
+history. Continuing the scale-up test with this framing in mind.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
