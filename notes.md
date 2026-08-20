@@ -3242,6 +3242,19 @@ to this project; its album art mechanism is architecturally unrelated
 to Apple's `ArtworkDB` anyway, so this specific bug wouldn't apply
 there, but pursuing it isn't in scope.)
 
+**2026-08-20: user's new hypothesis — growth *rate* vs. total size, a
+real confound in this binary search's methodology.** Every checkpoint
+so far has been a fresh wipe followed by a single-shot full sync (0 →
+N tracks in one commit) — meaning "total on-device size" and "amount
+added in a single sync" have been perfectly confounded the entire time.
+Planned test to disentangle them: from a confirmed-working state
+(1,550 tracks/326MB), do a small *incremental* add (not a fresh wipe)
+to reach a total already confirmed to fail as a fresh single jump
+(1,619 tracks/340MB). If the incremental path succeeds where the fresh
+jump failed, that's real evidence for growth-rate over total-size. If
+it fails at the same total either way, that points back to total size
+as the actual driver.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
