@@ -3176,6 +3176,11 @@ as a reasonable proxy for byte size.
 
 **Status**: continuing binary search, next target ~316MB (~1,450 tracks).
 
+**2026-08-20: binary search, round 2.** 1,422 tracks (fresh, no
+removals), 301MB artwork footprint — **album art still displayed
+correctly.** Range narrowed to **[301MB, 397MB]**. Next target ~349MB
+(~1,650 tracks).
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
