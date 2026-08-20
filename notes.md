@@ -2924,6 +2924,95 @@ other 2 declared in SysInfoExtended (1068/1069) — iopenpod's own
 header byte at offset 16 is `6` in real iTunes output for this device,
 not iopenpod's hardcoded `2`.
 
+**2026-08-19: bug filed upstream** (TheRealSavi/iOpenPod), covering the
+full investigation above plus the mixed-payload-sizes artifact bug
+(confirmed present in pure vanilla 1.68.1 too, not our code).
+
+**2026-08-19: alternative tools researched, both ruled out.** Foobar2000
+(`reupen/ipod_manager`/`foo_dop`) and MediaMonkey both considered as
+possible iopenpod replacements. Both disqualified on architecture alone
+before even reaching functional comparison: Windows-only, GUI-driven
+(foobar2000's component also needs a proprietary Windows DLL,
+`iTunesCrypt.dll`, to build at all), neither offers a headless/scriptable
+path that fits this project's bare-metal-Linux-automation design the way
+iopenpod's Python API does. More interestingly: MediaMonkey's own forum
+has multiple independent, years-spanning threads about this *exact*
+symptom class on iPod Classic specifically ("Album art issue when
+playing iPod Classic," "Problem with album art and iPod," "Album Art not
+showing on iPod for some artists"...), with the community's own
+conclusion being "the iPod itself has inherent album art display quirks
+unrelated to [the tool]'s functionality." Combined with libgpod/gtkpod's
+own documented artwork fragility (see earlier entries), this is now
+three independent, unrelated codebases/communities all hitting some
+version of this same problem — reinforcing that this looks like a
+genuine iPod Classic firmware fragility, not an iopenpod-specific bug.
+
+**2026-08-19: two new experiments, both still negative.**
+
+1. **Source image resolution.** A community report (MediaMonkey forum,
+   separately a Reddit thread) suggested embedded art above ~1000x1000
+   causes problems, with 500x500 reported as reliable. Checked our own
+   library first: a 25% random sample (1,610 of 6,441 audio files, seed
+   42) found 1,492 with embedded art across 73 distinct resolutions;
+   1200x1200 was the single largest bucket (443 tracks, ~30% of
+   sampled-with-art) — squarely in the flagged range. A real, if
+   secondary, finding from this same sample: a meaningful number of
+   tracks have **non-square** art (177x250, 500x497, 500x489, 1338x1368,
+   etc.) — plausibly related to the still-unexplained "format 1061 has
+   mixed payload sizes [6050, 6160, 6272]" warning (6050 = clean 55x55;
+   the other two sizes are consistent with different crop/pad math on a
+   non-square source), though this wasn't independently confirmed by
+   cross-referencing which specific tracks hit that warning.
+
+   Tested directly: resized all 48 "Rise Up" playlist tracks (100% were
+   exactly 1200x1200) down to 500x500 (LANCZOS, re-embedded as JPEG),
+   originals backed up first. Two sync variants tried: (a) a normal
+   incremental sync (picked up the 50 changed-artwork tracks including
+   these 48, ~5.5 min) and (b) — see #2 below — a forced full remove +
+   re-add specifically to rule out a stale/merged ArtworkDB entry as a
+   confound. **Both: still no album art**, and the on-device art format
+   is always a fixed small size regardless of source resolution anyway
+   (iopenpod always re-encodes down to 55x55/128x128/320x320) — this
+   result makes sense in hindsight, since the source image's original
+   resolution was never going to reach the device unmodified either way.
+
+2. **Fresh vs. merged ArtworkDB entry.** Hypothesis: iopenpod's
+   "preserve existing artwork" fast path (confirmed active in the vanilla
+   GUI test above — `preserve=5768` of ~6200 entries) might be reusing/
+   carrying forward some subtly-wrong state from earlier in this
+   session's long back-and-forth, even though every individual fix
+   looked byte-correct when checked in isolation. Tested by forcing a
+   real remove-then-re-add cycle for just the 48 "Rise Up" tracks (moved
+   the files out of `library/music` temporarily, ran a real
+   `--allow-removals --execute` to remove them from the device, moved
+   them back, ran a real `--execute` to re-add) — confirmed via the
+   commit log ("Artwork — converting 49 images", not "preserving") that
+   this genuinely produced fresh, non-merged ArtworkDB entries for these
+   tracks specifically. **Still no album art.**
+
+   Worth noting for the record: this project already ran something close
+   to a full-library version of this same test twice earlier this session
+   (the 106-minute post-reformat sync, and the 165-minute full re-add
+   after the real-iTunes sync broke the device mapping) — both also
+   negative, though not with every current fix combined. A true "wipe
+   the whole device, resync everything, with every fix applied" run has
+   still never been done in one single pass; not pursued given the ~2-3
+   hour cost and the two close-precedent negative results already in hand.
+
+**2026-08-19: new behavioral clue — the device visibly attempts and
+fails to render, rather than never engaging with artwork at all.** User
+report, consistent across every sync tried so far: on the top-level
+Music/Podcasts overview menu, there's a brief moment where the
+thumbnail/preview area that normally shows something is blank, then a
+visible glitch, then it settles into a plain text summary ("6192 songs"
+/ "72 podcasts") instead of ever showing artwork. This is a materially
+different signal than silent non-engagement — it suggests firmware *is*
+attempting to read/render something from the on-device data, hitting a
+problem partway through (hence the glitch, not just "blank from the
+start"), and falling back to a text-only default. Video requested to
+document the exact sequence before deciding next steps; not yet
+root-caused.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
