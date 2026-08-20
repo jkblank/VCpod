@@ -3114,6 +3114,45 @@ itself. If it breaks at some number well before that despite the clean
 growth-only history, that's a genuine size/count ceiling independent of
 history. Continuing the scale-up test with this framing in mind.
 
+**2026-08-20: scale-up results — orphaned-data hypothesis ruled out,
+real size/count ceiling confirmed.** Grew the disposable test device via
+pure adds only, zero removals at any point, checking album art at each
+step:
+
+| Tracks on device | Artwork dir size | Album art |
+|---|---|---|
+| 48 (fresh reformat) | 11MB | **works** |
+| 495 | 110MB | **works** |
+| 1,842 | 397MB | **fails** — same blank→glitch→text-fallback pattern as every primary-device failure this whole investigation |
+
+This is decisive against the "orphaned/unlinked `.ithmb` data" theory —
+this device's entire history was clean, additive growth with no
+removals ever performed, yet it still failed. That leaves a genuine
+size/count ceiling somewhere between 110MB and 397MB (not simply
+"6,000 tracks" — this failed at under a third of the primary device's
+track count).
+
+Full breakdown of the Artwork/ directory at the 397MB failing
+checkpoint: `ArtworkDB` 1.4MB, `iTunesDB` 8.4MB (a separate file, not
+counted in the 397MB), `F1055_1/_2.ithmb` (128x128) 32MB+24MB,
+`F1061_1.ithmb` (55x55) 10MB, and **`F1060_1` through `F1060_11.ithmb`
+(320x320) — 11 separate files**, each capped at exactly 32MB (a known,
+documented Apple per-`.ithmb`-file limit, not a bug) except the last
+partial one. Every `.ithmb` file observed anywhere in this investigation
+has obeyed this same 32MB-per-file ceiling, so file count per format and
+total byte count are tightly coupled (file count ≈ total bytes ÷ 32MB)
+— this data alone can't distinguish "too many bytes" from "too many
+chunked files" as the actual mechanism, since they move together given
+a fixed chunk size. Didn't capture the exact per-format file count at
+the last *working* (110MB) checkpoint, only the total size, so a future
+test varying file-count independently of byte-total (e.g. many tiny
+unique images vs. few large ones) would be needed to fully separate
+these two framings if it matters.
+
+**Status**: real ceiling confirmed to exist somewhere in [110MB, 397MB]
+for this 6th Gen/80GB device. Next: binary-search further within that
+range on the same disposable device to narrow the actual threshold.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
