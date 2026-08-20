@@ -3181,6 +3181,53 @@ removals), 301MB artwork footprint — **album art still displayed
 correctly.** Range narrowed to **[301MB, 397MB]**. Next target ~349MB
 (~1,650 tracks).
 
+**2026-08-20: binary search, round 3.** 1,619 tracks, 340MB — **failed**
+(same blank→glitch→text-fallback pattern). Range narrowed to
+**[301MB, 340MB]**. Structural analysis of the failing 340MB
+`ArtworkDB` at user's request, looking for anything besides raw byte
+size: no literal duplicate entries (1,618 `mhli` entries for 1,618
+tracks, every `song_id` unique). `next_mhii_id`/`img_id` range (100-1717)
+confirmed reset cleanly each checkpoint, not growing unboundedly across
+repeated wipes. One real methodological artifact found: `mhfd` header
+fields `unk4`/`unk5`/`unk9`/`unk10` (the "real per-device magic/GUID"
+values normally preserved from `reference_mhfd`) are all zero in every
+checkpoint in this whole binary search, since deleting the entire
+`ArtworkDB` each time leaves nothing to preserve from — genuinely
+different from real accumulated-history syncs, but constant across both
+pass and fail checkpoints so far, so not itself the pass/fail
+differentiator. `.ithmb` file count at this failing checkpoint: 2×
+`F1055`, 10× `F1060`, 1× `F1061` = 13 files.
+
+**2026-08-20: binary search, round 4.** 1,500 tracks, 316MB — **worked**.
+Range narrowed to **[316MB, 340MB]**.
+
+**Dedup efficiency check (user's request)**: at the 316MB/1,500-track
+checkpoint, 1,352 unique images referenced across 1,499 artwork entries,
+versus 1,344 distinct (artist, album) pairs actually present in that
+test library — dedup is running at ~99% efficiency for this test, i.e.
+already essentially "one image per album." Important caveat for
+interpreting the whole binary search: this test library is a *random
+sample of individual tracks* scattered across ~1,344 different albums,
+so most albums only contribute 1 track — there's naturally almost
+nothing to dedupe. The real primary library (built from whole
+playlists/albums, not random individual tracks) has a genuinely better
+real-world dedup ratio, confirmed earlier this session: 1,983 unique
+images for 5,958 artwork entries (~3:1) on the full ~6,258-track
+library, versus ~1.1:1 in this random-sample test. **This means the
+MB-per-track ratio measured in this whole binary search is pessimistic
+for the real library** — real playlists/albums should pack meaningfully
+more tracks into the same artwork footprint than this test's numbers
+suggest, since real-world content dedupes far better than a random
+individual-track sample does.
+
+**Planned follow-up**: once this binary search finds the threshold,
+build a test library with a *fixed* number of unique albums (~1,500)
+but many more total tracks (full albums, not single random tracks) to
+directly test whether the ceiling tracks unique-image footprint (in
+which case this should still work despite far more total tracks/entries)
+or raw entry count regardless of dedup (in which case it would fail at
+a similar total-entry count despite better dedup).
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
