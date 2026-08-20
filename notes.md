@@ -3235,6 +3235,13 @@ bytes), `F1060` 320x320 (204,800 bytes), `F1061` 55x55 (6,050 bytes) —
 ~243KB per unique image across all three sizes combined, matching real
 iTunes' own set exactly (already established earlier this session).
 
+**2026-08-20: binary search, round 6.** 1,550 tracks, 326MB — **worked**.
+Range narrowed to **[326MB, 340MB]**. (Rockbox considered as a
+hypothetical alternative firmware mid-session — set aside, not relevant
+to this project; its album art mechanism is architecturally unrelated
+to Apple's `ArtworkDB` anyway, so this specific bug wouldn't apply
+there, but pursuing it isn't in scope.)
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
