@@ -1,0 +1,64 @@
+profile: testbed
+device:
+  # Same physical unit as john-copy.yaml (iPod Classic 6th Gen, 80GB,
+  # Black, model xB147) — deliberately given its own profile here rather
+  # than reusing john-copy, so this experiment's state db/library subset
+  # stay isolated from john-copy's real data. See notes.md, 2026-08-20:
+  # "total library/ArtworkDB size" hypothesis for the persistent album
+  # art investigation — a 6th Gen unit was chosen specifically because
+  # its more restricted architecture should surface a size-related
+  # firmware limit sooner than the primary 7th Gen device, if one exists.
+  # Switched to volume_label temporarily (2026-08-20) after a real
+  # mkfs.vfat reformat for the "small on-disk footprint" test below —
+  # serial matching needs cached/enriched device data that doesn't exist
+  # on a truly blank filesystem yet. Switch back to serial once this
+  # device has gone through a normal sync again.
+  match_by: volume_label
+  match_value: "TOBIES IPO"
+  # match_by: serial
+  # match_value: "000A27001303021C"
+
+# No scheduled fetch — this profile is only ever synced manually while
+# actively testing.
+fetch:
+  schedule: null
+
+# Deliberately just one small playlist, matching the exact original
+# "worked once" conditions as closely as possible (same 48-track Rise
+# Up playlist already used for the resolution/fresh-DB tests) — the
+# whole point of this profile is to keep total on-device ArtworkDB/
+# .ithmb size small.
+playlists:
+  - name: "Rise Up"
+    source: apple_music
+    source_id: "pl.20f46341ada44a549c7c56118e642cb8"
+
+# Podcasts intentionally disabled — keeps this profile's synced content
+# to exactly the one playlist above, nothing else.
+podcasts:
+  pocketcasts:
+    credentials_file: /config/secrets/pocketcasts/john.json
+  sync_unplayed_only: true
+  episode_filter: archived
+  max_episodes_per_show: 5
+  shows: []
+
+# library_root/audiobooks gets included in every profile's device sync
+# unconditionally whenever it exists (see sync.py's plan_sync) -- there's
+# no "sync nothing" shortcut, so every author currently on disk has to be
+# named explicitly (same pattern john-copy.yaml already uses). Update
+# this list if new audiobooks get added.
+audiobooks:
+  mode: exclude
+  selections:
+    - "Franz Kafka"
+    - "George Orwell"
+    - "Marcus Aurelius"
+    - "Neil Postman"
+
+# No external_library block — omitted entirely means "nothing extra."
+
+sync:
+  trigger: manual
+  transcode_format: aac
+  push_play_status_back: false

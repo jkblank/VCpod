@@ -3013,6 +3013,88 @@ start"), and falling back to a text-only default. Video requested to
 document the exact sequence before deciding next steps; not yet
 root-caused.
 
+## BREAKTHROUGH (2026-08-20): album art renders correctly on a small, genuinely-fresh library
+
+User's own hypothesis, prompted by the glitch behavior above and the
+recollection that the very first-ever test (48 tracks, blank device)
+had shown art correctly: maybe this was never a per-track data
+correctness bug at all, but a **library scale** problem — either total
+on-device data size, or a genuinely-fresh-vs-accumulated-state issue.
+
+**Investigation**: checked actual on-disk artwork footprint on the
+primary device (currently ~6,258 tracks): `iTunesDB` 16MB (well under
+iopenpod's own documented 64MB cap for this device family — that cap
+exists in `DeviceCapabilities.max_database_bytes` but is **never
+actually enforced** anywhere in the sync/write code, confirmed by
+grepping for it outside the GUI's storage-browser display — purely
+cosmetic today). But `ArtworkDB` + `.ithmb` pixel files: **610-818MB**,
+no documented cap anywhere for this. Confirmed iopenpod does not
+compact `.ithmb` files on removal — reducing a device from ~6,000 to 88
+tracks left the `.ithmb` files at ~488MB, essentially unchanged, since
+removed tracks' pixel data is never reclaimed.
+
+**Test setup**: rather than risk the primary 7th Gen device, used the
+6th Gen/80GB unit already on hand for `john-copy` (chosen deliberately
+— a more storage/RAM-constrained device family should surface a
+size-related limit sooner). Created a new `config/profiles/testbed.yaml`
+profile against the same physical device, then built a fully isolated
+`--library-root` (a temp directory containing only the 48-track "Rise
+Up" playlist, copied out of the real library) so `plan_sync`'s hardcoded
+`library_root/music` inclusion (see below) wouldn't drag in the whole
+shared library regardless of playlist scope. Did a real `mkfs.vfat -F 32`
+reformat of the device (confirmed the right one first via
+`udevadm info`'s `ID_SERIAL_SHORT`/`ID_IOPENPOD_PRODUCT_SERIAL`, matching
+`john-copy.yaml`'s configured serial) to guarantee genuinely-fresh
+`.ithmb` files, not just a lower track count. A completely blank
+filesystem needed manual bootstrapping to be recognized at all:
+`iPod_Control/` must exist as a directory (`sync_orchestrator/device.py`'s
+own candidate check, stricter than iopenpod's, additionally requires
+`iPod_Control/Device/SysInfo` to be a real file — recreated from this
+exact device's own pre-wipe SysInfo dump, captured earlier the same
+session) and `iPod_Control/iTunes/iTunesDB` must be a valid (if empty)
+mhbd file for `resolve_itdb_path`/the parser to accept at all (built via
+`iopenpod.itunesdb_writer.mhbd_writer.write_mhbd(tracks=[])` directly).
+`device.match_by` had to switch from `serial` to `volume_label`
+temporarily too — serial matching needs cached/enriched device data that
+doesn't exist on a truly blank filesystem yet.
+
+**Real, previously-undocumented architecture finding along the way**:
+`sync.py`'s `plan_sync()` hardcodes `library_root / "music"` as a
+pc_folder unconditionally (line ~691) — a profile's `playlists:` list
+only controls what gets *fetched*/what `.m3u8` files exist, not what
+raw files get scanned for the device sync. Every profile's device sync
+has always pulled in the **entire shared library**, not just that
+profile's own configured playlists — confirmed live (narrowing
+`testbed`'s scope via profile config alone left 1,887 tracks on device,
+not ~50, until the isolated `--library-root` was used instead). This
+explains why every profile's real-world sync this session always
+involved thousands of tracks regardless of how few playlists a given
+profile actually lists.
+
+**Result**: fresh 48-track sync onto the reformatted device — on-disk
+artwork footprint dropped to **11MB** (from 488-818MB) — and **album art
+displayed correctly on-device**, confirmed by the user. This is the
+first successful on-device album art render anywhere in this entire
+multi-session investigation.
+
+**Status: root cause narrowed to library scale (data size and/or
+freshness), not per-track data correctness.** Every per-track byte-level
+fix made this session (format-set filtering, mhfd header byte, iTunesDB
+"_2" duplicate fields) was still present/active in this successful test
+— none of them were reverted — so they were likely either genuinely
+correct-and-necessary all along (just not individually sufficient) or
+inert; can't fully disentangle which without more testing. **Not yet
+determined**: whether the fix is really about (a) total `.ithmb`/
+`ArtworkDB` byte size crossing some real firmware ceiling somewhere
+between 11MB and 488MB, (b) genuinely-fresh-vs-accumulated on-device
+state (the reformat, independent of final size), or (c) something else
+entirely correlated with both. Next step: scale the track count up
+gradually on this same disposable test device (not the primary 7th Gen
+unit) to find the actual threshold before attempting anything on the
+primary device, given a primary-device reformat costs ~2-3 hours to
+rebuild and this device family's constraints may not transfer 1:1 to
+7th Gen's larger capacity/possibly-different RAM.
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
