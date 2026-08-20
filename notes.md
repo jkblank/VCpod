@@ -3228,6 +3228,13 @@ which case this should still work despite far more total tracks/entries)
 or raw entry count regardless of dedup (in which case it would fail at
 a similar total-entry count despite better dedup).
 
+**2026-08-20: binary search, round 5.** 1,540 tracks, 324MB — **worked**.
+Range narrowed to **[324MB, 340MB]**. Confirmed on-device format
+resolutions directly from a saved `ArtworkDB`: `F1055` 128x128 (32,768
+bytes), `F1060` 320x320 (204,800 bytes), `F1061` 55x55 (6,050 bytes) —
+~243KB per unique image across all three sizes combined, matching real
+iTunes' own set exactly (already established earlier this session).
+
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
 **Status**: root-caused and fixed later the same session — see "Real
