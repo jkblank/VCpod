@@ -3752,3 +3752,21 @@ aliases entirely" (144GB estimated). Applied for real via
 Both real devices retain one current, restorable backup. The two
 retired id-aliases' backup history is gone for good — acceptable since
 their content was superseded, not unique.
+
+## Schema gap (2026-08-21): PocketCastsConfig requires credentials_file even when podcasts are fully disabled
+
+Hit while setting up `nienie.yaml` (a profile with no Pocket Casts
+account of its own — `podcasts.shows: []`). Commenting out
+`credentials_file` under `podcasts.pocketcasts` leaves that key as YAML
+`null`, which fails `ProfileConfig` validation outright
+(`podcasts.pocketcasts — Input should be a valid dictionary or instance
+of ProfilePocketCastsConfig`) — even though `shows: []` means the
+credentials are never actually read. `john-copy.yaml` worked around this
+the same way (reusing john's own credentials_file as an unused
+placeholder); did the same for `nienie.yaml`.
+
+**To fix properly**: make `credentials_file` optional on
+`ProfilePocketCastsConfig` (or make the whole `podcasts:` block
+optional) when `shows: []`/no podcasts are configured, so a profile
+with no Pocket Casts account doesn't need a borrowed placeholder
+credentials file at all. Not fixed yet — noted here as a backlog item.
