@@ -3829,17 +3829,19 @@ moves to a host with working IPv6), this patch is still harmless
 (IPv4-only is always a valid, if slightly less optimal, choice) but
 could be removed.
 
-## Confirmed live (2026-08-21): plan_sync()'s unconditional library_root/music scoping gap, on a real production profile
+## Confirmed live (2026-08-21): library_root/music is a shared library pool, not per-profile-scoped -- by design, not a bug
 
 The `nienie.yaml` first sync (6 playlists configured) wrote **1886
-tracks** to the device — not a 6-playlist-sized library. This is the
-`library_root/music`-is-always-a-pc_folder gap documented earlier this
-session (BREAKTHROUGH section) manifesting for real on a production
-profile, not just a testbed scoping experiment: `nienie`'s own 6
-playlists are almost certainly fine as actual on-device *playlists*
-(scoped via `library_root/playlists/nienie/`), but the device's full
-Music/Songs browse view now has the same ~1886-track pool as
-everything else ever fetched into the shared library, regardless of
-what `nienie.yaml` actually asked for. Not fixed — same open gap as
-before, just now confirmed to affect real profiles in normal use, not
-only isolated tests.
+tracks** to the device — not a 6-playlist-sized library. Corrected
+characterization (2026-08-21): this is NOT a defect. `library_root/
+music` is one shared pool across every profile, same as real iTunes'
+"entire library" device sync — playlists are curation *views* into that
+shared pool, not a content filter that shrinks what lands in the
+device's Music library. `nienie`'s 6 playlists are correctly scoped as
+actual on-device *playlists* (via `library_root/playlists/nienie/`);
+the device's full Music/Songs browse view legitimately getting the same
+~1886-track shared pool as every other device is expected behavior, not
+something to fix. (Earlier note in this file from earlier in the
+session referred to this as an "architecture gap" — that framing was
+wrong; leaving this correction here rather than editing that entry
+retroactively.)
