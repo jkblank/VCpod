@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -34,6 +35,22 @@ _AUDIO_SUFFIXES = {".m4a", ".mp3"}
 # fall back to downloading track-by-track via individual song URLs
 # (`song` type URLs just need a numeric id, which gamdl's regex supports).
 _GAMDL_PLAYLIST_ID_RE = re.compile(r"^pl\.[0-9a-z]{32}$|^pl\.u-[a-zA-Z0-9]+$")
+
+# `gamdl` runs as its own separate Python process, so fetcher_apple._net's
+# in-process IPv4-only DNS patch can't reach it directly -- prepend a
+# sitecustomize hook dir to that subprocess's own PYTHONPATH instead, which
+# Python auto-imports at interpreter startup. See _net.py and
+# _sitecustomize_ipv4/sitecustomize.py for why this is needed at all.
+_SITECUSTOMIZE_DIR = str(Path(__file__).resolve().parent / "_sitecustomize_ipv4")
+
+
+def _gamdl_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{_SITECUSTOMIZE_DIR}{os.pathsep}{existing}" if existing else _SITECUSTOMIZE_DIR
+    )
+    return env
 
 
 def _gamdl_can_parse_playlist_id(source_id: str) -> bool:
@@ -106,6 +123,7 @@ def _run_gamdl(
         ],
         capture_output=True,
         text=True,
+        env=_gamdl_subprocess_env(),
     )
     if result.returncode != 0:
         raise DownloadError(
@@ -214,6 +232,7 @@ def _run_gamdl_single_track(
         ],
         capture_output=True,
         text=True,
+        env=_gamdl_subprocess_env(),
     )
     if result.returncode != 0:
         raise DownloadError(

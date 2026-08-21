@@ -3788,3 +3788,58 @@ allowlist) instead of a single filename, then `git rm --cached` on the
 three leaked files (kept on disk, only untracked). Going forward any
 newly created real profile is covered automatically, no per-file
 gitignore edit needed.
+
+## Fixed (2026-08-21): Apple Music fetch failing with "Error fetching Apple Music homepage" — broken IPv6, not cookie expiry
+
+Every `apple_music` fetch was failing outright (`could not fetch
+playlist metadata from Apple Music: Error fetching Apple Music
+homepage`), first hit while running `nienie`'s first-ever fetch.
+Initially suspected the documented gamdl-cookie-expiry risk (open risk
+#3), but ruled that out: `get_token()` (gamdl's own internal call,
+`gamdl/api/apple_music.py`) is an unauthenticated homepage scrape,
+cookies aren't even involved in that request.
+
+**Actual root cause**: this host's IPv6 address is a non-routable ULA
+(`fd00::/8`, no real uplink), but `music.apple.com` also resolves to a
+real global IPv6 address. httpx/httpcore's async backend (used
+internally by gamdl, with no timeout override available to us) tries
+the IPv6 route first, hangs against the dead route, and hits httpx's
+hardcoded ~5s default `ConnectTimeout` before ever falling back to
+IPv4 — confirmed by direct reproduction: the exact same call succeeds
+instantly with an explicit `timeout=15`, and fails in exactly ~5.18s
+with no override. `curl` succeeds instantly on the same host because it
+implements real Happy Eyeballs; httpx/anyio's async backend doesn't
+fall back fast enough here.
+
+**Fix**: `services/fetcher-apple/src/fetcher_apple/_net.py` adds
+`force_ipv4_dns()` (monkeypatches `socket.getaddrinfo` to AF_INET-only)
+— called at the top of `api.py`'s `list_playlists`/`get_playlist_tracks`
+for the in-process metadata calls. The actual `gamdl` CLI subprocess
+(`download.py`'s `_run_gamdl`/`_run_gamdl_single_track`) is a *separate*
+Python process, unreachable by an in-process patch, so it gets the same
+fix via a `PYTHONPATH`-injected `sitecustomize.py`
+(`_sitecustomize_ipv4/`) that Python auto-imports at interpreter
+startup — `_gamdl_subprocess_env()` prepends that dir to the
+subprocess's own `PYTHONPATH`. Confirmed working end-to-end: `nienie`'s
+full fetch + device sync completed successfully after the fix (1886
+tracks added, 57m39s).
+
+If this host's IPv6 routing ever gets fixed for real (or this project
+moves to a host with working IPv6), this patch is still harmless
+(IPv4-only is always a valid, if slightly less optimal, choice) but
+could be removed.
+
+## Confirmed live (2026-08-21): plan_sync()'s unconditional library_root/music scoping gap, on a real production profile
+
+The `nienie.yaml` first sync (6 playlists configured) wrote **1886
+tracks** to the device — not a 6-playlist-sized library. This is the
+`library_root/music`-is-always-a-pc_folder gap documented earlier this
+session (BREAKTHROUGH section) manifesting for real on a production
+profile, not just a testbed scoping experiment: `nienie`'s own 6
+playlists are almost certainly fine as actual on-device *playlists*
+(scoped via `library_root/playlists/nienie/`), but the device's full
+Music/Songs browse view now has the same ~1886-track pool as
+everything else ever fetched into the shared library, regardless of
+what `nienie.yaml` actually asked for. Not fixed — same open gap as
+before, just now confirmed to affect real profiles in normal use, not
+only isolated tests.

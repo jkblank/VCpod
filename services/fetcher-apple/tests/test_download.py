@@ -29,7 +29,7 @@ def _fake_gamdl_run(library_root: Path, scratch_dir: Path):
     in the scratch dir with paths relative to that file.
     """
 
-    def _run(cmd, capture_output, text):
+    def _run(cmd, capture_output, text, env=None):
         album_dir = library_root / "Artist One" / "Album One"
         album_dir.mkdir(parents=True, exist_ok=True)
         track1 = album_dir / "01 Track One.m4a"
@@ -55,7 +55,7 @@ def _fake_gamdl_run_reordered(library_root: Path, scratch_dir: Path):
     before Track One's, the reverse of TRACKS' order.
     """
 
-    def _run(cmd, capture_output, text):
+    def _run(cmd, capture_output, text, env=None):
         album_dir = library_root / "Artist One" / "Album One"
         album_dir.mkdir(parents=True, exist_ok=True)
         track1 = album_dir / "01 Track One.m4a"
@@ -223,7 +223,7 @@ def _fake_gamdl_single_track_run(fixture_by_id: dict[str, str]):
     if the requested song id is "available", else fails like a real
     unavailable/region-restricted track would."""
 
-    def _run(cmd, capture_output, text):
+    def _run(cmd, capture_output, text, env=None):
         url = cmd[1]
         song_id = url.rsplit("/", 1)[-1]
         output_path = Path(cmd[cmd.index("--output-path") + 1])
@@ -342,7 +342,7 @@ def test_fetch_per_track_skips_already_known_without_reinvoking_gamdl(monkeypatc
     call_count = {"n": 0}
     fake_run = _fake_gamdl_single_track_run({"song-1": "track1.m4a", "song-2": "track2.m4a"})
 
-    def _counting_run(cmd, capture_output, text):
+    def _counting_run(cmd, capture_output, text, env=None):
         call_count["n"] += 1
         return fake_run(cmd, capture_output, text)
 
@@ -391,7 +391,7 @@ def test_fetch_per_track_handles_ambiguous_output_as_failure(monkeypatch, tmp_pa
         download_module, "get_playlist_tracks", lambda cookies_path, source_id: TRACKS[:1]
     )
 
-    def _run(cmd, capture_output, text):
+    def _run(cmd, capture_output, text, env=None):
         output_path = Path(cmd[cmd.index("--output-path") + 1])
         album_dir = output_path / "Artist One" / "Album One"
         album_dir.mkdir(parents=True, exist_ok=True)
@@ -416,7 +416,7 @@ def test_fetch_per_track_moves_lrc_sidecar_alongside_audio(monkeypatch, tmp_path
         download_module, "get_playlist_tracks", lambda cookies_path, source_id: TRACKS[:1]
     )
 
-    def _run(cmd, capture_output, text):
+    def _run(cmd, capture_output, text, env=None):
         output_path = Path(cmd[cmd.index("--output-path") + 1])
         album_dir = output_path / "Artist One" / "Album One"
         album_dir.mkdir(parents=True, exist_ok=True)
@@ -447,7 +447,7 @@ def test_fetch_per_track_disambiguates_colliding_filenames(monkeypatch, tmp_path
         lambda cookies_path, source_id: [TRACKS[0], collider],
     )
 
-    def _run(cmd, capture_output, text):
+    def _run(cmd, capture_output, text, env=None):
         url = cmd[1]
         song_id = url.rsplit("/", 1)[-1]
         output_path = Path(cmd[cmd.index("--output-path") + 1])
@@ -579,7 +579,7 @@ def test_fetch_playlists_syncs_every_entry_and_isolates_failures(monkeypatch, tm
     good_id = "pl." + "a" * 32
     bad_id = "pl." + "b" * 32
 
-    def _run(cmd, capture_output, text):
+    def _run(cmd, capture_output, text, env=None):
         if bad_id in " ".join(cmd):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
         return _fake_gamdl_run(library_root, library_root / "_gamdl_scratch" / good_id)(

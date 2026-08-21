@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from gamdl.api import AppleMusicApi
 
+from fetcher_apple._net import force_ipv4_dns
+
 
 @dataclass
 class PlaylistSummary:
@@ -58,6 +60,7 @@ async def _list_playlists_async(
 
 
 def list_playlists(cookies_path: str, limit: int = 100) -> list[PlaylistSummary]:
+    force_ipv4_dns()
     return asyncio.run(_list_playlists_async(cookies_path, limit=limit))
 
 
@@ -88,4 +91,5 @@ async def _get_playlist_tracks_async(
 
 
 def get_playlist_tracks(cookies_path: str, source_id: str) -> list[TrackMeta]:
+    force_ipv4_dns()
     return asyncio.run(_get_playlist_tracks_async(cookies_path, source_id))
