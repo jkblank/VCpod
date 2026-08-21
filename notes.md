@@ -3770,3 +3770,21 @@ placeholder); did the same for `nienie.yaml`.
 optional) when `shows: []`/no podcasts are configured, so a profile
 with no Pocket Casts account doesn't need a borrowed placeholder
 credentials file at all. Not fixed yet — noted here as a backlog item.
+
+## Fixed (2026-08-21): real per-user profiles were leaking into git
+
+`.gitignore` only listed `config/profiles/john.yaml` by literal name,
+despite its own comment stating the intent was for *all* real per-user
+profiles (personal playlist IDs, device serials) to stay untracked —
+only `alice.yaml`/`bob.yaml` are meant as committed templates.
+`john-copy.yaml`, `testbed.yaml`, and (freshly, this session)
+`nienie.yaml` had all been silently committed as a result. None of this
+had reached `origin/main` yet (12 commits ahead, unpushed) when found,
+so nothing actually leaked to GitHub.
+
+Fixed by switching `.gitignore` to a pattern
+(`config/profiles/*.yaml` + explicit `!alice.yaml`/`!bob.yaml`
+allowlist) instead of a single filename, then `git rm --cached` on the
+three leaked files (kept on disk, only untracked). Going forward any
+newly created real profile is covered automatically, no per-file
+gitignore edit needed.

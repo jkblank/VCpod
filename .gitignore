@@ -7,8 +7,14 @@ __pycache__/
 
 # Real per-user profiles contain personal playlist IDs and device info —
 # only the example profiles (alice.yaml, bob.yaml) are meant to be
-# committed as templates.
-config/profiles/john.yaml
+# committed as templates. Pattern (not per-file listing) so a newly
+# created real profile is covered automatically — john-copy.yaml,
+# testbed.yaml, and nienie.yaml were all previously committed by
+# mistake because only john.yaml was listed here explicitly (found and
+# fixed 2026-08-21, see notes.md).
+config/profiles/*.yaml
+!config/profiles/alice.yaml
+!config/profiles/bob.yaml
 
 config/secrets/**
 !config/secrets/.gitkeep
