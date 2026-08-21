@@ -3710,3 +3710,45 @@ off, with and without raw SCSI access) — real iTunes byte-diff
 comparison (as eventually solved the equivalent bug on the old 5.5th-gen
 device) remains the only method not yet tried, and requires access to a
 Mac/Windows machine.
+
+## Backup retention trim (2026-08-21): 313GB -> 134GB
+
+`state/device_backups/` had grown to 335.7GB actual (313GB as last
+eyeballed), almost entirely in the shared content-addressed `blobs/`
+store. Ran `resolve_retention_map()` + `prune_and_gc_backups()`
+(`services/common/src/common/backups.py`) in `dry_run=True` first to
+check the impact of decisions before deleting anything for real.
+
+**Finding**: the currently-configured global policy (`keep_last=3`,
+`max_age_days=14`) only freed 102GB (-> 233GB remaining) — nowhere near
+a ~100GB target. Even collapsing to "keep just the single newest
+snapshot per device_id, any age" still only reached 233GB. Root cause:
+this session's album-art resize (500x500) rewrote embedded tags on
+nearly every primary-library audio file, so the pre-resize and
+post-resize backup snapshots share almost no blob hashes with each
+other — the size isn't old cruft, each device's latest full-library
+snapshot is genuinely that large post-resize.
+
+Also found `state/device_backups/` had **4 device_id dirs for only 2
+physical devices**: `000A270015AE6188` and `8K6382K4V9S` are stale
+historical id-aliases (an old FireWire-GUID reading for john-copy, and
+john.yaml's own commented-out old serial for the primary device,
+respectively) — both fully superseded by the current-serial snapshot
+history under `8K13762U9ZS` (primary) and `8M74299RYMV` (john-copy).
+
+Presented three options (dry-run numbers for each) to the user; chose
+"keep both current devices' latest snapshot, drop the two stale
+aliases entirely" (144GB estimated). Applied for real via
+`prune_and_gc_backups(..., dry_run=False)`:
+- Deleted all 10 snapshots each from `000A270015AE6188` and
+  `8K6382K4V9S` (fully retired, 0 remaining).
+- Kept the 1 existing snapshot each for `8K13762U9ZS` (primary's
+  brand-new pre-reformat safety snapshot from 2026-08-20, untouched)
+  and `8M74299RYMV` (john-copy, from 2026-08-19).
+- 8,313 orphaned blobs removed, 192.0GB freed.
+- Actual `du -sh` result: **134GB** (vs. the 143.7GB dry-run estimate —
+  difference is filesystem block-size overhead on the byte-sum count).
+
+Both real devices retain one current, restorable backup. The two
+retired id-aliases' backup history is gone for good — acceptable since
+their content was superseded, not unique.
