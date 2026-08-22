@@ -3893,3 +3893,15 @@ used, re-ran and picked up the missing track cleanly. Not a code bug —
 environmental/session hygiene only — but worth remembering: `/tmp`
 scratchpad growth during heavy testbed work can cause real, confusing
 mid-sync failures on unrelated real-device syncs sharing the same host.
+
+## Investigation paused (2026-08-22)
+
+User decision after the primary-device DB-wipe result above: pause the
+album-art size-ceiling investigation here for now. Options considered
+and set aside (not ruled out, just not pursued today): binary-searching
+the primary device's own specific ceiling directly (expensive — each
+full-scale cycle took 2-3 hours today, realistically a multi-day
+effort), or provisionally treating the testbed's ~327-340MB range as a
+working proxy and keeping primary's active scope under it. Real iTunes
+byte-diff comparison (Mac/Windows) remains the one untried lever if
+this gets picked back up later.
