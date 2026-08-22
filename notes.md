@@ -3845,3 +3845,51 @@ something to fix. (Earlier note in this file from earlier in the
 session referred to this as an "architecture gap" — that framing was
 wrong; leaving this correction here rather than editing that entry
 retroactively.)
+
+## Primary device DB-wipe test result (2026-08-22): still no album art at full scale
+
+Ran the "fast device reset" fix (delete `iPod_Control/Artwork/` +
+`iPod_Control/iTunes/iTunesDB`, keep `SysInfo`, write a fresh empty
+`iTunesDB`, full resync) on the real primary 7th Gen device — the same
+fix that produced the BREAKTHROUGH success on the disposable testbed
+unit at small scale (48 tracks/11MB). This time at full scale: **6,388
+tracks, all of john's real library** (two sync passes: first wrote
+6,378 tracks then failed on one straggler audiobook track due to the
+host's own `/tmp` filling up — unrelated to iopenpod, see below — a
+follow-up sync added the missing track cleanly, ending at 6,388/6,388,
+confirmed via `iTunesDB` field `has_artwork: 1` on the previously-
+missing track).
+
+**Result: no album art rendered**, per direct user confirmation on the
+device.
+
+This is a meaningful negative result, not a wasted test:
+- Doubly rules out the "orphaned/stale DB data" hypothesis — a
+  genuinely fresh, from-scratch `iTunesDB`/`ArtworkDB` (no accumulated
+  history at all) still fails once total size is large enough, now
+  confirmed on a second, real device (not just the testbed unit).
+- Consistent with (does not contradict) the binary-search finding on
+  the testbed device: a real total `ArtworkDB`+`.ithmb` size ceiling
+  somewhere in [327MB, 340MB] for that unit. The primary device's full
+  library at 6,388 tracks is almost certainly far beyond any similarly-
+  scaled ceiling for this device/generation — real library dedup ratio
+  is better than the testbed's random-sample library (~3:1 vs ~1.1:1,
+  established earlier this session), but 6,388 tracks' worth of unique
+  album art still vastly exceeds a few hundred MB.
+- Does NOT yet establish the primary (7th Gen) device's own specific
+  ceiling — only the testbed (6th Gen/80GB) unit's ~327-340MB range is
+  measured. The two devices could plausibly have different thresholds
+  (different generation/model/firmware), not yet tested independently
+  on primary.
+
+**Unrelated finding from this same test run**: the DB-wipe test's first
+pass failed on one track ("Animal Farm" audiobook) with `[Errno 28] No
+space left on device` — traced to the HOST's own `/tmp` tmpfs being
+95%+ full, not an iopenpod/device issue. Root cause: this session's own
+`/tmp/claude-*/.../scratchpad/testbed_library_1530/` (13GB, a fully-
+documented, already-superseded binary-search test library from earlier
+today) had never been cleaned up. Deleted it, freed `/tmp` back to ~1%
+used, re-ran and picked up the missing track cleanly. Not a code bug —
+environmental/session hygiene only — but worth remembering: `/tmp`
+scratchpad growth during heavy testbed work can cause real, confusing
+mid-sync failures on unrelated real-device syncs sharing the same host.
