@@ -9,7 +9,9 @@
 > without the GUI.
 
 Both parts are done, and the PoC went well beyond the minimum bar. The
-script (`services/ipod-sync/spike/headless_write_poc.py`) ran a real full
+script (`services/ipod-sync/spike/headless_write_poc.py` — historical;
+this spike directory no longer exists, superseded by the real
+`services/sync-orchestrator/`) ran a real full
 sync against a real, connected iPod (5.5-gen "iPod Video", 160GB, serial
 `000A270015AE6188`) without ever importing or launching iOpenPod's PyQt6
 GUI:

@@ -1,5 +1,15 @@
 # Music Management Stack — Planning Doc
 
+> **This is the original design doc, kept as a historical/design record.**
+> The project is now fully built — for current status, setup, and usage,
+> see [`README.md`](README.md); for the dated log of real bugs found and
+> fixed (including places where reality diverged from this plan), see
+> [`notes.md`](notes.md). Sections below were updated in-place as
+> milestones were actually built where the real implementation differed
+> from the original plan (M6, M9, M15 in particular) — everything else
+> reflects the plan as first written and should be read as design intent,
+> not necessarily final shape.
+
 ## 1. Goal
 
 An "*arr-stack for music" that has no streaming/serving component. It acquires

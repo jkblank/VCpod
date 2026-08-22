@@ -49,6 +49,20 @@ service) — see "Running it" below.
 | M11–M14 | Web GUI (backend, profiles/playlists, podcasts/sources, sync visibility) | Not started |
 | M15 | Audiobooks via Libby/OverDrive | Acquisition is manual (Libby's automated auth paths are confirmed dead upstream, see `notes.md`) — but the merge/tag/sync pipeline from manually-downloaded MP3 parts to a real device is done, see [`services/audiobook-manager/README.md`](services/audiobook-manager/README.md) |
 
+## Known issues
+
+- **Album art can fail to render on iPod Classic-family devices (6th/7th
+  gen) once the on-device library gets large enough** — a real total
+  `ArtworkDB`/`.ithmb` size ceiling, not a data-correctness bug (every
+  byte written is independently verified correct). Investigation
+  paused as of 2026-08-22 with a confirmed range on one test device but
+  no fix yet — see
+  [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#known-limitation-album-art-on-ipod-classic-family-devices-open-investigation-paused)
+  and `notes.md`.
+- See the Status table above for the other known-incomplete pieces
+  (Spotify downloads blocked on a Premium API requirement, podcast
+  resume-position sync, alerting).
+
 ## Setup
 
 Requires [`uv`](https://docs.astral.sh/uv/) — all Python tooling runs

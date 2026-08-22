@@ -56,8 +56,9 @@ orchestration:
 - **`fetch-scheduler`** imports `run_sync` directly (in-process) to
   drive its own cron-scheduled ticks — see
   `services/fetch-scheduler/README.md`.
-- **`sync-orchestrator auto-sync`** shells out to `music-stack sync` as
-  a **subprocess** (deliberately, not an import — keeps its own
-  `iopenpod`/PyQt6 dependency tree from merging with this one) for its
-  opportunistic pre-fetch step. See
+- **`sync-orchestrator auto-sync`** (opportunistic pre-fetch step) and
+  **`sync-orchestrator full-sync`** (its whole fetch stage) both shell
+  out to `music-stack sync` as a **subprocess** (deliberately, not an
+  import — keeps `sync-orchestrator`'s own `iopenpod`/PyQt6 dependency
+  tree from merging with this one). See
   `services/sync-orchestrator/README.md`.

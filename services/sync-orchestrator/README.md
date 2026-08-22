@@ -16,6 +16,28 @@ Standalone `uv` project (not part of the root workspace) — `iopenpod`
 pulls in PyQt6, a heavy dependency kept isolated from the other services,
 same reasoning as `services/fetcher-spotify`.
 
+## Known limitation: album art on iPod Classic-family devices (open, investigation paused)
+
+On iPod Classic-family devices (6th/7th gen — the 5.5th-gen iPod Video is
+unaffected, see `docs/iopenpod-artworkdb-missing-mhii-chunk.md`), album
+art can stop rendering on-device once the total on-device
+`ArtworkDB`/`.ithmb` footprint gets large enough, even though every
+byte written is independently verified correct (right pixels, right
+format, right `iTunesDB`↔`ArtworkDB` cross-references). Confirmed via a
+real binary search on a disposable test device: a genuine size ceiling
+exists somewhere in **[327MB, 340MB]** of combined `ArtworkDB`+`.ithmb`
+data for that unit. A from-scratch `iTunesDB`/`ArtworkDB` rewrite (no
+accumulated history at all) rules out "stale/orphaned DB data" as the
+cause — confirmed on two separate physical devices, including the
+primary 7th-gen device at full scale (6,388 tracks) — but does not fix
+it once the library is large. The primary device's own specific
+threshold has not been measured independently (paused 2026-08-22, see
+`notes.md` for the full investigation and the one untried lever: a
+real-iTunes byte-diff comparison, needs a Mac/Windows machine). No code
+fix exists yet — this is a real, open firmware/protocol-level limit as
+far as this project's investigation has determined so far, not
+something `sync-orchestrator` is doing wrong.
+
 ## Usage
 
 Assumes the target iPod is already connected and mounted (auto-mounted by
@@ -50,6 +72,19 @@ by `fetcher-apple`/`podcast-manager`, not a new convention.
 device beyond `library_root/music`, the profile's playlists folder, and
 `library_root/audiobooks` (see below) — useful for an ad hoc folder
 that isn't part of the managed config.
+
+**`library_root/music` is always included, for every profile — a
+profile's own `playlists:` list controls what gets *fetched*, not what
+ends up in the device's Music/Songs library.** This is standard
+iTunes-style "entire library" device sync behavior, by design, not a
+bug: `playlists:` scopes actual on-device *playlists* (via
+`library_root/playlists/{profile}/`), which are curation views into
+that one shared pool, not a content filter on it. A profile with a
+short playlist list still gets the whole shared library synced to its
+device's general browse view. If a device genuinely needs to be scoped
+to less than the full shared library, that requires an isolated
+`--library-root` pointed at a separate directory, not a shorter
+`playlists:` list.
 
 The device is matched against the profile's `device.match_by`/
 `match_value` (`volume_label` or `serial`) — see

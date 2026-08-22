@@ -1,5 +1,13 @@
 # iopenpod: ArtworkDB `mhii` entries missing a structural chunk real iTunes always writes
 
+> **Not the same bug as the 6th/7th-gen click-wheel album-art issue** —
+> that one (still open/paused as of 2026-08-22, see `notes.md`) is a
+> total on-device `ArtworkDB`/`.ithmb` size ceiling on iPod Classic-family
+> devices, confirmed via a real binary search, unrelated to this
+> structural chunk. This doc's fix (missing `mhii` type-6 child chunk) is
+> specific to the 5.5th-gen iPod Video and is fixed and unaffected by the
+> newer finding.
+
 **Status: fixed and live-verified (2026-07-22).** Album art now displays
 correctly on the real 5.5th-gen iPod Video for every pre-existing track and
 every track synced via `fetcher-apple` (Apple Music/`gamdl`), confirmed

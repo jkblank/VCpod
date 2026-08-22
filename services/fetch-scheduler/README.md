@@ -83,3 +83,22 @@ scanned, snapshots/blobs that would be deleted, bytes freed) without
 touching anything — worth running once before flipping any of these
 booleans on for real, since backup pruning is the one destructive
 operation in this whole pipeline.
+
+**Two things worth knowing before relying on `keep_last`/`max_age_days`
+alone to bound disk usage** (found live, 2026-08-21, trimming a real
+313GB `device_backups/` down to 134GB): first, retention is keyed by
+`device_id` directory, and the *same physical device* can accumulate
+more than one `device_id` across sessions (a different serial/FireWire-
+GUID reading, or an old profile `device.match_value` that's since
+changed) — each stale alias directory gets pruned independently under
+the default policy and won't be recognized as "the same device" to
+merge with the current one, so real orphaned history can sit there
+indefinitely unless you notice and clean it up by hand. Second, because
+`blobs/` is content-addressed, a heavy re-tag of the library (e.g. an
+embedded-artwork resize touching every file) changes every file's hash
+at once — the next snapshot then shares almost no blobs with the
+previous one, so `keep_last=1` frees far less than you'd expect right
+after that kind of bulk change, since the single kept snapshot is
+itself just genuinely large. Neither is a bug in `prune_and_gc_backups`
+— both are real properties of a content-addressed store, worth knowing
+before assuming a tight `keep_last` alone caps disk usage.

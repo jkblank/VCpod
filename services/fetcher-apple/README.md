@@ -10,9 +10,29 @@ workspace member.
 `--cookies-path` is a Netscape-format cookies file exported from a real,
 logged-in Apple Music session in your browser (an extension like "Get
 cookies.txt" works) — `gamdl` uses it to authenticate as your account.
-These cookies expire every few weeks; a fetch that suddenly fails
-auth/`GamdlApiResponseError` after previously working almost always
-means it's time to re-export, not a code problem.
+These cookies expire every few weeks; a fetch that suddenly fails with
+`GamdlApiResponseError: Error fetching account info` (or the
+`media-user-token` cookie not found) after previously working almost
+always means it's time to re-export, not a code problem.
+
+**`GamdlApiResponseError: Error fetching Apple Music homepage` is a
+different failure mode and is *not* a cookie problem** — that specific
+call (`gamdl`'s internal `get_token()`) is an unauthenticated homepage
+scrape, cookies aren't involved at all. If you hit this, check network
+connectivity/DNS before touching cookies. Confirmed live (2026-08-21):
+a host with a non-routable IPv6 address (e.g. a ULA `fd00::/8` with no
+real uplink) causes this every time — `httpx`/`httpcore` (used
+internally by `gamdl`, no configurable timeout) tries the dead IPv6
+route first and hits its hardcoded ~5s `ConnectTimeout` before ever
+falling back to IPv4, while `curl` on the same host succeeds instantly
+via real Happy Eyeballs. Worked around in `fetcher_apple/_net.py`
+(`force_ipv4_dns()`, forces `socket.getaddrinfo` to AF_INET-only) —
+applied both in-process (`api.py`, for `list-playlists`/metadata calls)
+and in the separate `gamdl` CLI subprocess (`download.py`, via a
+`PYTHONPATH`-injected `sitecustomize.py` in `_sitecustomize_ipv4/`,
+since that subprocess is a different Python process the in-process
+patch can't reach). If this host's IPv6 routing ever gets fixed for
+real, the patch is still harmless to leave in place.
 
 ## Usage
 

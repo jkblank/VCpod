@@ -18,6 +18,12 @@ of `{ workspace = true }` — see "Standalone-project gotcha" below.
   `load_all_profiles`: plain `yaml.safe_load` + Pydantic validation,
   wrapped into `ConfigError` with per-field messages. `profile: global`
   is a reserved name (kept free for cross-profile maintenance state).
+  `resolve_profile_path(value, config_root)` resolves a bare profile
+  name (`config_root/profiles/{name}.yaml`) or passes through a literal
+  path unchanged, raising `ConfigError` with the list of real profile
+  names found on a typo — what `sync-orchestrator full-sync --profile
+  <name>` uses so every `--profile` flag in the project accepts either
+  form.
 - **`state.py`** — `StateDB`, one SQLite file per profile
   (`state/{profile}.sqlite`): tracks/episodes tables (source-id → local
   file map, download history) plus `fetch_runs` (last-fetch tracking for

@@ -487,12 +487,22 @@ device's own drive (mechanical vs flash — worth confirming for this
 exact iPod Classic 7th Gen/MC293 unit before assuming the speedup
 applies) would actually benefit.
 
-## iopenpod (PyPI `iopenpod==1.66.2`): 5th/5.5th-gen "iPod Video" artwork — fixed (finding below was stale)
+## iopenpod (PyPI `iopenpod==1.66.2`): 5th/5.5th-gen "iPod Video" artwork — fixed, two distinct root causes
 
-Confirmed live against a real device (`lsusb`: "ID 05ac:1209 Apple, Inc.
-iPod Video"; on-device `SysInfo`: `ModelFamily: iPod Video`) — two
-distinct bugs/gaps, found while getting the M6 headless PoC to actually
-write to this hardware:
+Real device: `lsusb` "ID 05ac:1209 Apple, Inc. iPod Video", on-device
+`SysInfo` `ModelFamily: iPod Video`. Two genuinely separate bugs had to
+be found and fixed in sequence before album art displayed — compressed
+here from a much longer blow-by-blow (several rounds of "logs/byte-data
+look correct" that each still turned out not to be the actual fix; the
+real methodology lesson is **log/byte-level evidence is not proof —
+only the device's own screen or `.ithmb` file mtimes settle it**, learned
+the hard way across ~4 false-positive rounds before landing on each real
+fix below).
+
+### Bug 1: device identity collapses to an ambiguous placeholder, silently picks the wrong (or no) format table
+
+Original two findings while getting the M6 headless PoC to write to
+this hardware:
 
 1. **`device/models.py`'s model tables have no "iPod Video" entries at
    all** — only 6th/6.5th/7th-gen "iPod Classic" (2007-2009) are fully
@@ -536,328 +546,91 @@ the native device format) — it just needs `supports_artwork=False` to
 actually reach it, which the private-registry re-resolution prevents by
 default.
 
-**Correction (2026-07-21) — the "no data at all" half of this was
-stale.** User noticed album art never actually shows up on the device
-and asked to prioritize it. Re-checked against the *actually-installed*
-`iopenpod==1.66.2` (not whatever the M6 scratchpad checkout had at the
-time) and finding #1 above no longer holds: `device/capabilities.py`
-(a separate file from `device/models.py`, easy to conflate) has a
+`device/capabilities.py` (separate from `device/models.py`) does have a
 complete, populated entry for `("iPod", "5.5th Gen")` —
-`supports_artwork=True`, `cover_art_formats=(ARTWORK_FORMATS_BY_ID[1028],
-ARTWORK_FORMATS_BY_ID[1029])`. Format IDs 1028/1029 aren't a guess —
-they're the exact IDs already seen live, unprompted, in a real sync's
-own log ("ART: encountered extra known artwork format 1028 at
-.../F1028_1.ithmb; preserving/regenerating it because it is present
-on-device") — the device's own real on-disk artwork already uses these
-formats, and iopenpod's table agrees.
-
-Finding #2 (the identity-resolution bug) was and still is exactly
-right, and turns out to be the *entire* real cause: with
+`supports_artwork=True`, `cover_art_formats=(1028, 1029)` — confirmed
+against real formats already seen unprompted in sync logs
+(`F1028_1.ithmb`/`F1029_1.ithmb` already present on-device). So finding
+#1 above (missing table data) was wrong; finding #2 (identity
+collapsing to an ambiguous placeholder) was the entire real cause: with
 `generation=""`, `capabilities_for_family_gen("iPod", "")` can't find
-the real table entry (falls through to a "do all generations of this
-family share identical capabilities?" check, correctly says no since
-1st-4th gen mono lack artwork support, returns `None`). No table data
-was ever actually missing for this device — the lookup just never got
-the right key.
+the real table entry and returns `None`.
 
-**Fix shipped**: `sync_orchestrator/sync.py`'s
-`_capabilities_with_artwork_workaround()` now corrects
+**Real fix, several rounds to land correctly**: `sync_orchestrator/
+sync.py`'s `_capabilities_with_artwork_workaround()` corrects
 `info.model_family`/`info.generation` to `"iPod"`/`"5.5th Gen"` directly
-on the `DeviceInfo` instance (a plain mutable dataclass — `enrich()`
-itself already mutates these fields internally, so this isn't a new
-kind of intrusion), instead of monkeypatching `capabilities_for_family_gen`
-to force `supports_artwork=False`. Deliberately did *not* go the
-"monkeypatch every module that imports capabilities_for_family_gen"
-route — traced the real ArtworkDB writer
-(`artworkdb_writer/rgb565.py`'s `get_artwork_format_definitions()`) and
-found it reads `model_family`/`generation` directly off the device
-object returned by `get_current_device_for_path()` (already patched),
-never through a separate `capabilities_for_family_gen` import at all —
-so fixing the identity once, in place, correctly reaches every consumer
-regardless of which module imported what. New tests
-(`test_capabilities_workaround_corrects_ipod_video_identity_and_finds_real_artwork_formats`,
-`..._falls_back_for_unrecognized_family`) exercise the *real*
-`capabilities_for_family_gen`, not a mock — proving iopenpod's own table
-resolves correctly once given the right key, not just that our code
-calls something the way we expect.
+on the mutable `DeviceInfo` instance before capabilities resolution runs
+(traced the real ArtworkDB writer and confirmed it reads identity
+straight off this object, so fixing it once here reaches every
+consumer regardless of which module imports what). The *first* shipped
+version of this fix was a complete no-op in practice — its `if` check
+compared against `model_family == "iPod Video"`, a string `enrich()`
+never actually produces (it collapses to the bare placeholder `("iPod",
+"")` first) — so every sync kept silently falling through to the
+320x320 fallback format despite logs looking clean (format-1060
+fallback writes produce the same log shape as a real native-format
+write, which is exactly why the no-op went unnoticed at first).
+Broadened to `info.model_family == "iPod Video" or (info.model_family
+== "iPod" and not info.generation)` and added a test using the *exact*
+`("iPod", "")` shape `enrich()` really produces (the original test used
+`"iPod Video"` directly and would have passed against the broken code
+too). Hardcodes `"5.5th Gen"` specifically rather than auto-detecting
+5th vs. 5.5th (they share a USB PID and only differ in
+`supports_gapless`/`db_version`; the user confirmed live which
+generation the real device is) — would need to become configurable if
+this project is ever used against a plain 5th-gen unit.
 
-Hardcodes `"5.5th Gen"` specifically (user confirmed live which
-generation the real device is) rather than auto-detecting 5th vs.
-5.5th — they share the same USB PID and only differ in
-`supports_gapless`/`db_version` in iopenpod's table, and reliable
-auto-disambiguation would need more device data than is easily
-available. Fine for the one real device this project runs against
-today; would need to become configurable or auto-detected if this
-project is ever used against a plain (non-5.5th) 5th-gen iPod Video.
-
+Confirmed via `lsusb -v`/the device's own `SysInfo`/iOpenPod's own
+`iOpenPodSysInfoAuthority` tracking file that there is genuinely no
+on-device signal anywhere that says "5.5th Gen" specifically — Apple
+reused the same USB PID across 5th/5.5th gen, so this is a real
+protocol-level ambiguity, not a bug; the hardcoded generation is this
+project's own external knowledge, unreadable from the device itself.
 **Fix idea (upstream, unchanged)**: `_restore_usb_pid_identity_if_needed()`
-still prefers a coarse/placeholder identity over a more specific cached
-one whenever they textually differ, with no check for which is actually
-more specific — worth filing as an issue/PR against
-https://github.com/TheRealSavi/iOpenPod regardless of our local fix.
+still prefers a coarser cached identity over a more specific one
+whenever they textually differ — worth filing against
+https://github.com/TheRealSavi/iOpenPod regardless of this local fix.
 
-**Correction #2 (2026-07-21, same day) — the fix above shipped but was
-a complete no-op on the real device.** First real `--execute` sync with
-the fix in place *looked* successful (logs showed 1077 images written,
-no fallback-format warning) and the user still reported "no album art."
-Deep investigation (reading the real on-device iTunesDB directly via
-`load_ipod_library()`) found 5555/5625 tracks *did* have valid non-zero
-`artwork_count`/`artwork_id_ref` — but tracing `.ithmb` file mtimes on
-the device proved every one of those valid links pointed at
-`F1028_1.ithmb`/`F1029_1.ithmb` **from the original iTunes sync
-(2025-12-28)**, untouched since. All of *this* project's new writes
-were landing in a growing pile of `F1060_*.ithmb` files (the
-`iOpenPod`-only 320×320 fallback format) instead — meaning
-`supports_artwork` was still resolving to `False` at write time despite
-the shipped fix.
+Even after the identity fix landed correctly (confirmed via
+`.ithmb` file mtimes updating and a specific track's artwork
+byte-decoded and rendered from the real on-device `ArtworkDB`, proving
+correct pixel data + correct iTunesDB↔ArtworkDB linkage end to end),
+**album art still did not display on the device's own screen.** A
+decisive bisection (checking a track whose artwork was untouched since
+the original real-iTunes sync, not written by this project's tooling at
+all) also showed no artwork — ruling out "something specific to our new
+writes" and confirming this was a regression somewhere in iOpenPod's
+writer generally, not a device limitation (this same device's artwork
+did display correctly under real iTunes before iOpenPod ever touched
+it). iOpenPod's own native GUI independently fails to identify this
+device's model too (same underlying `enrich()` bug), but unlike this
+project's headless wrapper it has no override and refuses to mount at
+all — meaning this project's patched headless path has been the only
+thing that's ever gotten this device to sync via iOpenPod at all, with
+no independent GUI sync to compare against.
 
-Root cause: `_capabilities_with_artwork_workaround()`'s own docstring
-already correctly said `enrich()` collapses this device's identity to
-the ambiguous placeholder `("iPod", "")` *before* the function ever
-runs (confirmed live, again: `enrich()`'s log line names the *live* USB
-family as `'iPod'`, not `'iPod Video'`) — but the actual `if` check
-below the docstring still read `if info.model_family == "iPod Video":`,
-a string that, per the docstring's own explanation, is never the value
-seen at that point. The condition simply never fired; every "verified"
-sync since the first fix silently fell straight through to the
-`supports_artwork=False` fallback, and the strong-looking log evidence
-("no fallback-format warning", "1077 images written") was consistent
-with that because format 1060 writes *also* produce that same shape of
-log output — the logs were never actually distinguishing the two cases.
-This is the same trap as before: log inference isn't proof, only
-on-device file state is.
+### Bug 2: missing structural chunk in every ArtworkDB `mhii` entry (root cause of the actual "no art" symptom)
 
-**Fix**: broadened the condition to
-`info.model_family == "iPod Video" or (info.model_family == "iPod" and
-not info.generation)` — the second clause is the one that actually
-matches in practice today; the first is kept only in case a future
-iopenpod version stops pre-collapsing the identity. Added a new test,
-`test_capabilities_workaround_corrects_real_enrich_output_ambiguous_placeholder`,
-using the exact `("iPod", "")` shape `enrich()` really produces — the
-existing test used `model_family="iPod Video"` directly and would have
-passed against the broken code too, which is exactly why this bug
-shipped unnoticed.
+Root-caused 2026-07-22 via a real iTunes resync of the same physical
+device (a fresh known-good reference) byte-diffed against this
+project's own recovered pre-resync backup snapshot. Full write-up,
+exact byte-diff evidence, and the fix already lives in
+[`docs/iopenpod-artworkdb-missing-mhii-chunk.md`](docs/iopenpod-artworkdb-missing-mhii-chunk.md)
+— not duplicated here. One-line summary: every `mhii` entry real iTunes
+writes has a third, always-zero 120-byte structural child chunk that
+iOpenPod's `_write_mhii()` never emits; firmware silently declines to
+render an incomplete-shaped entry rather than erroring. Fixed via
+`_apply_missing_artwork_index_chunk_workaround()` in
+`sync_orchestrator/sync.py`. Filed upstream against
+`TheRealSavi/iOpenPod`, not yet resolved there.
 
-Live-verified the capabilities resolution itself directly against the
-connected device post-fix: `supports_artwork=True`,
-`cover_art_formats=[1028, 1029]` (previously this same call returned
-`supports_artwork=False`). Re-ran a real `--execute` sync (after
-re-clearing `art_hash` in the on-device mapping again, since the
-previous wrong-format run had already re-populated it and hash-based
-diffing can't detect "same content, wrong format" — see the dedicated
-mapping-cache note elsewhere in this file if one exists, otherwise this
-is the second time this exact clearing step was needed). Result: 1089
-images written, and every one of the 37 existing `F1060_*.ithmb` files
-was logged as `encountered extra known artwork format 1060 ... preserving
-it because it is present on-device` — meaning 1060 was *not* in this
-run's `required_format_ids` set (indirect but strong evidence the
-required set was correctly `[1028, 1029]` this time; if the fallback
-had fired again, 1060 would be the required/target format, not an
-"extra" one).
-
-**Status**: root cause fixed and unit-tested against the real
-`capabilities_for_family_gen`; capabilities resolution independently
-live-verified against the connected device; a real `--execute` sync
-completed with indirect evidence (required-format-set behavior) of
-writing the correct native format this time. **Still not
-definitively proven** — the sync auto-ejected the device before
-`F1028_1.ithmb`/`F1029_1.ithmb` mtimes could be checked, and the only
-fully conclusive test is either those mtimes updating or album art
-actually visible on the device's own screen. Given two prior rounds of
-"logs look right" turning out to be wrong, do not update this status to
-"fixed" again without one of those two direct checks.
-
-**Correction #3 (2026-07-21, same day)**: both of the two direct checks
-named above were then done, and both came back positive —
-`F1028_2.ithmb`/`F1029_2/3/4.ithmb` were newly created by this sync
-(unlike `F1028_1`/`F1029_1`, untouched since the original Dec 28 2025
-iTunes sync), and one specific track's artwork (img_id 4497, RAT BOY —
-"CRASH!", format 1029) was extracted directly from the on-device
-`ArtworkDB`/`.ithmb` via `iopenpod.artworkdb_writer.artworkdb_chunks
-.read_existing_artwork`, decoded from raw RGB565, and rendered — a
-correct, genuine album cover, proving the write pipeline produces valid,
-correctly-linked artwork data at the byte level, not just "a file got
-written."
-
-**Despite that, the user directly reports album art is still not
-visible on the device's own screen** ("album art is not visible on
-device though") — checked live, same session, after the above. This is
-a real, unresolved discrepancy between provably-correct on-device data
-and what the device actually displays. Not yet checked: whether the
-user's spot check landed on one of the specific byte-verified-good
-tracks (RAT BOY — BROKEN; Less Than Jake — Just Let Me Know) versus one
-still in the "70 cleared"/`nimino`-style bucket (separately known-broken,
-`artwork_count: 0, has_artwork: 2` — a distinct issue, see elsewhere in
-this file), and whether a hard reset (Menu+Center held ~8 sec) changes
-anything — the device's on-screen artwork display may cache more
-aggressively than a script-driven sync refreshes.
-
-**Status: NOT fixed, despite every software/data-level layer checking
-out.** Do not treat file-mtime or byte-level decode evidence as
-sufficient again — this session already had two rounds of exactly that
-kind of evidence turn out to be necessary-but-not-sufficient. The only
-acceptable "fixed" signal from here is the user confirming album art
-visible on the device's own screen. Next step when picking this back
-up: check the two named tracks specifically, try the hard reset, and if
-still blank, treat the "70 cleared" bucket and/or a firmware-side
-display-cache issue as the live hypotheses (recall iOpenPod GitHub issue
-#81, "iPod Classic missing cover on play screen," closed with no
-documented fix, similar symptom on a different device family).
-
-**Correction #4 (2026-07-21, continued)**: checked both named tracks
-specifically — still blank. Went one layer deeper than before: parsed
-the real on-device iTunesDB directly (`iopenpod.itunesdb_parser.parser
-.parse_itunesdb`) and confirmed the per-track `artwork_id_ref` field
-(the iTunesDB↔ArtworkDB cross-reference, on-disk field name per
-`mhit_writer.py`) is correct for both — RAT BOY/BROKEN → img_id 4497
-(the exact id byte-decoded earlier), Less Than Jake/Just Let Me Know →
-img_id 4502, both with `artwork_count=1, has_artwork=1`. So the full
-chain — capabilities, native format, ArtworkDB bytes, iTunesDB link — is
-now confirmed correct end to end, for the *first* time in this
-investigation.
-
-**Decisive bisection test**: checked a track whose artwork lives
-entirely in the original `F1028_1`/`F1029_1.ithmb` files (untouched by
-any of this project's tooling — img_id 100, Blue Öyster Cult, from the
-Dec 28 2025 real-iTunes sync, found via `read_existing_artwork`).
-**Also shows no artwork.** This rules out "something specific to our
-new writes" — the ArtworkDB's index/metadata chunks (`mhli`/`mhii`/
-`mhod`) are rewritten wholesale by iOpenPod on every sync regardless of
-whether the underlying pixel `.ithmb` blob changed, so this old track's
-index entry was regenerated by iOpenPod this session too, even though
-its pixel bytes weren't. Confirmed with the user this device's artwork
-*did* display correctly under real iTunes before this project ever
-touched it — so the device/screen/data are provably capable, and this
-is conclusively a software regression somewhere between "real iTunes'
-writer" and "iOpenPod's writer," not a device limitation.
-
-**Independent corroboration**: the user separately tried a sync via
-iOpenPod's own native GUI (not our headless wrapper) — it also fails to
-identify this device's model (the same `enrich()` bug this project
-worked around in `_capabilities_with_artwork_workaround`). Reported
-upstream to `TheRealSavi/iOpenPod` as a bug. **Crucially, the GUI has no
-manual override — it refuses to mount the device at all when identity
-resolution fails**, unlike our headless wrapper which forces the
-identity and proceeds. This means our patched headless path is the
-*only* thing that has ever gotten this exact device to sync via
-iOpenPod at all — there is no independently-completed GUI sync to
-compare against, and never has been.
-
-**Root-caused why the identity is ambiguous, definitively**: confirmed
-via `lsusb -v` that the real device reports `idVendor 0x05ac`
-(Apple)/`idProduct 0x1209`, which even the Linux kernel's own USB
-database resolves unambiguously as "Apple, Inc. iPod Video" — this part
-is not a misread. Apple simply reused the same USB PID across 5th and
-5.5th gen, so PID alone can never disambiguate them; that's a real
-protocol-level limitation, not a bug. Checked the device's own
-`iPod_Control/Device/SysInfo` directly — it contains only `ModelFamily:
-iPod Video`, no generation field at all. Checked iOpenPod's own
-`iPod_Control/Device/iOpenPodSysInfoAuthority` tracking file — it
-records `ModelFamily`'s source as `usb_pid`, i.e. iOpenPod itself
-derived "iPod Video" from the same ambiguous USB PID, not from any
-richer cached source. **There has never been an on-device signal
-anywhere that says "5.5th Gen" specifically — that fact is purely this
-project's own external knowledge (confirmed by the user, unreadable
-from the device itself), hardcoded into the workaround.** This closes
-out the identity-resolution branch of the investigation: it's evidently
-correct as far as it can be checked, and there's no deeper on-device
-truth to compare it against.
-
-**Root cause found (2026-07-22).** The user reconsidered the "redo an
-iTunes resync" tradeoff above — since iTunes draws from the same
-underlying library, the real risk is low (recoverable via a normal
-resync afterward) and the diagnostic value was worth it, especially to
-produce something concrete for the upstream bug report. Did a fresh
-iTunes resync in a new Windows VM (the original one is gone; this is a
-different VM/install, device now shows as "VBOXUSER'S iPod" — same
-physical unit, confirmed by FireWire GUID `000A270015AE6188` matching
-throughout). iTunes only imported ~1159 of the ~5625 tracks (partial —
-cause not investigated, not relevant to this bug), but that's enough of
-a sample. Copied the resulting real-iTunes-written `ArtworkDB` +
-`iTunesDB` off the device immediately after.
-
-For the *previous*, iOpenPod-written state (the one this whole
-investigation has been checking), the device itself no longer has it
-(overwritten by the iTunes resync) — but `sync-orchestrator`'s own
-content-addressed backup (`state/device_backups/000A270015AE6188/
-snapshots/`, blobs in `state/device_backups/blobs/`) had the exact
-pre-resync snapshot, letting us recover both files byte-for-byte from
-the last real `--execute` sync.
-
-**Byte-diffed the two `ArtworkDB`s directly** using
-`iopenpod.artworkdb_parser.parser.parse_artworkdb` against both, for
-the same tracks present in both datasets (RAT BOY/BROKEN, Blue Öyster
-Cult/"(Don't Fear) The Reaper"). Found a systematic, universal
-structural difference: **every `mhii` (artwork index) entry real
-iTunes writes has a third child chunk — an `mhod` of type 6 (iOpenPod's
-own constants already name this `UNKNOWN_CONTAINER_6 = 6`, so the
-authors know it exists), wrapping a fixed 96-byte all-zero `mhaf`
-sub-chunk — that iOpenPod's `_write_mhii()`
-(`artworkdb_writer/artworkdb_chunks.py`) never writes at all.** Verified
-across every entry in both files, not just the two spot-checked tracks:
-1141/1141 entries in the iTunes-fresh `ArtworkDB` have this child;
-0/5555 entries in the iOpenPod-written one do. iOpenPod's `childCount`
-field (offset 12 in the `mhii` header) is written as 2 accordingly,
-where real iTunes always writes 3.
-
-The chunk's payload is all zero bytes, so this isn't a missing *data*
-field — every actual value (pixel data, `img_id`, `db_track_id`/
-`songId`, `src_img_size`) has already been confirmed correct earlier in
-this investigation. It's a missing *structural* element: the on-disk
-shape of every entry differs from what real iTunes produces. This is
-consistent with every symptom seen throughout this investigation —
-firmware plausibly validates the entry's structure (child count,
-expected chunk layout) and silently declines to render an
-unrecognized/incomplete-looking shape without erroring or refusing to
-store it, which is exactly "byte-correct data everywhere, nothing ever
-displays."
-
-**Fix implemented locally (2026-07-22).** Added
-`_apply_missing_artwork_index_chunk_workaround()` to
-`sync_orchestrator/sync.py`, same monkeypatch pattern as
-`_capabilities_with_artwork_workaround`: wraps
-`iopenpod.artworkdb_writer.artworkdb_chunks._write_mhii` to append the
-exact 120-byte missing chunk (hardcoded — confirmed byte-identical
-across all 1141 real-iTunes entries, so it's static, not per-track
-computed) and correctly bump `total_len`/`childCount` in the `mhii`
-header. Wired into `plan_sync` right alongside the capabilities
-workaround (persists into `execute_sync` since both run in the same
-process against the same `PlannedSync`). Idempotent by construction —
-the wrapper always delegates to `_write_mhii_original`, captured once
-at module-import time, so calling the setup function more than once in
-a process can't double-append the chunk. 3 new tests in `test_sync.py`
-(exact byte-shape match against the real original, module-patching,
-idempotency) — full suite (44 in sync-orchestrator, 127 root workspace)
-passing.
-
-Wrote up the finding for the upstream bug report at
-`docs/iopenpod-artworkdb-missing-mhii-chunk.md` (committed
-`0502ca4`) with the full byte-diff evidence, the exact missing-chunk
-hex, and the suggested fix — far more actionable than the original
-"doesn't identify the model" report alone. Not yet posted to GitHub as
-of this writing (the user's call on timing).
-
-**Live-verified end to end (2026-07-22).** Relabeled the device back to
-`JOHN'S IPOD` (iTunes' resync had renamed the volume to `VBOXUSER'S`,
-breaking `config/profiles/john.yaml`'s volume-label device match — same
-physical unit throughout, confirmed via FireWire GUID). Ran a real
-`sync-orchestrator sync --execute --allow-removals --skip-eject`
-against the real device to restore this project's full managed library
-over iTunes' partial (1159-track) resync: 4470 tracks added, 95 removed
-(iTunes-imported tracks not recognized by our own PC-side library
-index), 5534 tracks total, ~164 minutes elapsed. Verified internally
-immediately after (device left mounted via `--skip-eject` specifically
-for this): every one of 5073/5073 `ArtworkDB` entries now has the
-previously-missing type-6 `mhod` child, matching real iTunes' shape
-exactly (spot-checked RAT BOY/BROKEN: child types `[2, 2, 6]`, correctly
-linked via `artwork_id_ref`).
-
-**The user then physically confirmed on the device's own screen: album
-art displays correctly for all pre-existing music and everything synced
-via Apple Music.** This is the first time in this project's history
-album art has displayed on this device via any of our own tooling —
-genuinely fixed, not just byte-correct. Status upgraded from "not yet
-fixed" to **FIXED** for the Apple Music / pre-existing-library case.
+**Live-verified end to end (2026-07-22)**: a real full resync (4470
+added, 95 removed, 5534 tracks total) confirmed every `ArtworkDB` entry
+now has the previously-missing chunk, matching real iTunes' shape
+exactly — **and the user physically confirmed album art displays
+correctly on the device's own screen**, for the first time in this
+project's history. Status: **FIXED** for the Apple Music /
+pre-existing-library case on this device.
 
 **New, separate finding, since fixed**: the `Semaphore` playlist
 (YouTube Music, `fetcher-ytmusic`) showed no album art at all. Confirmed
@@ -1687,77 +1460,26 @@ service-selection + install is natural GUI-setup-flow work.
 
 ## M15 audiobook spike, round 2 — odmpy confirmed dead against the real account, manual extraction path found instead
 
-Revisited the M15 spike (see `music-stack-planning.md` §7a) to check
-whether anything changed since the original 2026-07-21 finding
-("`odmpy` dead, only alternative is a stale Firefox extension"). Result:
-the underlying conclusion holds, but is now precisely dated and
-empirically confirmed against a real account rather than inferred from
-old GitHub issues — and a genuinely usable manual extraction method
-turned up in the process.
+Revisited the M15 spike (see `music-stack-planning.md` §7a) and
+confirmed live against a real account (not just inferred from old
+GitHub issues) that `odmpy` is definitively dead: OverDrive killed
+`.odm` manifests entirely on 2025-01-31; the `libby`-setup-code auth
+path (the one alternative that looked promising) is rejected because
+Libby's current app no longer exposes a generic "new device"
+code-generation flow at all (confirmed by trying the one code type
+that does still generate, Sonos speaker linking — genuinely rejected by
+odmpy's request, not just expired). The other candidate
+(`bookbonobo/libby-download-extension`) is also stale. Full detail in
+git history if ever needed again; the conclusion is what matters going
+forward and is already captured in `music-stack-planning.md` §7a and
+`services/audiobook-manager/README.md`.
 
-**`odmpy` — re-investigated, still not viable, now confirmed live:**
-- `odmpy`'s `libby` subcommand (Libby-setup-code auth, distinct from the
-  dead `.odm`/legacy flow) looked promising on paper — non-interactive
-  flags (`--select`/`--selectid`/`--exportloans`), built-in audiobook
-  chapter merging, persistent settings-folder auth. But its last real
-  commit is **September 2023** — it was never updated for OverDrive's
-  subsequent changes.
-- OverDrive killed `.odm` manifests entirely on **January 31, 2025**
-  (now precisely dated, vs. the original spike's approximate "Nov
-  2024/Jan 2025"). Real user reports (odmpy issue #81) show the
-  `libby` subcommand also breaks independently (SSL certificate
-  mismatch against `sentry-read.svc.overdrive.com`'s `chip/sync`
-  endpoint), unresolved, no maintainer activity since the 2023 stall.
-- **Confirmed live against the real account** (not just inferred from
-  issue reports): read `odmpy`'s actual source — its `clone_by_code()`
-  expects a code from an *already-authenticated* Libby session, matching
-  the phone's "Copy to Another Device" dialog. But that dialog's own
-  text says the *opposite* ("if the device where you're setting up
-  Libby is displaying a code, enter it here") — i.e. the current Libby
-  app expects the **new device to display a code**, not the phone. The
-  *only* option that actually generates a code on the phone is Sonos
-  speaker linking — tried that code against `odmpy` twice (once with a
-  delay, past its ~60s TTL; once via a purpose-built script piping the
-  code in within ~3 seconds of generation, ruling out timing) — both
-  attempts got `Error: Could not log in with code.` The Sonos-scoped
-  code is genuinely rejected by odmpy's generic `chip/clone/code`
-  request, not just expired. **Libby's current app no longer exposes a
-  generic "new device" code-generation flow at all** — only specific
-  named partner integrations — which is a more fundamental
-  incompatibility than "the sync endpoint throws sometimes."
-- `bookbonobo/libby-download-extension` (Firefox extension, the other
-  option from the original spike): also stale — last commit July 2024,
-  a dependency bump only, no real feature work since.
-- `ping/libby-calibre-plugin` (same author as odmpy, newly checked):
-  not usable regardless of maintenance status — imports audiobook loans
-  as *empty placeholder records*, no actual audio, and is Calibre-GUI-only,
-  no CLI.
-
-**Manual extraction method found, real and current** (via
-`yackorder.org`'s guide, cross-checked against odmpy's own
-"MP3 part files still gettable, just no metadata" finding): Libby's
-*web* player (libbyapp.com, not the Android/iOS app) streams each
-audiobook as plain per-chapter/segment MP3 files over HTTP — visible
-and directly downloadable via browser DevTools' Network tab (filter
-"Media", play the book, copy each segment's Request URL, open in a new
-tab to download). No root, no reverse-engineering, no paid tool needed
-— just a browser and a bit of manual repetition per book (more
-segments for longer books). This only works from a **desktop/laptop
-Chromium-based browser** — DevTools' Network tab isn't available the
-same way in mobile browsers. The Android Libby app's own local offline
-cache (`Android/data/com.overdrive.mobile.android.libby/files/`) is
-genuinely encrypted and not usable this way.
-
-**Status**: `odmpy` and the Firefox extension both ruled out
-definitively (not just "probably stale"). Manual drop-in via
-desktop-browser DevTools extraction is a real, currently-working
-acquisition path — scoping the rest of the manual-drop-in workflow
-(organize → `beets-audible` tag/chapter → `sync-orchestrator`) next.
-The DevTools method being genuinely scriptable (each segment is just a
-plain HTTP URL captured from real network traffic, not a defeated DRM
-scheme) also means the earlier-proposed Playwright automation path
-looks more tractable than initially assumed, if full automation is
-wanted later.
+**Manual extraction method found, real and current**: Libby's *web*
+player (libbyapp.com, desktop Chromium only) streams each audiobook as
+plain per-chapter MP3 files over HTTP, visible and downloadable via
+browser DevTools' Network tab — no root, no DRM defeat, no paid tool.
+This is the acquisition path `services/audiobook-manager/` (below)
+picks up from.
 
 **2026-07-27 — merge/tag pipeline shipped as `services/audiobook-manager/`.**
 Built the rest of the manual drop-in workflow from the finding above:
@@ -2531,487 +2253,84 @@ threads `profile.podcasts.max_episodes_per_show` into `PodcastFeed.episode_slots
 (silently stuck at the dataclass default of 3, not the profile's
 configured value — e.g. `john.yaml` sets 5).
 
-## Album art still not rendering on iPod Classic 7th Gen — format-set fix ruled out as root cause
+## Album art on iPod Classic 7th Gen: extensive byte-level investigation, three real fixes made, none were the actual root cause (superseded — see BREAKTHROUGH below)
 
 Follow-up to "iPod Classic 7th Gen: album art wrote correctly but never
 rendered on-screen — fixed" above. That entry was premature — the format
 fix (adding the missing 1069 format, correcting 1061 to 55x55) never
 actually got a confirmed "art now visible" from the user. When finally
-checked, it still showed nothing.
+checked, it still showed nothing. **This whole section is now
+superseded**: the actual root cause (a total on-device `ArtworkDB`/
+`.ithmb` size ceiling, unrelated to per-track data correctness) was
+found later — see "BREAKTHROUGH" further down. Kept here in compressed
+form because three real, still-in-place code fixes came out of this
+investigation even though none of them explain the symptom.
 
-**Controlled A/B test (2026-08-18)**: reverted the SysInfoExtended-based
-override behind a temporary `VCPOD_DISABLE_ALBUMART_FIX` env var (not
-committed — test-only), wiped the on-device `ArtworkDB`, and did a real
-resync so the device got a *fresh* write using the old, uncorrected
-4-format set (1055/1060/1061 at the wrong 56x56/1068 — no 1069) —
-deliberately reproducing exactly what the very first Rise-Up 48-track
-test had written. **Still no artwork visible at all.** This decisively
-rules out the format mismatch as the actual blocker: both the "broken"
-and "fixed" format sets produce identical results (byte-correct data,
-nothing rendered), so whatever the original Rise-Up test's "it worked"
-report was based on, it wasn't reproducible under a controlled retest —
-possibly a misremembered/mistaken observation, or something unrelated
-(e.g. checking a different screen or a different device state) at the
-time.
+**Three real fixes made and kept** (all byte-diff-verified against a
+real iTunes-authored reference on the same physical device, all still
+in `sync_orchestrator/sync.py` as of this writing):
+1. `_filter_to_plain_album_art_formats()` — real iTunes only ever
+   writes the 3 `AssociatedFormat == 0` formats per track (1055/1060/
+   1061); the device's `SysInfoExtended` also declares 1068/1069, which
+   real iTunes never uses (they're reserved for Now Playing chrome/
+   video, not per-track thumbnails). Fixed `_read_device_album_art_formats()`
+   to filter to just the 3.
+2. `_write_mhfd_with_real_unk2()` — the ArtworkDB root header byte at
+   offset 16 is `6` in real iTunes output for this device, not
+   iopenpod's hardcoded `2` (stale comment claiming "1 until iTunes
+   4.9, 2 after" doesn't hold for this iTunes version). Hardcoded to
+   `6` rather than preserved-from-reference, since ours had already
+   overwritten the device's real value once already.
+3. `_write_mhit_with_duplicate_store_fields()` — real iTunesDB mirrors
+   several already-correct fields into an undocumented "_2" duplicate
+   block (`store_track_id_2` etc.) that our writer left zeroed. Mirrored
+   the same way, but only for fields with a confirmed exact-mirror
+   relationship — several other unknown fields in the same region were
+   deliberately left alone (iopenpod's own code comments note most of
+   them aren't "visibly promoted by the 2.0.1 MHIT loader" per prior
+   reverse-engineering, i.e. likely inert either way).
 
-The `_read_device_album_art_formats`/`_sanitize_sysinfo_extended_plist`
-fix itself is still correct and worth keeping — it makes the written
-ArtworkDB match this device's own declared capability spec exactly,
-which is objectively more correct regardless — but it is **not** the
-fix for "no album art visible." Reverted the temporary test toggle;
-the real fix stays in place as committed.
+**Every one of these was individually byte-diff-verified correct and
+still produced zero visible change** — each was tested with a real
+device sync after implementing it, none rendered art. That pattern
+(correct data, never renders) is what eventually pointed away from
+per-track data correctness entirely and toward a size-based cause.
 
-**Status: unresolved.** Every software/data layer this project can
-inspect (iTunesDB↔ArtworkDB link, mhii chunk shape, per-format dimensions
-matching the device's own spec, raw decoded pixel bytes) has now been
-verified correct twice, under two different format sets, with identical
-"nothing displays" results both times. This matches the referenced
-iOpenPod GitHub issue #81 ("iPod Classic missing cover on play screen")
-in symptom, which was closed upstream with no documented fix. Remaining
-untested hypotheses, roughly in order of cost: (1) an on-device Settings
-toggle we haven't found (unlikely but unchecked — this device's Settings
-menu hasn't been screen-by-screen audited for anything artwork-related);
-(2) a genuine firmware/model-specific limitation with non-iTunes-authored
-ArtworkDB writes on this particular unit, independent of data
-correctness; (3) a real iTunes resync (as was eventually done for the
-5.5th-gen device) to get a genuine known-good reference to byte-diff
-against — the only method that actually solved the equivalent bug for
-the other device, but requires access to a Mac/Windows machine and would
-require rebuilding the device afterward.
+**Other hypotheses tested and ruled out along the way** (kept as a
+list — full narrative for each was cut, git history has it if needed):
+non-square/high-resolution source images (resized a test playlist to
+500x500, no change; on-device art is always re-encoded to fixed small
+sizes regardless of source anyway); a stale/merged ArtworkDB entry vs.
+a genuinely fresh one (forced remove+re-add of a test playlist,
+confirmed fresh via commit log, still no art); root/sudo access for
+extra SCSI-based device identification (confirmed real additional
+access obtained, no change); two hard resets; an on-device Settings
+audit (no album-art-related toggle found); a full crawl of every
+relevant `TheRealSavi/iOpenPod` GitHub issue, open and closed (none
+matched this exact symptom — closest precedent, #81/#69, had a
+different root cause, a stray `1044` format entry, already absent from
+this project's format list); a pure-vanilla-iopenpod-under-sudo test
+(zero of this project's own code involved, real GUI, root access,
+latest release) — still no art, ruling out every remaining lever this
+project's own tooling could influence. A real upstream bug was filed
+covering the format-set and mhfd findings above (2026-08-19,
+`TheRealSavi/iOpenPod`, not yet resolved upstream). Foobar2000 and
+MediaMonkey were researched as possible iopenpod replacements and both
+ruled out on architecture alone (Windows-only, GUI-driven, no headless
+path) — MediaMonkey's own forum has multiple independent, years-old
+threads about this exact symptom class on iPod Classic, reinforcing
+this as a device-level quirk rather than an iopenpod-specific bug.
 
-**2026-08-18: set aside by user request**, not pursued further this
-session. No settings toggle found on-device either (checked, none
-regarding album art); a restart didn't change anything. Next session
-picking this up should start from hypothesis (3) above (real iTunes
-resync + byte-diff) since inspection alone is exhausted.
+**One real behavioral clue that turned out to matter**: on every sync
+tried, the device visibly *attempts* to render something (a brief blank
+moment, then a glitch, then falls back to a plain text summary) rather
+than never engaging with artwork at all — a materially different signal
+than silent non-engagement, and consistent with the eventual finding
+(firmware hits a real ceiling partway through loading, rather than
+never trying).
 
-**2026-08-18 (later, same day): hypothesis (3) executed — a second real
-root cause found and fixed.** User did a real iTunes sync of this exact
-device (music added via actual iTunes, artwork confirmed visible
-on-device) — the known-good reference this investigation needed.
-Pulled the resulting `iPod_Control/Artwork/ArtworkDB` off the device and
-parsed it with iopenpod's own `artworkdb_parser` (no need to write any
-new parsing code). Byte/structure-diffed every one of 7 real per-track
-`mhli` entries against what this project's own SysInfoExtended-derived
-format list would produce.
-
-**Finding**: real iTunes writes exactly 3 image formats per track —
-1055 (128x128), 1060 (320x320), 1061 (55x55) — 7/7 entries, no
-exceptions, plus the already-known mhod-type-6 filler chunk. The
-device's SysInfoExtended `AlbumArt` array actually declares 5 formats
-(also 1068 and 1069), which is why `_read_device_album_art_formats()`
-was previously passing all 5 through. The plist explains the split:
-1055/1060/1061 all have `AssociatedFormat=0`; 1068 has
-`AssociatedFormat=2`; 1069 has `AssociatedFormat=131072` +
-`ExcludedFormats=-1`. Nonzero `AssociatedFormat` marks a format as
-reserved for something other than normal per-track thumbnails (Now
-Playing chrome, video, whatever `2`/`131072` denote) — iTunes itself
-never writes them into a track's artwork entry. This project's code was
-treating all 5 as *required* per iopenpod's own
-`_required_device_format_ids()` (`sorted(device_formats.keys())`),
-which meant every entry we wrote had 2 extra mhod containers real
-firmware doesn't expect — the same "wrong on-device shape" failure mode
-as the missing-mhod6-chunk bug, just an addition instead of an
-omission, and layered on top of it.
-
-**Fixed**: `_read_device_album_art_formats()`
-(`sync_orchestrator/sync.py`) now filters to `AssociatedFormat == 0`
-entries only via a new `_filter_to_plain_album_art_formats()` helper
-(re-scans the raw plist directly since iopenpod's own
-`extract_image_formats()` doesn't preserve `AssociatedFormat`). Verified
-directly against the live device's real SysInfoExtended file (not just
-the test fixture): resolves to exactly `{1055: (128,128), 1060:
-(320,320), 1061: (55,55)}`, matching the real iTunes-written set
-byte-for-byte. Test suite updated: the two format-override tests that
-previously asserted 1069 survives were wrong under this new
-understanding and now assert it's filtered out; added a new test with
-the full real 5-format shape reproducing the real device's actual
-`AssociatedFormat` values. 109/109 sync-orchestrator tests pass.
-
-**Status**: fix implemented and unit-verified against live device data;
-not yet confirmed to actually produce visible album art on a real
-`--execute` sync (the previous fix attempt also looked individually
-correct and still didn't render — this one is the first fix backed by a
-genuine byte-diff against known-good iTunes output, not inference from
-static tables/docs, but only a real device test settles it). Next step:
-run a real sync and visually check the device.
-
-**2026-08-18 (later, same day): full real sync run (6250 tracks, ~107
-minutes, device previously reformatted so no backup taken) — still no
-album art.** A new, previously-unseen warning appeared during this run:
-`format 1061 has mixed payload sizes [6050, 6160]; using most common
-6050 in MHIF` (8/5790 tracks got a 55x56 payload instead of 55x55 —
-minor, separate bug, not investigated further since it's far too small
-a fraction to explain total absence of art across the whole library).
-
-Pulled the freshly-written on-device ArtworkDB and byte-diffed it
-directly against the real iTunes reference captured earlier (same
-device). Result: the two format lists are now **exactly** identical —
-both write 1055/1060/1061 only, matching mhod count (4), matching mhod
-type/order, matching every per-format dimension/imgSize field, mhod6
-present in 100% of entries. The earlier raw-byte diff of a first entry
-that looked alarming (~9 differing ranges) turned out to be entirely
-expected per-track data (songId, srcImgSize, ithmbOffset — genuinely
-different between the real device's first synced track and ours) once
-compared field-by-field via the structured parser instead of raw offsets.
-
-**A second real difference found, at the top level this time**: the
-mhfd (ArtworkDB root header) byte at offset 16 — `mhfd_parser.py` calls
-it `unk2`, commented "1 until iTunes 4.9, 2 after iTunes 4.9" — is `6`
-in the real file, `2` in ours. `artworkdb_writer/artworkdb_chunks.py`'s
-`_write_mhfd()` hardcodes this to `2` unconditionally; the stale comment
-clearly doesn't hold for whatever iTunes version wrote this device's
-real file. iopenpod already preserves two *other* header ranges (bytes
-32:48 and 60:68) from a `reference_mhfd` (the device's own prior
-ArtworkDB, read before being overwritten) for what's presumably the
-same "firmware validates header continuity" reason — this one range was
-simply missed.
-
-**Fixed**: new workaround, same pattern as the mhod6-chunk fix —
-`_write_mhfd_with_real_unk2()` wraps iopenpod's `_write_mhfd()` and
-force-writes `6` at byte 16 (`sync_orchestrator/sync.py`). Deliberately
-*hardcoded* rather than "preserve from reference_mhfd" (the more elegant
-option in principle, matching how the other two ranges are already
-handled) — because the device's on-device ArtworkDB has already been
-overwritten once this session with our own wrong `2`, so preserving
-"whatever's already there" would now just perpetuate our own bug
-forever instead of correcting it. 4 new tests added (override,
-reference-ignored, module-patch, idempotency — mirroring the existing
-mhod6-workaround test shape). 113/113 sync-orchestrator tests pass.
-
-**Status**: fix implemented and unit-verified; not yet tested against a
-real device — the current sync already ran and wrote the wrong value
-before this fix landed, so the device needs a re-sync (any run, even a
-no-op metadata pass, will rewrite the mhfd header via the patched
-writer) before checking again. Only one real device/one real data point
-observed for the `6` value — unverified whether this is fixed across
-all iPod Classic-family units or specific to this one; worth keeping in
-mind if a different Classic unit is ever synced and still shows no art
-despite this fix.
-
-**2026-08-19: mhfd fix confirmed applied via a real device sync — still
-no album art.** A no-op-ish metadata pass (188 tracks) rewrote the whole
-ArtworkDB through the patched writer; pulled it back off the device and
-confirmed byte 16 really is `6` now. No visible change. Hard reset #2
-(Menu+Select) also retried at this point, this time against genuinely
-byte-correct data (unlike hard reset #1, tried earlier against the old
-broken format-set) — still no change.
-
-**2026-08-19: real iTunesDB byte-diff (the one remaining untried
-comparison) — found real differences, tried the most plausible one, still
-no art.** Lost the real iTunes-written `iTunesDB` (only `ArtworkDB` had
-been saved before it was overwritten), so had the user do a second,
-smaller selective real-iTunes sync specifically to capture one. Diffed
-25 real tracks against our own current `iTunesDB` (8/25 matched by
-`db_track_id`; the other 17 matched by title+artist instead — confirmed
-`db_track_id` is regenerated fresh per-machine by real iTunes, not a
-stable cross-sync join key, so title+artist is the correct comparison
-key). User confirmed none of these 25 tracks are actual Store purchases
-— they're pre-existing library / stack-downloaded content, same file
-source as the rest of the library, so this sample is representative of
-the library generally, not an edge case.
-
-**Real, consistent differences found** (all 8 id-matched tracks): real
-iTunesDB has `child_count=14` per track vs our `13`; two extra string
-mhods real always writes that we never do (type 37 — ISRC, e.g.
-`umgglobal:isrc:...`; type 39 — copyright notice, e.g. `℗ 2018 ...`);
-one extra mhod we write that real doesn't (type 10, lyrics); a full
-"duplicate Store metadata" block (`movie_flag_2`, `purchased_aac_flag_2`,
-`store_track_id_2`/`store_encoder_version_2`/`store_artist_id_2`/
-`store_album_id_2`/`store_content_flag_2`) that real always populates as
-an exact low-word mirror of the already-correct primary fields, ours
-always leaves zeroed; `sort_mhod_indicators` uses a different bit
-pattern (`0x03...` vs our `0x81...`); `date_released` off by exactly 12
-hours (timezone); `artwork_size` off by 1 byte.
-
-**Important caveat found before implementing anything**:
-`itunesdb_shared/mhit_defs.py` has detailed prior research (a "Classic
-6.5G firmware snapshot" analysis) on nearly every one of these fields,
-and almost all of them — `unk0xC4`, `unk0xEC`, the `store_*_2` block,
-`purchased_aac_flag_2`, `unk0x168`, `unk0x197`, `unk0x20C` — carry the
-same note: "Not visibly promoted by the 2.0.1 MHIT loader." iopenpod's
-own maintainers already reverse-engineered the firmware loader and
-concluded the device doesn't actually read these fields — meaning even
-a perfect fix here was flagged in advance as likely inert for rendering,
-not a confident candidate. Tried anyway per explicit user direction
-("do both, we'll see which one makes the difference").
-
-**Fixed (low confidence, by design)**: added
-`_write_mhit_with_duplicate_store_fields()` (`sync_orchestrator/sync.py`),
-same monkeypatch pattern as the two ArtworkDB fixes — mirrors
-`movie_flag`/`purchased_aac_flag`/`store_track_id`/`store_encoder_version`/
-`store_artist_id`/`store_album_id`/`store_content_flag` into their real-
-iTunes-observed "_2" offsets. Deliberately narrow: only fields with a
-documented "exact mirror of an already-correct field" relationship were
-populated; `unk0xC4`/`unk0x154`/`unk0x164`/`unk0x168`/`unk0x197`/
-`unk0x20C` have no confirmed derivation and were left untouched rather
-than guessed. Had to patch `itunesdb_writer/mhlt_writer.write_mhit`
-specifically (not `mhit_writer.write_mhit`, the defining module) — same
-"caller's own bound name from a direct import doesn't see a later patch
-to the origin module" class of gotcha already documented for
-`services/common`'s non-editable venv install. 5 new tests
-(mirror-values, unpurchased-track-stays-zeroed, module-patch,
-idempotency). 117/117 sync-orchestrator tests pass.
-
-Deliberately did NOT attempt to write mhod types 37/39 (ISRC/copyright)
-or change `sort_mhod_indicators` — no known-correct value/format to
-derive them from (a single real sample isn't enough to safely guess
-either one), and both have an even weaker causal story for "gates
-artwork rendering" than the header fields already tried (ISRC/copyright
-are informational-only mhods with no established connection to
-ArtworkDB linkage; sort indicators govern alphabetical list order, and
-iopenpod's own code already has independently-verified-correct logic
-there per a comment citing "exhaustive bit-correlation across 9
-databases" — changing it without equal rigor risks breaking something
-that already works, just via a different encoding than this one real
-sample happened to use).
-
-**Live test**: real device sync required a full 6233-track/111GB re-add
-(2h46m) because the intervening real-iTunes sync reset our tool's
-device-mapping state — it no longer recognized any of our own
-already-present tracks (to_remove=0 throughout, so nothing was actually
-lost, just very slow). Confirmed via ArtworkDB pull that the "_2" fields
-are genuinely populated correctly post-sync. **Still no album art.**
-Matches the "not visibly promoted by the loader" prediction — implemented
-correctly, verified data-correct, no rendering change.
-
-**Status: still unresolved.** Every angle available without access to
-real iTunes/a Mac has now been tried: mhii chunk shape, format-set
-correctness (byte-diffed against real iTunes twice), mhfd header byte
-16 (byte-diffed and fixed), raw pixel data (decoded and visually
-confirmed correct), iTunesDB↔ArtworkDB linkage, sudo/raw-SCSI access,
-two hard resets, on-device Settings audit, and now the mhit "_2"
-duplicate Store block (byte-diffed against real iTunesDB and fixed).
-Remaining untried, in rough order of plausibility: (1) writing the
-missing ISRC/copyright mhods (37/39) — mechanically low-risk since
-they're standard string mhods using the same write path as
-title/artist/etc., but no known-correct value/format and a weak causal
-story; (2) matching real iTunes' `sort_mhod_indicators` bit encoding —
-same weak causal story, plus risk of regressing already-correct sort
-behavior; (3) the still-never-tried real ArtworkDB-vs-ours byte-diff
-using an iTunes-authored file from a *different* real device/library, to
-rule out this being somehow specific to this one library's content
-rather than universal; (4) genuine firmware-level limitation specific to
-this unit, independent of anything a config/software layer can fix.
-
-**2026-08-19: crawled iOpenPod's GitHub issues for every prior album-art
-report, cross-checked our implementation against each.** Findings:
-- **#81** ("iPod Classic 6/6.5/7 gen missing cover on play screen") — the
-  known one. Fuller read of the thread than before: maintainer added
-  format `1044` to the Classic table speculatively, found it broke
-  rendering ("maybe the ipod refuses to read 1061 when 1044 is
-  present"), removed it in v1.0.53. `1044` doesn't appear anywhere in
-  our device's real SysInfoExtended format list — not a live issue for
-  us, and moot regardless now that `AssociatedFormat` filtering only
-  keeps 1055/1060/1061.
-- **#69** ("Album Art not showing, iPod Nano 7") — same thread family as
-  #81. New detail found: `maxileith`, an **iPod Classic** user (not
-  Nano), reported the exact "works in list view, not on play screen"
-  split symptom, was told to file a new issue — that new issue is #81
-  itself. maxileith's case was fully resolved by the same 1044 removal.
-  **Confirmed with the user this session: our symptom is "missing
-  everywhere" (list view included), not this list-view-only split** — so
-  this precedent's specific fix doesn't map onto our case even though
-  the device family matches.
-- **Choff3** in #81/#69 (the old 5.5th-gen "iPod Video" device from
-  earlier in this project's history) — root cause was a *different*
-  failure mode: total device misidentification (`formats=none`) from a
-  Linux permission gap, fixed by sudo. This is the precedent the earlier
-  "needs root/sudo" hypothesis (tested and ruled out, see above) was
-  based on. Doesn't apply here either — our device's identification is
-  already correct without root, confirmed again this session (see below).
-- **#89** (art deleted after sync — pruning bug), **#100** (wrong art on
-  wrong tracks), **#111** (artwork rewritten every sync — perf only,
-  works correctly for that user), **#94** (artwork never extracted from
-  certain files at all), **#9** (source files with no embedded artwork
-  silently skipped) — all different bugs than ours (deletion,
-  wrong-track mismatch, extraction failure, performance), not "byte-
-  correct data present, never renders." None apply.
-- No currently **open** GitHub issues about artwork not rendering — this
-  isn't a live, still-unresolved bug others are actively hitting on
-  current versions.
-
-**Re-tested sudo + iopenpod 1.68.1 combined** (user's specific request,
-believing this was the one untried combination): confirmed the same
-genuine additional SG_IO access as the original sudo test
-(`reported_volume_format from linux_scsi overrides 'Unknown' from
-sysinfo_extended`), clean device eject with no permission warning. Plan
-was small and safe (`to_remove=0`, 186 metadata updates). **Still no
-album art.** This closes out the last candidate found either in our own
-byte-level investigation or in upstream's issue history.
-
-**Status: still unresolved, GitHub issue history exhausted too.**
-Between this project's own byte-diff investigation and every relevant
-upstream issue (open or closed), there is no remaining known lever to
-pull without either (a) the real-iTunes-vs-ours ArtworkDB comparison
-using a *different* device/library (to rule out something specific to
-this library's content), or (b) accepting this may be a firmware-level
-limitation specific to this exact unit that no known software fix
-addresses.
-
-**2026-08-19: attempted sudo + pure vanilla iopenpod (GUI, none of our
-sync-orchestrator patches) — inconclusive, real unrelated bug found.**
-User correctly pointed out the earlier sudo re-test used our own
-sync-orchestrator CLI, which unconditionally applies all three of our
-workarounds — the "sudo + zero modifications" combination was never
-actually tried. Launched the real iOpenPod GUI under sudo instead.
-
-Hit a real, separate problem first: iopenpod's Linux device scanner
-looks in `/run/media/{getpass.getuser()}`, which resolves to `root`
-under sudo (even with `-E`, since the username lookup is UID-based, not
-`$USER`) — so it was looking in `/run/media/root` while the device is
-actually mounted at `/run/media/john`. A symlink workaround was rejected
-by the write-safety guard ("refusing orphan cleanup through a symlink or
-reparse point") — deliberate, sensible protection. Fixed by mounting the
-same block device a second time directly at `/run/media/root/JOHN_S
-IPOD` (`sudo mount /dev/sda1 ...` — safe, a block device can be mounted
-at multiple points simultaneously).
-
-Once detected, the GUI's own device resolution (unpatched) reported
-`formats=[1055, 1060, 1061, 1068]` — iopenpod's static
-`CLASSIC_COVER_ART_FORMATS` table, i.e. **not** 1069, but **still
-includes 1068** (which our own `AssociatedFormat`-filtered override
-excludes). A genuinely different format set than what our own pipeline
-produces — would have been an interesting real comparison point.
-
-**But the sync never completed.** It aborted during iTunesDB
-serialization: `iPod u32 Mac timestamps end at local 2040-02-06
-06:28:15; cannot encode 4070901600 ... (track: 'Linux Matters' – '87:
-Herding online exams')`. Root cause: that one MP3's embedded ID3 `TDRC`
-tag was literally `2099-01` — a garbage placeholder date baked into the
-file by the podcast's own host/CMS (confirmed: `podcast-manager` never
-writes `TDRC` at all, and our own state db already has the correct real
-value, `Tue, 04 Aug 2026 15:30:00 +0000`, for this exact episode — so
-this is upstream bad data carried through untouched, not a bug in our
-code). Scanned all 61 local podcast MP3s for the same pattern — only
-this one file was affected. Our own sync-orchestrator never hits this
-because `_load_podcast_feeds()` builds episode dates from our state db,
-not by reading each file's embedded tags the way the vanilla GUI's
-generic folder scan does — so this bug is real, but inert for every
-sync path this project's own tooling actually uses. Fixed the one file's
-`TDRC` directly to `2026-08-04` (the correct value) so the vanilla-GUI
-test can be retried without hitting this again.
-
-**Status of the sudo+vanilla test itself: not yet actually completed** —
-this run never got far enough to write anything to the device (aborted
-before commit), so "no album art" observed afterward reflects the
-*previous* successful write (our own sync-orchestrator, with all three
-fixes), not this run. Needs a retry now that the blocking file is fixed.
-
-**2026-08-19: retried after the fix — sudo + pure vanilla iopenpod 1.68.1
-completed a real write. Still no album art.** This is the decisive test:
-zero of this project's code involved (real GUI, unpatched), root/raw-SCSI
-access confirmed genuinely active, latest upstream release. Rules out
-every remaining hypothesis this project's tooling can influence —
-identification, permissions, our three ArtworkDB/iTunesDB workarounds,
-and iopenpod version currency all ruled out as the cause. What's left is
-either a genuine upstream iopenpod bug specific to this device/generation
-that no combination of correct data has been able to trigger correctly,
-or a firmware-level limitation on this exact unit.
-
-**Decision: filing an upstream GitHub issue** on TheRealSavi/iOpenPod.
-This project's own investigation (byte-diffed real iTunes output at
-every layer: ArtworkDB entry shape, mhfd header, iTunesDB "_2" Store
-fields; decoded raw pixel data and visually confirmed correct; confirmed
-iTunesDB↔ArtworkDB linkage; ruled out permissions/sudo/hard-resets/
-device-identification) is itself a genuinely valuable bug report — two
-real, previously-undocumented findings came out of it that would help
-any iPod Classic 7th Gen user of iopenpod even independent of whether
-they explain this specific symptom: (1) real iTunes only ever writes
-the 3 `AssociatedFormat=0` formats (1055/1060/1061) per track, never the
-other 2 declared in SysInfoExtended (1068/1069) — iopenpod's own
-`CLASSIC_COVER_ART_FORMATS` table still includes 1068; (2) the mhfd
-header byte at offset 16 is `6` in real iTunes output for this device,
-not iopenpod's hardcoded `2`.
-
-**2026-08-19: bug filed upstream** (TheRealSavi/iOpenPod), covering the
-full investigation above plus the mixed-payload-sizes artifact bug
-(confirmed present in pure vanilla 1.68.1 too, not our code).
-
-**2026-08-19: alternative tools researched, both ruled out.** Foobar2000
-(`reupen/ipod_manager`/`foo_dop`) and MediaMonkey both considered as
-possible iopenpod replacements. Both disqualified on architecture alone
-before even reaching functional comparison: Windows-only, GUI-driven
-(foobar2000's component also needs a proprietary Windows DLL,
-`iTunesCrypt.dll`, to build at all), neither offers a headless/scriptable
-path that fits this project's bare-metal-Linux-automation design the way
-iopenpod's Python API does. More interestingly: MediaMonkey's own forum
-has multiple independent, years-spanning threads about this *exact*
-symptom class on iPod Classic specifically ("Album art issue when
-playing iPod Classic," "Problem with album art and iPod," "Album Art not
-showing on iPod for some artists"...), with the community's own
-conclusion being "the iPod itself has inherent album art display quirks
-unrelated to [the tool]'s functionality." Combined with libgpod/gtkpod's
-own documented artwork fragility (see earlier entries), this is now
-three independent, unrelated codebases/communities all hitting some
-version of this same problem — reinforcing that this looks like a
-genuine iPod Classic firmware fragility, not an iopenpod-specific bug.
-
-**2026-08-19: two new experiments, both still negative.**
-
-1. **Source image resolution.** A community report (MediaMonkey forum,
-   separately a Reddit thread) suggested embedded art above ~1000x1000
-   causes problems, with 500x500 reported as reliable. Checked our own
-   library first: a 25% random sample (1,610 of 6,441 audio files, seed
-   42) found 1,492 with embedded art across 73 distinct resolutions;
-   1200x1200 was the single largest bucket (443 tracks, ~30% of
-   sampled-with-art) — squarely in the flagged range. A real, if
-   secondary, finding from this same sample: a meaningful number of
-   tracks have **non-square** art (177x250, 500x497, 500x489, 1338x1368,
-   etc.) — plausibly related to the still-unexplained "format 1061 has
-   mixed payload sizes [6050, 6160, 6272]" warning (6050 = clean 55x55;
-   the other two sizes are consistent with different crop/pad math on a
-   non-square source), though this wasn't independently confirmed by
-   cross-referencing which specific tracks hit that warning.
-
-   Tested directly: resized all 48 "Rise Up" playlist tracks (100% were
-   exactly 1200x1200) down to 500x500 (LANCZOS, re-embedded as JPEG),
-   originals backed up first. Two sync variants tried: (a) a normal
-   incremental sync (picked up the 50 changed-artwork tracks including
-   these 48, ~5.5 min) and (b) — see #2 below — a forced full remove +
-   re-add specifically to rule out a stale/merged ArtworkDB entry as a
-   confound. **Both: still no album art**, and the on-device art format
-   is always a fixed small size regardless of source resolution anyway
-   (iopenpod always re-encodes down to 55x55/128x128/320x320) — this
-   result makes sense in hindsight, since the source image's original
-   resolution was never going to reach the device unmodified either way.
-
-2. **Fresh vs. merged ArtworkDB entry.** Hypothesis: iopenpod's
-   "preserve existing artwork" fast path (confirmed active in the vanilla
-   GUI test above — `preserve=5768` of ~6200 entries) might be reusing/
-   carrying forward some subtly-wrong state from earlier in this
-   session's long back-and-forth, even though every individual fix
-   looked byte-correct when checked in isolation. Tested by forcing a
-   real remove-then-re-add cycle for just the 48 "Rise Up" tracks (moved
-   the files out of `library/music` temporarily, ran a real
-   `--allow-removals --execute` to remove them from the device, moved
-   them back, ran a real `--execute` to re-add) — confirmed via the
-   commit log ("Artwork — converting 49 images", not "preserving") that
-   this genuinely produced fresh, non-merged ArtworkDB entries for these
-   tracks specifically. **Still no album art.**
-
-   Worth noting for the record: this project already ran something close
-   to a full-library version of this same test twice earlier this session
-   (the 106-minute post-reformat sync, and the 165-minute full re-add
-   after the real-iTunes sync broke the device mapping) — both also
-   negative, though not with every current fix combined. A true "wipe
-   the whole device, resync everything, with every fix applied" run has
-   still never been done in one single pass; not pursued given the ~2-3
-   hour cost and the two close-precedent negative results already in hand.
-
-**2026-08-19: new behavioral clue — the device visibly attempts and
-fails to render, rather than never engaging with artwork at all.** User
-report, consistent across every sync tried so far: on the top-level
-Music/Podcasts overview menu, there's a brief moment where the
-thumbnail/preview area that normally shows something is blank, then a
-visible glitch, then it settles into a plain text summary ("6192 songs"
-/ "72 podcasts") instead of ever showing artwork. This is a materially
-different signal than silent non-engagement — it suggests firmware *is*
-attempting to read/render something from the on-device data, hitting a
-problem partway through (hence the glitch, not just "blank from the
-start"), and falling back to a text-only default. Video requested to
-document the exact sequence before deciding next steps; not yet
-root-caused.
+Superseded write-up ends here — see "BREAKTHROUGH (2026-08-20)" below
+for the actual root cause and fix.
 
 ## BREAKTHROUGH (2026-08-20): album art renders correctly on a small, genuinely-fresh library
 
@@ -3153,7 +2472,7 @@ these two framings if it matters.
 for this 6th Gen/80GB device. Next: binary-search further within that
 range on the same disposable device to narrow the actual threshold.
 
-**2026-08-20: binary search, round 1.** Switched to a much faster
+**2026-08-20: binary search, rounds 1-6.** Switched to a much faster
 reset method between checkpoints: rather than a full `mkfs.vfat`
 reformat + rebuilding `iPod_Control/Device/SysInfo` from scratch each
 time, just delete `iPod_Control/Artwork/` and `iPod_Control/iTunes/
@@ -3161,45 +2480,32 @@ iTunesDB` (+ `.backup`/`Play Counts`) directly and rewrite a fresh empty
 `iTunesDB` via `iopenpod.itunesdb_writer.mhbd_writer.write_mhbd(tracks=[])`
 — `SysInfo` survives untouched so device identity/matching needs no
 rebuilding either. Confirmed equivalent to a full reformat for this
-test's purposes (same "zero prior ArtworkDB/iTunesDB content" starting
-state).
+test's purposes. All checkpoints below are fresh-wipe, no-removals,
+same methodology as the scale-up test above:
 
-Tested the midpoint of [110MB, 397MB] — a fresh, isolated 1,100-track
-library (no removals, same methodology as before): **1,086 tracks
-synced, 236MB artwork footprint, album art displayed correctly.** Range
-narrowed to **[236MB, 397MB]**. Byte-per-track ratio has stayed
-remarkably consistent across every checkpoint so far (~0.215-0.222 MB/
-track: 110/495, 397/1842, 236/1086), suggesting whatever the ceiling
-is, it scales fairly linearly with track count for this library's
-typical art-sharing/dedup ratio — continuing to narrow via track count
-as a reasonable proxy for byte size.
+| Round | Tracks | Artwork size | Result |
+|---|---|---|---|
+| 1 | 1,086 | 236MB | works |
+| 2 | 1,422 | 301MB | works |
+| 3 | 1,619 | 340MB | **fails** |
+| 4 | 1,500 | 316MB | works |
+| 5 | 1,540 | 324MB | works |
+| 6 | 1,550 | 326MB | works |
 
-**Status**: continuing binary search, next target ~316MB (~1,450 tracks).
+Byte-per-track ratio stayed remarkably consistent throughout
+(~0.215-0.222 MB/track), suggesting the ceiling scales fairly linearly
+with track count for this library's typical art-sharing/dedup ratio —
+final narrowed range: **[326MB, 340MB]**.
 
-**2026-08-20: binary search, round 2.** 1,422 tracks (fresh, no
-removals), 301MB artwork footprint — **album art still displayed
-correctly.** Range narrowed to **[301MB, 397MB]**. Next target ~349MB
-(~1,650 tracks).
-
-**2026-08-20: binary search, round 3.** 1,619 tracks, 340MB — **failed**
-(same blank→glitch→text-fallback pattern). Range narrowed to
-**[301MB, 340MB]**. Structural analysis of the failing 340MB
-`ArtworkDB` at user's request, looking for anything besides raw byte
-size: no literal duplicate entries (1,618 `mhli` entries for 1,618
-tracks, every `song_id` unique). `next_mhii_id`/`img_id` range (100-1717)
-confirmed reset cleanly each checkpoint, not growing unboundedly across
-repeated wipes. One real methodological artifact found: `mhfd` header
-fields `unk4`/`unk5`/`unk9`/`unk10` (the "real per-device magic/GUID"
-values normally preserved from `reference_mhfd`) are all zero in every
-checkpoint in this whole binary search, since deleting the entire
-`ArtworkDB` each time leaves nothing to preserve from — genuinely
-different from real accumulated-history syncs, but constant across both
-pass and fail checkpoints so far, so not itself the pass/fail
-differentiator. `.ithmb` file count at this failing checkpoint: 2×
-`F1055`, 10× `F1060`, 1× `F1061` = 13 files.
-
-**2026-08-20: binary search, round 4.** 1,500 tracks, 316MB — **worked**.
-Range narrowed to **[316MB, 340MB]**.
+Structural analysis of the failing 340MB `ArtworkDB` (round 3, user's
+request) found nothing besides raw byte size that could explain it: no
+duplicate entries, `img_id` range resets cleanly each checkpoint, no
+unbounded growth across wipes. `mhfd` header fields `unk4`/`unk5`/
+`unk9`/`unk10` (normally preserved per-device magic/GUID values) are
+zero in every checkpoint here since a full `ArtworkDB` wipe leaves
+nothing to preserve from — a real methodological difference from
+accumulated-history syncs, but constant across pass and fail
+checkpoints alike, so not the differentiator.
 
 **Dedup efficiency check (user's request)**: at the 316MB/1,500-track
 checkpoint, 1,352 unique images referenced across 1,499 artwork entries,
@@ -3220,40 +2526,37 @@ more tracks into the same artwork footprint than this test's numbers
 suggest, since real-world content dedupes far better than a random
 individual-track sample does.
 
-**Planned follow-up**: once this binary search finds the threshold,
-build a test library with a *fixed* number of unique albums (~1,500)
-but many more total tracks (full albums, not single random tracks) to
-directly test whether the ceiling tracks unique-image footprint (in
-which case this should still work despite far more total tracks/entries)
-or raw entry count regardless of dedup (in which case it would fail at
-a similar total-entry count despite better dedup).
+**Planned follow-up (not yet done)**: build a test library with a
+*fixed* number of unique albums (~1,500) but many more total tracks
+(full albums, not single random tracks) to directly test whether the
+ceiling tracks unique-image footprint or raw entry count regardless of
+dedup.
 
-**2026-08-20: binary search, round 5.** 1,540 tracks, 324MB — **worked**.
-Range narrowed to **[324MB, 340MB]**. Confirmed on-device format
-resolutions directly from a saved `ArtworkDB`: `F1055` 128x128 (32,768
-bytes), `F1060` 320x320 (204,800 bytes), `F1061` 55x55 (6,050 bytes) —
-~243KB per unique image across all three sizes combined, matching real
-iTunes' own set exactly (already established earlier this session).
+Confirmed on-device format resolutions directly from a saved
+`ArtworkDB` during round 5: `F1055` 128x128 (32,768 bytes), `F1060`
+320x320 (204,800 bytes), `F1061` 55x55 (6,050 bytes) — ~243KB per
+unique image across all three sizes combined, matching real iTunes'
+own set exactly. (Rockbox was considered as a hypothetical alternative
+firmware mid-session and set aside as out of scope — its album art
+mechanism is architecturally unrelated to Apple's `ArtworkDB` anyway,
+so this bug wouldn't apply there regardless.)
 
-**2026-08-20: binary search, round 6.** 1,550 tracks, 326MB — **worked**.
-Range narrowed to **[326MB, 340MB]**. (Rockbox considered as a
-hypothetical alternative firmware mid-session — set aside, not relevant
-to this project; its album art mechanism is architecturally unrelated
-to Apple's `ArtworkDB` anyway, so this specific bug wouldn't apply
-there, but pursuing it isn't in scope.)
-
-**2026-08-20: user's new hypothesis — growth *rate* vs. total size, a
-real confound in this binary search's methodology.** Every checkpoint
-so far has been a fresh wipe followed by a single-shot full sync (0 →
-N tracks in one commit) — meaning "total on-device size" and "amount
-added in a single sync" have been perfectly confounded the entire time.
-Planned test to disentangle them: from a confirmed-working state
-(1,550 tracks/326MB), do a small *incremental* add (not a fresh wipe)
-to reach a total already confirmed to fail as a fresh single jump
-(1,619 tracks/340MB). If the incremental path succeeds where the fresh
-jump failed, that's real evidence for growth-rate over total-size. If
-it fails at the same total either way, that points back to total size
-as the actual driver.
+**2026-08-20: growth *rate* vs. total size — tested, inconclusive,
+treated as ruled out.** Every checkpoint above was a fresh wipe
+followed by a single-shot full sync (0 → N tracks in one commit),
+confounding "total on-device size" with "amount added in a single
+sync." Tested by adding incrementally (no wipe) from the confirmed-
+working 1,550-track/326MB state, aiming to land at the already-known-
+failing 1,619-track/340MB point without a fresh wipe. The test
+overshot its target — landed at 1,715 tracks/364MB instead, past the
+known failure boundary — and the result was **no album art**. Since
+364MB is past the boundary either way, this doesn't cleanly distinguish
+the two hypotheses (a clean disambiguating test was never re-run), but
+it's mild evidence against growth-rate mattering — a smaller
+incremental delta still failed at roughly the same total-size boundary.
+User accepted this reasoning and declared growth-rate ruled out;
+binary search paused at **[326MB, 340MB]** for this device, not
+resumed since (see "Investigation paused" near the end of this file).
 
 ## RESOLVED: a single podcast episode's played state reverted unexpectedly
 
@@ -3666,50 +2969,6 @@ unsubscribed+pruned earlier this session — correctly excluded, not a
 bug. The ~10 unmatched episodes are mostly older Louis Theroux ones,
 likely just outside their feed's own returned item window — an inherent
 RSS-source limitation, not something to fix further.
-
-## Album art: "needs root/sudo" hypothesis tested and ruled out
-
-User found a real precedent (iOpenPod GitHub issue #81): two users with
-the identical "byte-correct artwork, nothing displays" symptom fixed it
-by running iopenpod with sudo — their logs showed `SG_IO: permission
-denied` and a USB vendor-control "Pipe error" during device
-identification without root, causing a fallback to a generic/wrong
-identity (`method=usb_pid`, `formats=none`) and, in turn, the wrong
-artwork format table.
-
-**Confirmed our situation has the same underlying permission gap**:
-`/dev/sda`/`/dev/sda1` are `root:disk`, and this user isn't in the
-`disk` group — genuinely no raw SG_IO access, exactly matching the
-issue. The project's own `61-iopenpod.rules` udev rule is deliberately
-scoped to avoid granting raw-disk access at all (its own comment: "...
-without granting users raw-disk access") — it only exposes the product
-serial via a udev property.
-
-**Tested live**: cleared the artwork cache, ran a real device sync
-under `sudo -E`. Confirmed sudo genuinely unlocked additional access
-our normal runs never get — `enrich`'s log showed `reported_volume_format`
-now sourced from a live `linux_scsi` (real SG_IO) probe, overriding the
-file-based value, and the device ejected cleanly with no permission
-warning for the first time all session. So this wasn't a no-op run —
-real additional identification data was obtained.
-
-**Album art still did not display.** This decisively rules out "needs
-root for correct identification" as the cause here — unlike the GitHub
-issue's reporters, our identity resolution was already fully correct
-without root (confirmed extensively already: family/generation/model/
-capacity, and the device's own authoritative `AlbumArt` format spec read
-directly from `SysInfoExtended`), so there was no wrong-identity/wrong-
-format-table failure mode for extra SCSI access to fix. The sudo test
-confirms this rather than leaving it assumed.
-
-**Status: still unresolved**, and this closes out the last cheap,
-untested lever. Every remaining layer this project's tooling can
-inspect or influence has now been verified correct under multiple
-independent conditions (two format sets, mhii-chunk workaround on and
-off, with and without raw SCSI access) — real iTunes byte-diff
-comparison (as eventually solved the equivalent bug on the old 5.5th-gen
-device) remains the only method not yet tried, and requires access to a
-Mac/Windows machine.
 
 ## Backup retention trim (2026-08-21): 313GB -> 134GB
 

@@ -55,9 +55,14 @@ uv run podcast-manager push-play-status \
 Pushes locally-recorded device play state (written by
 `sync-orchestrator`'s read-back after a real device sync — see
 `playstate.py`) back to Pocket Casts, so listening progress on the iPod
-shows up in the Pocket Casts app too. Not run automatically anywhere
-yet — a manual step after a sync, or worth wiring into a scheduled job
-yourself if you want it hands-off.
+shows up in the Pocket Casts app too. Manual invocation as shown above
+is still supported, but `sync-orchestrator` already calls this
+automatically as a subprocess after every real `--execute` sync
+(`sync`, `full-sync`, and `auto-sync` alike), gated on that profile's
+own `sync.push_play_status_back: true` — see `_maybe_push_play_status`
+in `sync-orchestrator/cli.py`. Resume-*position* sync (as opposed to
+played/unplayed status) doesn't reliably work via this path — Pocket
+Casts' API silently no-ops `played_up_to` — see `notes.md`.
 
 ## Credentials file format
 
