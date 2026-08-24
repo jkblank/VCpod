@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from common.playlist import write_m3u8
+from common.models import PlaylistEntry
+from common.playlist import prune_removed_playlists, write_m3u8
 
 
 def test_write_m3u8_creates_parent_dirs_and_header(tmp_path: Path):
@@ -78,3 +79,46 @@ def test_write_m3u8_unknown_mode_raises(tmp_path: Path):
     target = tmp_path / "playlist.m3u8"
     with pytest.raises(ValueError):
         write_m3u8(target, ["/library/music/A/01 Song.m4a"], mode="bogus")
+
+
+def _playlist_entry(name: str) -> PlaylistEntry:
+    return PlaylistEntry(name=name, source="apple_music", source_id=f"pl.{name}")
+
+
+def test_prune_removed_playlists_deletes_stale_file_not_in_current_list(tmp_path: Path):
+    profile_dir = tmp_path / "nienie"
+    profile_dir.mkdir(parents=True)
+    write_m3u8(profile_dir / "Chill.m3u8", ["/library/music/A/01 Song.m4a"])
+    write_m3u8(profile_dir / "Every1.m3u8", ["/library/music/B/02 Song.m4a"])
+
+    pruned = prune_removed_playlists(
+        [_playlist_entry("Chill")], playlists_root=tmp_path, profile_name="nienie"
+    )
+
+    assert pruned == ["Every1"]
+    assert (profile_dir / "Chill.m3u8").is_file()
+    assert not (profile_dir / "Every1.m3u8").exists()
+
+
+def test_prune_removed_playlists_keeps_everything_when_all_still_configured(tmp_path: Path):
+    profile_dir = tmp_path / "john"
+    profile_dir.mkdir(parents=True)
+    write_m3u8(profile_dir / "Chill.m3u8", [])
+    write_m3u8(profile_dir / "Workout.m3u8", [])
+
+    pruned = prune_removed_playlists(
+        [_playlist_entry("Chill"), _playlist_entry("Workout")],
+        playlists_root=tmp_path,
+        profile_name="john",
+    )
+
+    assert pruned == []
+    assert (profile_dir / "Chill.m3u8").is_file()
+    assert (profile_dir / "Workout.m3u8").is_file()
+
+
+def test_prune_removed_playlists_missing_profile_dir_returns_nothing(tmp_path: Path):
+    pruned = prune_removed_playlists(
+        [_playlist_entry("Chill")], playlists_root=tmp_path, profile_name="nobody"
+    )
+    assert pruned == []

@@ -111,6 +111,12 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         total_present += p
         total_ep_failed += f
 
+    if result.pruned_playlists:
+        print(
+            f"[music] Pruned {len(result.pruned_playlists)} stale playlist file(s) no "
+            f"longer in the profile: {', '.join(sorted(result.pruned_playlists))}"
+        )
+
     if result.pruned_unsubscribed:
         shows = sorted({e.show_name for e in result.pruned_unsubscribed})
         print(

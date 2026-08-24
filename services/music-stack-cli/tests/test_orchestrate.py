@@ -125,6 +125,73 @@ def _profile_config() -> ProfileConfig:
     )
 
 
+def test_run_sync_prunes_stale_playlist_no_longer_in_profile(monkeypatch, tmp_path):
+    # Found live 2026-08-24: a playlist removed from a profile's own
+    # playlists: list never got removed from the device, because nothing
+    # in the fetch pipeline ever deleted its stale .m3u8 — sync-
+    # orchestrator's device sync only ever sees whatever files physically
+    # exist under playlists_root/{profile}. run_sync (the fetch stage)
+    # must prune it, since it's the only thing that owns this folder.
+    config_root = tmp_path / "config"
+    (config_root / "secrets").mkdir(parents=True)
+    global_config = _global_config(tmp_path, oauth_file="/config/secrets/ytmusic_oauth.json")
+    profile = _profile_config()  # only configures "Semaphore" (ytmusic)
+    roots = resolve_roots(tmp_path / "library", tmp_path / "state", "john")
+
+    (roots.playlists_root / "john").mkdir(parents=True)
+    (roots.playlists_root / "john" / "Semaphore.m3u8").write_text("#EXTM3U\n")
+    (roots.playlists_root / "john" / "Every1.m3u8").write_text("#EXTM3U\n")
+
+    monkeypatch.setattr(orchestrate_module, "fetch_ytmusic_playlists", lambda entries, **kw: [])
+
+    result = run_sync(
+        profile=profile,
+        global_config=global_config,
+        config_root=config_root,
+        roots=roots,
+        sources={"ytmusic"},
+        playlist_names=None,
+        show_selectors=None,
+    )
+
+    assert result.pruned_playlists == ["Every1"]
+    assert (roots.playlists_root / "john" / "Semaphore.m3u8").is_file()
+    assert not (roots.playlists_root / "john" / "Every1.m3u8").exists()
+
+
+def test_run_sync_playlist_narrowing_does_not_prune_the_rest(monkeypatch, tmp_path):
+    # --playlist narrowing is a per-run scope choice, not an "I removed
+    # this from my profile" signal -- must not prune a still-configured
+    # playlist just because this particular run didn't fetch it.
+    config_root = tmp_path / "config"
+    (config_root / "secrets").mkdir(parents=True)
+    global_config = _global_config(tmp_path, oauth_file="/config/secrets/ytmusic_oauth.json")
+    profile = _profile_config()
+    profile = profile.model_copy(
+        update={"playlists": [_entry("Semaphore", "ytmusic"), _entry("Chill", "ytmusic")]}
+    )
+    roots = resolve_roots(tmp_path / "library", tmp_path / "state", "john")
+
+    (roots.playlists_root / "john").mkdir(parents=True)
+    (roots.playlists_root / "john" / "Semaphore.m3u8").write_text("#EXTM3U\n")
+    (roots.playlists_root / "john" / "Chill.m3u8").write_text("#EXTM3U\n")
+
+    monkeypatch.setattr(orchestrate_module, "fetch_ytmusic_playlists", lambda entries, **kw: [])
+
+    result = run_sync(
+        profile=profile,
+        global_config=global_config,
+        config_root=config_root,
+        roots=roots,
+        sources={"ytmusic"},
+        playlist_names=["Semaphore"],  # narrowed to just one playlist this run
+        show_selectors=None,
+    )
+
+    assert result.pruned_playlists == []
+    assert (roots.playlists_root / "john" / "Chill.m3u8").is_file()
+
+
 def test_run_sync_ytmusic_omits_oauth_path_when_file_does_not_exist(monkeypatch, tmp_path):
     # Confirmed live: oauth is optional (get_playlist_tracks works fine
     # unauthenticated against public playlists), but resolve_config_path

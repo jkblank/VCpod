@@ -3251,3 +3251,39 @@ devices otherwise).
 `music: {mode: include, selections: []}` — exactly her playlists' own
 tracks, nothing else — as the actual fix for the device she just
 reported this on.
+
+## 2026-08-24: stale playlist never removed from device after dropping it from a profile
+
+User tested the `music.` scoping fix above live on nienie's device
+(worked) but found one leftover: a playlist removed from `nienie.yaml`'s
+`playlists:` list was still on the device after a
+`sync-orchestrator sync --execute --allow-removals` run.
+
+Root cause, confirmed by reading the fetch pipeline: nothing anywhere
+ever deletes a playlist's `.m3u8` file once it's dropped from a
+profile's config. Each fetcher's `download.py` only ever calls
+`common.playlist.write_m3u8()` for playlists it's currently told to
+sync — there was no prune step for ones no longer listed. And
+`sync-orchestrator`'s device sync (`plan_sync`) can't fix this on its
+own either: it only ever scans whatever `.m3u8` files physically exist
+under `library/playlists/{profile}/` as pc_folders — from its point of
+view a leftover stale file is just as "real" and "wanted" as any other
+playlist, so it kept re-syncing it forever. The user had also only run
+`sync-orchestrator sync` directly (the device-write step), never
+`music-stack sync` (the fetch step that owns that folder) — so even a
+fix couldn't have taken effect from the command they ran.
+
+Fixed at the actual point of ownership: `common.playlist.
+prune_removed_playlists()` (new) deletes any `.m3u8` under
+`playlists_root/{profile}` whose stem isn't among the profile's current
+playlist names, called from `music_stack_cli.orchestrate.run_sync()`
+whenever a music source is active this run — same pattern
+`podcast_manager.download.prune_unsubscribed_shows` already established
+for podcast shows, including the same "must run against the full,
+unfiltered list, never a `--playlist`-narrowed subset" rule (narrowing
+is a per-run scope choice, not an "I removed this" signal).
+
+**Operationally**: removing a playlist from a profile now requires an
+actual fetch (`music-stack sync`, or `sync-orchestrator full-sync`,
+which does both stages) — running `sync-orchestrator sync` alone will
+never prune a stale playlist, by design (it doesn't own that folder).

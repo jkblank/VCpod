@@ -39,6 +39,25 @@ and reported, not raised — the rest of the run continues. Unmatched
 `--playlist`/`--show` names print a `WARNING`, not a hard failure
 (likely a typo, not necessarily fatal).
 
+**Removing a playlist from a profile's `playlists:` list requires
+running this command (a fetch), not just `sync-orchestrator sync`.**
+This command owns `library/playlists/{profile}/` — it's the only thing
+that prunes a playlist's stale `.m3u8` file once it's no longer
+configured (`prune_removed_playlists` in `common/playlist.py`, same
+pattern `podcast_manager.download.prune_unsubscribed_shows` uses for
+podcast shows). `sync-orchestrator sync` only ever writes whatever
+`.m3u8` files physically exist under that folder to the device — it has
+no way to know a playlist file is *supposed* to be gone, so a leftover
+stale file gets silently re-synced forever until this command deletes
+it. Prints `[music] Pruned N stale playlist file(s)...` when it happens.
+Only runs when a music source (`apple_music`/`ytmusic`) is active this
+call — a `--playlist`-narrowed run never prunes anything outside its own
+narrowed scope (same reasoning as podcast show pruning: narrowing is a
+per-run choice, not "I removed this from my profile"). Use
+`sync-orchestrator full-sync` (fetch + device sync in one command — see
+`services/sync-orchestrator/README.md`) to get both steps without
+remembering to run this one first.
+
 **Spotify is explicitly out of scope for this command** —
 `fetcher-spotify` is a standalone `uv` project with a separate,
 heavier/pinned dependency tree kept isolated from the root workspace

@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 import httpx
 
 from common.models import GlobalConfig, PlaylistEntry, ProfileConfig
+from common.playlist import prune_removed_playlists
 from common.state import EpisodeRecord
 
 from fetcher_apple.download import (
@@ -84,6 +85,7 @@ class SyncAllResult:
     pruned_unsubscribed: list[EpisodeRecord] = field(default_factory=list)
     pushed_play_status: list[EpisodeRecord] = field(default_factory=list)
     failed_play_status_pushes: list[tuple[EpisodeRecord, str]] = field(default_factory=list)
+    pruned_playlists: list[str] = field(default_factory=list)
     unmatched_playlists: list[str] = field(default_factory=list)
     unmatched_shows: list[str] = field(default_factory=list)
     source_errors: list[str] = field(default_factory=list)
@@ -116,6 +118,22 @@ def run_sync(
 
     music_sources = sources & {"apple_music", "ytmusic"}
     if music_sources:
+        # Must run against the full, unfiltered profile.playlists list --
+        # never the --playlist-narrowed `selected` set below. A run
+        # scoped to specific playlists is choosing not to fetch the rest
+        # this time, not reporting they were removed from the profile.
+        # Same reasoning as prune_unsubscribed_shows above, applied to
+        # playlists instead of podcast shows -- see
+        # prune_removed_playlists's docstring for the underlying gap this
+        # closes (found live 2026-08-24: sync-orchestrator alone can
+        # never remove a dropped playlist from a device, since nothing
+        # else in the fetch pipeline ever deletes its stale .m3u8).
+        result.pruned_playlists = prune_removed_playlists(
+            profile.playlists,
+            playlists_root=roots.playlists_root,
+            profile_name=profile.profile,
+        )
+
         # Select once across every active music source, not per-source —
         # otherwise a playlist that matches under apple_music would be
         # wrongly reported as unmatched too when ytmusic is also selected,
