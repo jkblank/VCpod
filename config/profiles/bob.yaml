@@ -55,3 +55,13 @@ sync:
 #   mode: exclude
 #   selections:
 #     - "Some Author You'd Rather Skip"
+
+# Optional: scopes library/music's contribution to this device's general
+# Music library — see alice.yaml's comment for the full explanation
+# (playlists always sync their own tracks regardless of this setting;
+# empty selections here means "nothing extra beyond playlists," the
+# opposite default from audiobooks above). This example: a curated
+# device carrying only Bob's "Commute" playlist, nothing else.
+# music:
+#   mode: include
+#   selections: []

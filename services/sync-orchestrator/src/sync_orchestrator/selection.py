@@ -22,7 +22,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from common.models import AudiobooksConfig
+from common.models import AudiobooksConfig, MusicLibraryConfig
 from iopenpod.infrastructure.media_folders import (
     MEDIA_TYPE_MUSIC,
     MEDIA_TYPE_PLAYLISTS,
@@ -161,4 +161,40 @@ def resolve_audiobooks_folder(
         audiobooks_root, config.selections, mode=config.mode
     )
     build_staging_dir(staging_dir, audiobooks_root, selected_files)
+    return (str(staging_dir),), unresolved
+
+
+def resolve_music_folder(
+    music_root: Path | str,
+    config: MusicLibraryConfig | None,
+    staging_dir: Path | str,
+) -> tuple[tuple[str, ...], list[str]]:
+    """Returns (pc_folders_to_add, unresolved_selections) for
+    library_root/music's contribution to a profile's device *general*
+    library. This only ever narrows the *extra* tracks beyond a
+    profile's own playlists — a playlist's own tracks are always
+    included regardless of this scoping, in both sync modes: on a real
+    iPod, iopenpod's own playlist-file discovery resolves each m3u8
+    entry directly off disk (unconstrained by pc_folders — see
+    sync/playlist_parser.py's PlaylistPathResolver), so removing
+    library/music from pc_folders never drops a playlist's own tracks;
+    rockbox_sync.py independently guarantees the same for Rockbox mode.
+    See MusicLibraryConfig's docstring.
+
+    config is None (the default — profile.music unset): the whole
+    shared pool syncs, unfiltered, same as every profile before this
+    option existed. Otherwise resolved via resolve_selected_files into a
+    staging dir of symlinks, same technique as
+    resolve_audiobooks_folder/ExternalLibraryConfig use.
+    """
+    music_root = Path(music_root)
+    if not music_root.is_dir():
+        return (), []
+    if config is None:
+        return (str(music_root),), []
+
+    selected_files, unresolved = resolve_selected_files(
+        music_root, config.selections, mode=config.mode
+    )
+    build_staging_dir(staging_dir, music_root, selected_files)
     return (str(staging_dir),), unresolved

@@ -142,6 +142,48 @@ The device is matched against the profile's `device.match_by`/
 `match_value` (`volume_label` or `serial`) — see
 `services/common/src/common/models.py`'s `DeviceMatch`.
 
+### Music library scope
+
+`library_root/music` is one shared pool across every profile by design —
+a profile's `playlists:` list only controls what gets *fetched* and what
+shows up as a curated on-device *playlist*, not what lands in the
+device's general Music library (standard iTunes-style "entire library"
+sync behavior). Most profiles want the whole pool (leave `music:` unset
+— every profile's behavior before this option existed, unchanged).
+
+For a profile that wants a genuinely small, curated device instead —
+e.g. one meant to carry only specific playlists, nothing else — set
+`music:` (`ProfileConfig.music`, `MusicLibraryConfig` in
+`common/models.py`), same include/exclude + `selections` shape as
+`audiobooks`/`external_library`, matched by `{Artist}` /
+`{Artist}/{Album}` path-fragment prefixes:
+
+```yaml
+music:
+  mode: include
+  selections: []   # empty = nothing extra beyond this profile's own playlists
+```
+
+Unlike `audiobooks` (empty selections = everything), `music:`'s empty
+default is the opposite — a profile that sets `music:` at all is opting
+into curation, so "curate down to nothing" is the sensible empty case
+here, same convention `external_library` already uses.
+
+**A profile's own playlist tracks are always included regardless of this
+scoping** — there's no way around that, by design: on a real iPod, the
+on-device Songs list and its playlists share one flat track table (a
+track can't be "playlist-only" in iTunesDB), and iopenpod's own
+playlist-file discovery resolves each `.m3u8` entry directly off disk,
+unconstrained by `pc_folders` — so removing `library/music` from
+`pc_folders` never drops a playlist's own tracks in iTunes mode.
+Rockbox mode (`rockbox_sync.py`) makes the same guarantee itself, since
+it doesn't get it for free the way iTunes mode does. In other words:
+`music: {selections: []}` on a profile with playlists configured means
+"exactly this profile's playlist tracks, nothing else" — which is
+exactly what fixed the original problem this option was built for (a
+device ending up with every track ever fetched by any profile, most of
+them not on any playlist the device's owner actually wanted).
+
 ### Audiobooks
 
 `library_root/audiobooks` (populated by

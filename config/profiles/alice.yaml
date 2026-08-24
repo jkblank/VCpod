@@ -72,3 +72,18 @@ sync:
 # audiobooks:
 #   mode: include
 #   selections: []
+
+# Optional: scopes library/music's contribution to this device's
+# *general* Music library — separate from playlists above, which always
+# sync their own tracks regardless of this setting (a real iPod's Songs
+# list and its playlists share one flat track table; there's no way to
+# make a track playlist-only). Left unset (the default) means the whole
+# shared library/music pool syncs, same as every profile before this
+# option existed — that's what most profiles want. Unlike audiobooks
+# above, empty selections here means "nothing extra beyond this
+# profile's own playlists," not "everything" — a profile that sets
+# `music:` at all is opting into curation. Same include/exclude +
+# selections shape, matched by artist/album prefix.
+# music:
+#   mode: include
+#   selections: []

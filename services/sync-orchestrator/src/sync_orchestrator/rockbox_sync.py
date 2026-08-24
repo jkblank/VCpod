@@ -39,7 +39,11 @@ from iopenpod.sync.transcoder import (
     transcode,
 )
 
-from sync_orchestrator.selection import resolve_audiobooks_folder, resolve_selected_files
+from sync_orchestrator.selection import (
+    resolve_audiobooks_folder,
+    resolve_music_folder,
+    resolve_selected_files,
+)
 from sync_orchestrator.sync import _backup_progress_adapter, _parse_published_at
 
 logger = logging.getLogger(__name__)
@@ -119,6 +123,7 @@ class PlannedRockboxSync:
     before_file_count: int
     unresolved_selections: list[str] = field(default_factory=list)
     unresolved_audiobook_selections: list[str] = field(default_factory=list)
+    unresolved_music_selections: list[str] = field(default_factory=list)
 
 
 def _iter_audio_files(root: Path) -> list[Path]:
@@ -131,7 +136,11 @@ def _add_desired_file(
     device_subdir: str,
     transcode_options: TranscodeOptions,
     desired: dict[str, RockboxSyncItem],
-) -> None:
+) -> str:
+    """Adds source_path to `desired` (keyed by its resolved device-relative
+    path) and returns that same key, so callers that need to reference the
+    item they just added (e.g. the playlist track lookup below) don't have
+    to recompute it."""
     relative = source_path.relative_to(source_root)
     tplan = resolve_transcode_plan(source_path, options=transcode_options)
     device_relative = (Path(device_subdir) / relative.with_suffix(tplan.output_extension)).as_posix()
@@ -140,6 +149,7 @@ def _add_desired_file(
         source_path=str(source_path),
         transcode_plan=tplan,
     )
+    return device_relative
 
 
 def _collect_desired(
@@ -259,13 +269,18 @@ def plan_rockbox_sync(
 
     desired: dict[str, RockboxSyncItem] = {}
 
-    # Music: the whole shared pool, same as iTunes mode — a profile's
-    # playlists curate what shows up as a *playlist*, not what's in the
-    # device's general library. See feedback_shared_library_pool_not_a_bug
-    # memory / notes.md.
+    # Music: library/music, scoped per profile.music (defaults to the
+    # whole shared pool, unfiltered — see MusicLibraryConfig). This only
+    # narrows the device's *general* library beyond this profile's own
+    # playlists — a playlist's own tracks are always included regardless
+    # (see the playlist loop below), matching how a real iPod's on-device
+    # Songs list and its playlists share one flat track table.
     music_root = library_root / "music"
-    if music_root.is_dir():
-        _collect_desired(music_root, MUSIC_DIRNAME, transcode_options, desired)
+    music_folders, unresolved_music_selections = resolve_music_folder(
+        music_root, profile.music, state_root / ".music_staging" / profile.profile
+    )
+    for folder in music_folders:
+        _collect_desired(Path(folder), MUSIC_DIRNAME, transcode_options, desired)
 
     unresolved_selections: list[str] = []
     if profile.external_library is not None:
@@ -307,8 +322,12 @@ def plan_rockbox_sync(
                         podcasts_root,
                     )
 
+    # `existing` (what's already on the device) can be read now — it
+    # doesn't depend on `desired`. The actual diff is computed further
+    # below, after the playlist loop has had a chance to add any
+    # playlist track that profile.music's scoping excluded from the
+    # general pool above (a playlist's own tracks are never optional).
     existing = _walk_managed_device_files(device_root)
-    plan = _diff_plan(desired, existing)
 
     # Playlists: read the .m3u8 files music-stack's fetch stage already
     # writes to library/playlists/{profile}/ (the same files iTunes mode
@@ -318,42 +337,66 @@ def plan_rockbox_sync(
     # real, physical .m3u8 the device can browse directly — unlike iTunes
     # mode, where iopenpod only ever consumes these files as playlist
     # *definitions* and never copies the physical file to the device.
-    # Reverse lookup (source path -> already-resolved device path) so a
-    # playlist entry reuses the exact same transcode decision made for
-    # that track above, rather than resolving it a second time.
+    # Reverse lookup (real source path -> already-resolved device path),
+    # keyed by the *resolved* path rather than the raw source_path string
+    # — when profile.music scopes the general pool, `desired`'s music
+    # entries come from a staging dir of symlinks (see
+    # resolve_music_folder), not library/music directly, so a raw string
+    # comparison against an m3u8 entry (always a real library/music path)
+    # would never match even for a track that IS already included.
     music_device_relative_by_source = {
-        item.source_path: item.device_relative_path
+        str(Path(item.source_path).resolve()): item.device_relative_path
         for item in desired.values()
         if item.device_relative_path.startswith(MUSIC_DIRNAME + "/")
     }
+    playlists_to_add: dict[str, str] = {}
+    playlists_to_update: dict[str, str] = {}
     for pl in profile.playlists:
         m3u8_path = library_root / "playlists" / profile.profile / f"{pl.name}.m3u8"
         if not m3u8_path.is_file():
             continue
         device_relative_tracks: list[str] = []
         for entry in _read_m3u8_entries(m3u8_path):
-            device_relative = music_device_relative_by_source.get(entry)
+            entry_path = Path(entry)
+            device_relative = music_device_relative_by_source.get(str(entry_path.resolve()))
             if device_relative is None:
-                # Not (currently) part of this run's resolved music pool —
-                # e.g. the m3u8 is momentarily stale vs library/music.
-                # Same failure mode as iTunes mode silently omitting it
-                # from the on-device playlist; not fatal here either.
-                continue
+                # Not already part of the (possibly scoped) general pool
+                # above — a playlist's own tracks are always included
+                # regardless of profile.music's scoping, so add it now
+                # rather than silently dropping it from the playlist.
+                try:
+                    device_relative = _add_desired_file(
+                        entry_path, music_root, MUSIC_DIRNAME, transcode_options, desired
+                    )
+                except ValueError:
+                    # Not under library/music at all — e.g. a stale m3u8
+                    # entry from a source that's since moved. Same
+                    # failure mode as iTunes mode silently omitting it
+                    # from the on-device playlist; not fatal here either.
+                    continue
+                music_device_relative_by_source[str(entry_path.resolve())] = device_relative
             device_relative_tracks.append(device_relative)
         playlist_device_relative = f"{PLAYLISTS_DIRNAME}/{pl.name}.m3u8"
         content = _render_m3u8_relative(playlist_device_relative, device_relative_tracks)
 
         existing_playlist_path = device_root / playlist_device_relative
         if not existing_playlist_path.is_file():
-            plan.playlists_to_add[playlist_device_relative] = content
+            playlists_to_add[playlist_device_relative] = content
         else:
             try:
                 current = existing_playlist_path.read_text()
             except OSError:
                 current = None
             if current != content:
-                plan.playlists_to_update[playlist_device_relative] = content
+                playlists_to_update[playlist_device_relative] = content
         existing.pop(playlist_device_relative, None)
+
+    # Computed only now, after the playlist loop above has had its chance
+    # to add any playlist track profile.music's scoping had excluded from
+    # `desired` — see the reordering note above _walk_managed_device_files.
+    plan = _diff_plan(desired, existing)
+    plan.playlists_to_add = playlists_to_add
+    plan.playlists_to_update = playlists_to_update
 
     # Anything left in `existing` that wasn't matched by a playlist above
     # (playlists were already popped out) is a stale playlist or media
@@ -371,6 +414,7 @@ def plan_rockbox_sync(
         before_file_count=len(existing),
         unresolved_selections=unresolved_selections,
         unresolved_audiobook_selections=unresolved_audiobook_selections,
+        unresolved_music_selections=unresolved_music_selections,
     )
 
 

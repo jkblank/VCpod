@@ -3210,3 +3210,44 @@ Genuinely open, unverified against a real device: whether a Rockbox-
 loaded iPod still exposes `iPod_Control/Device/SysInfo` (device.py's
 `is_ipod_mount` now also accepts a `.rockbox/` directory, belt-and-
 suspenders, but this hasn't been tested live either way).
+
+## 2026-08-24: profile.music — opt-in scoping of the shared library pool, per-device
+
+User ran a real sync on nienie's iPod (stock firmware, iTunes mode —
+`sync.mode` was never set on her profile) and found far more tracks on
+the device than expected, most not on any of her configured playlists.
+This is the shared-library-pool behavior documented earlier in this file
+and in [[feedback-shared-library-pool-not-a-bug]] — confirmed still
+correct as the *default* (John's profile genuinely wants everything),
+but the memory's own "how to apply" note had already named the fix for
+a profile that wants something narrower: an isolated library scope, the
+same technique disposable testbed devices already used. That's now a
+real, opt-in profile field (`ProfileConfig.music`, `MusicLibraryConfig`
+in `common/models.py`) instead of a testbed-only trick — see
+`services/sync-orchestrator/README.md`'s "Music library scope" section
+for the full design and the exact reasoning behind its empty-selections
+default (opposite convention from `audiobooks:`, matching
+`external_library:` instead).
+
+The one thing worth recording here specifically: a profile's own
+playlist tracks are **always** included regardless of this scoping, and
+that turned out to require zero extra iTunes-mode work — iopenpod's own
+playlist-file discovery (`sync/sync_playlist_files.py`,
+`playlist_parser.py`'s `PlaylistPathResolver`) resolves each `.m3u8`
+entry's track by a direct filesystem existence check on its absolute
+path, completely unconstrained by `pc_folders`. So dropping
+`library/music` from `pc_folders` for a scoped profile never drops a
+playlist's own tracks in iTunes mode — confirmed by reading iopenpod's
+source, not by guessing. Rockbox mode (this project's own code, not
+iopenpod's) doesn't get that guarantee for free — `rockbox_sync.py` had
+to be taught to add a playlist's tracks into its own `desired` set
+explicitly whenever `profile.music` scoping had excluded them, and to
+defer its add/remove/update diff until after that happens (moved
+`_diff_plan` to run after the playlist loop, not before — an ordering
+bug that would have silently excluded playlist tracks from Rockbox mode
+devices otherwise).
+
+`nienie.yaml` (real, gitignored profile) updated to
+`music: {mode: include, selections: []}` — exactly her playlists' own
+tracks, nothing else — as the actual fix for the device she just
+reported this on.

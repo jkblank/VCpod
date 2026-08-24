@@ -544,6 +544,7 @@ def _fake_planned(**overrides) -> SimpleNamespace:
         snapshot=None,
         unresolved_selections=[],
         unresolved_audiobook_selections=[],
+        unresolved_music_selections=[],
         play_states_updated=0,
     )
     defaults.update(overrides)

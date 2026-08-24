@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from common.models import AudiobooksConfig
+from common.models import AudiobooksConfig, MusicLibraryConfig
 
 from iopenpod.infrastructure.media_folders import MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLISTS
 
@@ -8,6 +8,7 @@ from sync_orchestrator.selection import (
     build_media_folders,
     build_staging_dir,
     resolve_audiobooks_folder,
+    resolve_music_folder,
     resolve_selected_files,
 )
 
@@ -223,3 +224,62 @@ def test_resolve_audiobooks_folder_reports_unresolved_selection(tmp_path):
     _, unresolved = resolve_audiobooks_folder(library, config, tmp_path / "staging")
 
     assert unresolved == ["Isaac Asimov"]
+
+
+def _make_music_library(tmp_path: Path) -> Path:
+    library = tmp_path / "music"
+    (library / "Radiohead" / "OK Computer").mkdir(parents=True)
+    (library / "Radiohead" / "OK Computer" / "01 Airbag.m4a").write_bytes(b"x")
+    (library / "Talking Heads" / "Remain in Light").mkdir(parents=True)
+    (library / "Talking Heads" / "Remain in Light" / "01 Born Under Punches.m4a").write_bytes(b"x")
+    return library
+
+
+def test_resolve_music_folder_missing_root_returns_nothing(tmp_path):
+    folders, unresolved = resolve_music_folder(
+        tmp_path / "does-not-exist", None, tmp_path / "staging"
+    )
+    assert folders == ()
+    assert unresolved == []
+
+
+def test_resolve_music_folder_none_config_includes_everything_unfiltered(tmp_path):
+    library = _make_music_library(tmp_path)
+    folders, unresolved = resolve_music_folder(library, None, tmp_path / "staging")
+    assert folders == (str(library),)
+    assert unresolved == []
+    assert not (tmp_path / "staging").exists()
+
+
+def test_resolve_music_folder_default_config_includes_nothing(tmp_path):
+    # Opposite default from resolve_audiobooks_folder: a profile that sets
+    # `music:` at all is opting into curation, so the empty default means
+    # "nothing extra" — a staging dir with no entries — not "everything."
+    library = _make_music_library(tmp_path)
+    staging = tmp_path / "staging"
+    folders, unresolved = resolve_music_folder(library, MusicLibraryConfig(), staging)
+    assert folders == (str(staging),)
+    assert unresolved == []
+    assert list(staging.rglob("*")) == []
+
+
+def test_resolve_music_folder_include_with_selections_builds_staging_dir(tmp_path):
+    library = _make_music_library(tmp_path)
+    staging = tmp_path / "staging"
+    config = MusicLibraryConfig(mode="include", selections=["Radiohead"])
+
+    folders, unresolved = resolve_music_folder(library, config, staging)
+
+    assert folders == (str(staging),)
+    assert unresolved == []
+    assert (staging / "Radiohead" / "OK Computer" / "01 Airbag.m4a").is_symlink()
+    assert not (staging / "Talking Heads").exists()
+
+
+def test_resolve_music_folder_reports_unresolved_selection(tmp_path):
+    library = _make_music_library(tmp_path)
+    config = MusicLibraryConfig(mode="include", selections=["Radiohead", "Nirvana"])
+
+    _, unresolved = resolve_music_folder(library, config, tmp_path / "staging")
+
+    assert unresolved == ["Nirvana"]

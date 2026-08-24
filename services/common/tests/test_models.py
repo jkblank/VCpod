@@ -7,6 +7,7 @@ from common.models import (
     ExternalLibraryConfig,
     FetchSettings,
     LibraryManagerConfig,
+    MusicLibraryConfig,
     PlaylistEntry,
     ProfileBackupRetention,
     ProfilePodcastsConfig,
@@ -254,3 +255,41 @@ def test_sync_settings_mode_accepts_rockbox():
 def test_sync_settings_mode_rejects_unknown_value():
     with pytest.raises(ValidationError):
         _sync_settings(mode="winamp")
+
+
+def test_music_library_config_defaults_to_include_nothing():
+    # Deliberately the opposite default from AudiobooksConfig's "empty +
+    # include = sync everything" — a profile that sets `music:` at all is
+    # opting into curation, so an empty whitelist curates down to nothing
+    # extra (playlist tracks are still always included regardless, at
+    # the sync-orchestrator layer, not this schema).
+    cfg = MusicLibraryConfig()
+    assert cfg.mode == "include"
+    assert cfg.selections == []
+
+
+def test_music_library_config_nested_mapping_selection_flattened():
+    cfg = MusicLibraryConfig(selections=["Radiohead", {"Talking Heads": ["Remixed"]}])
+    assert cfg.selections == ["Radiohead", "Talking Heads/Remixed"]
+
+
+def test_music_library_config_invalid_mode_raises():
+    with pytest.raises(ValidationError):
+        MusicLibraryConfig(mode="whitelist")
+
+
+def test_profile_config_music_defaults_to_none():
+    from common.models import DeviceMatch, ProfileConfig, ProfilePocketCastsConfig
+
+    profile = ProfileConfig(
+        profile="test",
+        device=DeviceMatch(match_by="volume_label", match_value="TEST"),
+        playlists=[],
+        podcasts=ProfilePodcastsConfig(
+            pocketcasts=ProfilePocketCastsConfig(credentials_file="creds.json"),
+            sync_unplayed_only=True,
+            max_episodes_per_show=5,
+        ),
+        sync=_sync_settings(),
+    )
+    assert profile.music is None

@@ -184,6 +184,8 @@ def _run_sync(
         print(f"  WARNING: external_library selection {selection!r} matched 0 files")
     for selection in planned.unresolved_audiobook_selections:
         print(f"  WARNING: audiobooks selection {selection!r} matched 0 files")
+    for selection in planned.unresolved_music_selections:
+        print(f"  WARNING: music selection {selection!r} matched 0 files")
 
     if planned.play_states_updated:
         print(
@@ -215,6 +217,12 @@ def _run_sync(
     if planned.unresolved_audiobook_selections:
         return _fail(
             f"{len(planned.unresolved_audiobook_selections)} audiobooks selection(s) "
+            "matched 0 files (see WARNINGs above); refusing to execute until "
+            "the profile is fixed"
+        )
+    if planned.unresolved_music_selections:
+        return _fail(
+            f"{len(planned.unresolved_music_selections)} music selection(s) "
             "matched 0 files (see WARNINGs above); refusing to execute until "
             "the profile is fixed"
         )
@@ -360,6 +368,8 @@ def _run_rockbox_sync(
         print(f"  WARNING: external_library selection {selection!r} matched 0 files")
     for selection in planned.unresolved_audiobook_selections:
         print(f"  WARNING: audiobooks selection {selection!r} matched 0 files")
+    for selection in planned.unresolved_music_selections:
+        print(f"  WARNING: music selection {selection!r} matched 0 files")
 
     print(f"== Plan for {profile.profile!r} (Rockbox) ==")
     _print_rockbox_plan(planned.plan)
@@ -381,6 +391,12 @@ def _run_rockbox_sync(
     if planned.unresolved_audiobook_selections:
         return _fail(
             f"{len(planned.unresolved_audiobook_selections)} audiobooks selection(s) "
+            "matched 0 files (see WARNINGs above); refusing to execute until "
+            "the profile is fixed"
+        )
+    if planned.unresolved_music_selections:
+        return _fail(
+            f"{len(planned.unresolved_music_selections)} music selection(s) "
             "matched 0 files (see WARNINGs above); refusing to execute until "
             "the profile is fixed"
         )

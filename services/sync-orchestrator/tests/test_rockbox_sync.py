@@ -9,6 +9,8 @@ from common.models import (
     AudiobooksConfig,
     DeviceMatch,
     ExternalLibraryConfig,
+    MusicLibraryConfig,
+    PlaylistEntry,
     ProfileConfig,
     ProfilePocketCastsConfig,
     ProfilePodcastsConfig,
@@ -34,7 +36,7 @@ def _make_profile(
     *,
     playlists: list | None = None,
     transcode_format: str = "alac",
-    podcasts: bool = True,
+    music: MusicLibraryConfig | None = None,
 ) -> ProfileConfig:
     return ProfileConfig(
         profile="test",
@@ -49,6 +51,7 @@ def _make_profile(
             trigger="manual", transcode_format=transcode_format, push_play_status_back=False,
             mode="rockbox",
         ),
+        music=music,
     )
 
 
@@ -336,3 +339,89 @@ def test_plan_rockbox_sync_external_library_unresolved_selection_reported(monkey
     )
 
     assert planned.unresolved_selections == ["Nonexistent Artist"]
+
+
+# --- profile.music scoping + "playlist tracks always included" guarantee ---
+
+
+def _patch_copy_transcode(monkeypatch) -> None:
+    from sync_orchestrator import rockbox_sync as rockbox_sync_module
+
+    def fake_resolve_transcode_plan(path, *, options=None):
+        from iopenpod.sync.transcoder import TranscodePlan, TranscodeTarget
+
+        return TranscodePlan(
+            source_path=Path(path), target=TranscodeTarget.COPY, aac_quality="normal",
+            effective_quality="normal", prefer_lossy=False, normalize_sample_rate=False,
+            mono_for_spoken=False, smart_quality_by_type=False, video_crf=23,
+            video_preset="medium", video_max_width=0, video_max_height=0, video_max_fps=0,
+            video_max_bitrate_kbps=0, video_h264_level="3.0",
+        )
+
+    monkeypatch.setattr(rockbox_sync_module, "resolve_transcode_plan", fake_resolve_transcode_plan)
+    monkeypatch.setattr(
+        rockbox_sync_module.BackupManager, "create_backup",
+        lambda self, *a, **k: type("Snap", (), {"id": "snap-1"})(),
+    )
+
+
+def test_plan_rockbox_sync_default_music_config_excludes_non_playlist_tracks(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    (library_root / "music" / "Radiohead" / "OK Computer").mkdir(parents=True)
+    (library_root / "music" / "Radiohead" / "OK Computer" / "Airbag.m4a").write_bytes(b"x")
+    state_root = tmp_path / "state"
+    device_root = tmp_path / "ipod"
+    device_root.mkdir()
+
+    _patch_copy_transcode(monkeypatch)
+
+    profile = _make_profile(tmp_path, music=MusicLibraryConfig())  # empty selections -> nothing
+    planned = plan_rockbox_sync(
+        device_info=_FakeDeviceInfo(str(device_root)),
+        library_root=library_root,
+        state_root=state_root,
+        profile=profile,
+    )
+
+    assert planned.plan.to_add == []
+
+
+def test_plan_rockbox_sync_playlist_track_always_included_despite_music_scoping(
+    monkeypatch, tmp_path
+):
+    library_root = tmp_path / "library"
+    music_root = library_root / "music"
+    (music_root / "Radiohead" / "OK Computer").mkdir(parents=True)
+    playlist_track = music_root / "Radiohead" / "OK Computer" / "Airbag.m4a"
+    playlist_track.write_bytes(b"x")
+    (music_root / "Nirvana" / "Nevermind").mkdir(parents=True)
+    other_track = music_root / "Nirvana" / "Nevermind" / "Come As You Are.m4a"
+    other_track.write_bytes(b"x")
+
+    playlists_dir = library_root / "playlists" / "test"
+    playlists_dir.mkdir(parents=True)
+    (playlists_dir / "Chill.m3u8").write_text(f"#EXTM3U\n{playlist_track}\n")
+
+    state_root = tmp_path / "state"
+    device_root = tmp_path / "ipod"
+    device_root.mkdir()
+
+    _patch_copy_transcode(monkeypatch)
+
+    profile = _make_profile(
+        tmp_path,
+        playlists=[PlaylistEntry(name="Chill", source="apple_music", source_id="pl.1")],
+        music=MusicLibraryConfig(),  # empty selections -> nothing extra beyond playlists
+    )
+    planned = plan_rockbox_sync(
+        device_info=_FakeDeviceInfo(str(device_root)),
+        library_root=library_root,
+        state_root=state_root,
+        profile=profile,
+    )
+
+    added_paths = {item.device_relative_path for item in planned.plan.to_add}
+    assert added_paths == {"Music/Radiohead/OK Computer/Airbag.m4a"}
+    assert planned.plan.playlists_to_add == {
+        "Playlists/Chill.m3u8": "#EXTM3U\n../Music/Radiohead/OK Computer/Airbag.m4a\n"
+    }

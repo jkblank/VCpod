@@ -210,6 +210,46 @@ class AudiobooksConfig(StrictModel):
         return _flatten_nested_selection_entries(value)
 
 
+class MusicLibraryConfig(StrictModel):
+    """Scopes library_root/music's contribution to this profile's device
+    *general* library — separate from playlist tracks, which are always
+    included regardless of this setting. On a real iPod, playlists and
+    the on-device "Songs" list share one flat track table (iTunesDB has
+    no such thing as a playlist-only track); rockbox_sync.py's own
+    playlist-track handling independently guarantees the same for
+    Rockbox mode. So this can only ever narrow the *extra* tracks beyond
+    a profile's own playlists, never exclude a playlist's own tracks.
+
+    profile.music left unset (None, the default) means every profile
+    behaves exactly as before this option existed: the whole shared pool
+    syncs to every device. See notes.md / [[feedback-shared-library-pool-not-a-bug]]
+    for why that's the deliberate default, not a bug — this field is the
+    opt-in for a profile (e.g. a device meant to carry only specific
+    playlists) that wants something narrower.
+    """
+
+    # "include" (default): only files matching a `selections` entry are
+    # synced beyond playlist tracks — a whitelist. Empty `selections` +
+    # include = sync nothing extra beyond playlist tracks (same
+    # convention as ExternalLibraryConfig, not AudiobooksConfig — a
+    # profile that sets `music:` at all is opting into curation, so
+    # "curate down to nothing" is the sensible empty default here).
+    # "exclude": every track in library/music is synced EXCEPT those
+    # matching a `selections` entry.
+    mode: Literal["include", "exclude"] = "include"
+    # Relative path fragments under library_root/music, matched by
+    # prefix — same convention as ExternalLibraryConfig.selections:
+    #   "Artist"                  -> every album/track by that artist
+    #   "Artist/Album"            -> every track on that album
+    #   "Artist/Album/Track.m4a"  -> a single track
+    selections: list[str] = Field(default_factory=list)
+
+    @field_validator("selections", mode="before")
+    @classmethod
+    def _flatten_nested_selections(cls, value: object) -> object:
+        return _flatten_nested_selection_entries(value)
+
+
 class ProfilePocketCastsConfig(StrictModel):
     credentials_file: str
 
@@ -336,5 +376,6 @@ class ProfileConfig(StrictModel):
     sync: SyncSettings
     external_library: ExternalLibraryConfig | None = None
     audiobooks: AudiobooksConfig | None = None
+    music: MusicLibraryConfig | None = None
     fetch: FetchSettings = Field(default_factory=FetchSettings)
     backups: ProfileBackupRetention | None = None
