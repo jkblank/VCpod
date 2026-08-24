@@ -38,6 +38,58 @@ fix exists yet — this is a real, open firmware/protocol-level limit as
 far as this project's investigation has determined so far, not
 something `sync-orchestrator` is doing wrong.
 
+**Rockbox mode (below) sidesteps this entirely** for a device running
+Rockbox firmware — it never touches `ArtworkDB`, so it isn't subject to
+this ceiling. It doesn't fix the limitation for stock-firmware devices;
+it's a different code path for a different firmware, not a workaround
+bolted onto the existing one.
+
+## Rockbox mode
+
+Set `sync.mode: rockbox` on a profile (default is `itunes`, i.e. every
+profile's existing behavior, unchanged) to sync a device running
+[Rockbox](https://www.rockbox.org/) instead of stock iPod firmware.
+Rockbox ignores `iTunesDB`/`ArtworkDB` entirely and reads metadata/art
+straight from each file's own tags, so this mode is a genuinely separate
+code path (`rockbox_sync.py`), not a flag on the existing one:
+
+- **No iTunesDB, no ArtworkDB, no iopenpod `SyncEngine`** — a plain
+  filesystem mirror instead: `library/music` (the shared pool, same
+  "playlists curate, don't scope" design as iTunes mode — see
+  `notes.md`) mirrored to `Music/` on the device, `external_library`/
+  `audiobooks`/selected podcast episodes to their own top-level folders,
+  transcoded per `sync.transcode_format` via iopenpod's standalone
+  transcoder functions (no `SyncEngine` needed for that part either).
+- **Real, physical playlist files** under `Playlists/`, with paths
+  relative to the playlist file itself (the portable M3U convention) —
+  deliberately not iopenpod's own `rockbox_metadata_support` option
+  (`EngineOptions.rockbox_metadata_support`), which still writes a full
+  iTunesDB (still exposed to the album-art ceiling above) and — more
+  importantly — never places a physical `.m3u8` on the device at all:
+  iopenpod's playlist-file handling parses `.m3u8` files into native
+  iTunesDB playlist objects at scan time and only ever consumes them,
+  never copies them. Rockbox would see no playlists under that option.
+- **Change detection** compares each file's mtime against the source
+  file's mtime (FAT32's 2-second resolution tolerated) rather than
+  content hashing, propagated onto the device copy at write time.
+- **Cover art**: ffmpeg's audio-only transcode commands strip embedded
+  art (`-vn`) even though basic tags survive — confirmed by reading
+  iopenpod's own `transcoder.py`. A plain copy (source already in a
+  native, no-transcode-needed format) preserves art byte-for-byte; any
+  track that actually goes through ffmpeg gets its original art
+  re-embedded afterward from the source file directly (mutagen, ID3 or
+  MP4 atoms depending on the output format).
+- **Known gaps (v1)**: `push_play_status_back` has no effect in this mode
+  (Rockbox keeps its own play history in `.rockbox/`, unreadable by this
+  project today — explicit no-op, logged at debug, not silent). Device
+  recognition (`is_ipod_mount`) accepts a `.rockbox/` directory as well
+  as the usual `iPod_Control/Device/SysInfo`, but this hasn't been
+  verified against a real Rockbox-loaded device yet.
+
+Same commands, same flags (`sync`/`full-sync`/`auto-sync`,
+`--execute`/`--allow-removals`/etc. all mean the same thing) — the mode
+lives on the profile, not the CLI invocation.
+
 ## Usage
 
 Assumes the target iPod is already connected and mounted (auto-mounted by

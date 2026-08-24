@@ -123,9 +123,22 @@ def is_ipod_mount(mount_point: str) -> bool:
     PermissionError from Path.is_file() rather than returning False —
     confirmed live — so this treats "can't even read it" the same as
     "not an iPod" instead of letting the error propagate and abort the
-    whole device scan over one unrelated, inaccessible mount."""
+    whole device scan over one unrelated, inaccessible mount.
+
+    Accepts either the stock-firmware marker (iPod_Control/Device/SysInfo)
+    or a Rockbox install's own `.rockbox/` directory — Rockbox is normally
+    installed alongside, not instead of, the original Apple bootloader/
+    filesystem, so a Rockbox-loaded device is expected to still carry
+    iPod_Control too, but this doesn't assume that: a `.rockbox/`-only
+    device (no iPod_Control at all) is still recognized. Unverified
+    against a real Rockbox-loaded device as of this writing — see the
+    "Rockbox support" plan's open questions."""
     try:
-        return (Path(mount_point) / "iPod_Control" / "Device" / "SysInfo").is_file()
+        base = Path(mount_point)
+        return (
+            (base / "iPod_Control" / "Device" / "SysInfo").is_file()
+            or (base / ".rockbox").is_dir()
+        )
     except OSError:
         return False
 

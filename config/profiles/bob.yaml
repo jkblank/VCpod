@@ -28,6 +28,9 @@ sync:
   trigger: manual
   transcode_format: mp3
   push_play_status_back: false
+  # Optional, defaults to "itunes" — see alice.yaml's comment and
+  # services/sync-orchestrator/README.md for what "rockbox" mode does.
+  # mode: rockbox
 
 # Optional: sync a subset of a personal library that lives outside
 # music-stack's own managed library/ folder. "exclude" mode is a

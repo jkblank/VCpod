@@ -9,6 +9,13 @@ from types import SimpleNamespace
 import pytest
 
 from common.config import ConfigError
+from common.models import (
+    DeviceMatch,
+    ProfileConfig,
+    ProfilePocketCastsConfig,
+    ProfilePodcastsConfig,
+    SyncSettings,
+)
 from common.state import EpisodeRecord, StateDB
 from sync_orchestrator import cli as cli_module
 from sync_orchestrator.device import AmbiguousDeviceMatchError, DeviceNotFoundError
@@ -852,3 +859,120 @@ def test_cmd_full_sync_literal_profile_path_still_works(monkeypatch, tmp_path):
 
     assert result == 0
     assert captured["profile"].profile == "john"
+
+
+# --- _run_sync_for_profile dispatch (itunes vs. rockbox) -------------------
+
+
+def _dispatch_profile(*, mode: str) -> ProfileConfig:
+    return ProfileConfig(
+        profile="test",
+        device=DeviceMatch(match_by="volume_label", match_value="TEST"),
+        playlists=[],
+        podcasts=ProfilePodcastsConfig(
+            pocketcasts=ProfilePocketCastsConfig(credentials_file="creds.json"),
+            sync_unplayed_only=True,
+            max_episodes_per_show=5,
+        ),
+        sync=SyncSettings(
+            trigger="manual", transcode_format="alac", push_play_status_back=False, mode=mode
+        ),
+    )
+
+
+def test_run_sync_for_profile_dispatches_to_run_sync_for_itunes_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli_module, "_run_sync", lambda *a, **k: calls.append("itunes") or 0)
+    monkeypatch.setattr(cli_module, "_run_rockbox_sync", lambda *a, **k: calls.append("rockbox") or 0)
+
+    profile = _dispatch_profile(mode="itunes")
+    result = cli_module._run_sync_for_profile(
+        argparse.Namespace(), profile, profile_path=Path("p"), config_root=Path("c")
+    )
+
+    assert result == 0
+    assert calls == ["itunes"]
+
+
+def test_run_sync_for_profile_dispatches_to_run_rockbox_sync_for_rockbox_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli_module, "_run_sync", lambda *a, **k: calls.append("itunes") or 0)
+    monkeypatch.setattr(cli_module, "_run_rockbox_sync", lambda *a, **k: calls.append("rockbox") or 0)
+
+    profile = _dispatch_profile(mode="rockbox")
+    result = cli_module._run_sync_for_profile(
+        argparse.Namespace(), profile, profile_path=Path("p"), config_root=Path("c")
+    )
+
+    assert result == 0
+    assert calls == ["rockbox"]
+
+
+def test_run_rockbox_sync_refuses_execute_when_removal_proposed_without_allow_removals(
+    monkeypatch, capsys
+):
+    from sync_orchestrator.rockbox_sync import PlannedRockboxSync, RockboxSyncPlan
+
+    profile = _dispatch_profile(mode="rockbox")
+    planned = PlannedRockboxSync(
+        plan=RockboxSyncPlan(to_remove=["Music/Artist/Gone.m4a"]),
+        device_info=SimpleNamespace(path="/mnt/ipod"),
+        snapshot=None,
+        before_file_count=1,
+    )
+    monkeypatch.setattr(cli_module, "find_matching_device", lambda match: planned.device_info)
+    monkeypatch.setattr(cli_module, "plan_rockbox_sync", lambda **kwargs: planned)
+
+    args = argparse.Namespace(
+        pc_folders=None,
+        library_root="/lib",
+        state_root="/state",
+        skip_backup=False,
+        skip_podcasts=False,
+        execute=True,
+        allow_removals=False,
+        skip_eject=True,
+    )
+    result = cli_module._run_rockbox_sync(
+        args, profile, profile_path=Path("p"), config_root=Path("c")
+    )
+
+    assert result == 1
+    assert "FAIL" in capsys.readouterr().out
+
+
+def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(monkeypatch):
+    from sync_orchestrator.rockbox_sync import PlannedRockboxSync, RockboxSyncPlan
+
+    profile = _dispatch_profile(mode="rockbox")
+    planned = PlannedRockboxSync(
+        plan=RockboxSyncPlan(to_remove=["Music/Artist/Gone.m4a"]),
+        device_info=SimpleNamespace(path="/mnt/ipod"),
+        snapshot=None,
+        before_file_count=1,
+    )
+    monkeypatch.setattr(cli_module, "find_matching_device", lambda match: planned.device_info)
+    monkeypatch.setattr(cli_module, "plan_rockbox_sync", lambda **kwargs: planned)
+    monkeypatch.setattr(
+        cli_module,
+        "execute_rockbox_sync",
+        lambda planned, progress_callback=None: {
+            "added": 0, "updated": 0, "removed": 1, "playlists_written": 0
+        },
+    )
+
+    args = argparse.Namespace(
+        pc_folders=None,
+        library_root="/lib",
+        state_root="/state",
+        skip_backup=False,
+        skip_podcasts=False,
+        execute=True,
+        allow_removals=True,
+        skip_eject=True,
+    )
+    result = cli_module._run_rockbox_sync(
+        args, profile, profile_path=Path("p"), config_root=Path("c")
+    )
+
+    assert result == 0

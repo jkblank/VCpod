@@ -38,6 +38,12 @@ sync:
   trigger: on_connect
   transcode_format: alac
   push_play_status_back: true
+  # Optional, defaults to "itunes": write iTunesDB/ArtworkDB as normal.
+  # "rockbox" instead does a plain filesystem mirror (no iTunesDB at all,
+  # no album-art size ceiling) for a device running Rockbox firmware,
+  # which reads metadata/art from each file's own tags. See
+  # services/sync-orchestrator/README.md.
+  # mode: rockbox
 
 # Optional: sync a subset of a personal library that lives outside
 # music-stack's own managed library/ folder. "include" mode (default) is

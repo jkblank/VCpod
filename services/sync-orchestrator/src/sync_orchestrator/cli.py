@@ -25,7 +25,10 @@ from sync_orchestrator.device import (
     find_matching_profile,
     mount_candidate_devices,
 )
+from sync_orchestrator.rockbox_sync import RockboxSyncError, execute_rockbox_sync, plan_rockbox_sync
 from sync_orchestrator.sync import SyncError, execute_sync, plan_sync
+
+logger = logging.getLogger(__name__)
 
 
 def _default_music_stack_project_dir() -> str:
@@ -136,7 +139,9 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     config_root = profile_path.resolve().parent.parent
     try:
         with FileLock(lock_path, timeout=args.lock_timeout):
-            return _run_sync(args, profile, profile_path=profile_path, config_root=config_root)
+            return _run_sync_for_profile(
+                args, profile, profile_path=profile_path, config_root=config_root
+            )
     except LockTimeoutError as e:
         return _fail(str(e))
 
@@ -281,6 +286,166 @@ def _run_sync(
 
     print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
     return 0
+
+
+def _print_rockbox_plan(plan) -> None:
+    print(
+        f"  to_add={len(plan.to_add)} to_update={len(plan.to_update)} "
+        f"to_remove={len(plan.to_remove)} "
+        f"playlists_to_add={len(plan.playlists_to_add)} "
+        f"playlists_to_update={len(plan.playlists_to_update)} "
+        f"bytes_to_add≈{plan.bytes_to_add:,}"
+    )
+    if plan.to_remove:
+        print("  files proposed for REMOVAL:")
+        for path in plan.to_remove[:20]:
+            print(f"    - {path}")
+        if len(plan.to_remove) > 20:
+            print(f"    ... and {len(plan.to_remove) - 20} more")
+    if plan.to_add:
+        print("  sample of files proposed for ADDITION:")
+        for item in plan.to_add[:10]:
+            print(f"    + {item.device_relative_path}")
+        if len(plan.to_add) > 10:
+            print(f"    ... and {len(plan.to_add) - 10} more")
+    for path in plan.playlists_to_add:
+        print(f"    + playlist: {path}")
+    for path in plan.playlists_to_update:
+        print(f"    ~ playlist: {path}")
+
+
+def _run_rockbox_sync(
+    args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path
+) -> int:
+    """Rockbox-mode sibling of _run_sync: same flags, same meaning
+    (--execute/--allow-removals/--skip-backup/--skip-podcasts/--skip-eject
+    all behave identically), but a plain filesystem mirror instead of an
+    iTunesDB write — see rockbox_sync.py and the "Rockbox support" plan
+    for why this is a separate function rather than branches sprinkled
+    through _run_sync: the plan/execute return shapes genuinely differ
+    (RockboxSyncPlan vs. iopenpod's SyncPlan), so sharing one function
+    body would mean conditionals at nearly every line rather than one
+    clean dispatch point."""
+    start_time = time.monotonic()
+    print(
+        f"== Finding device for profile {profile.profile!r} "
+        f"({profile.device.match_by}={profile.device.match_value!r}) =="
+    )
+    try:
+        device_info = find_matching_device(profile.device)
+    except DeviceNotFoundError as e:
+        return _fail(str(e))
+    print(f"  path={device_info.path} (Rockbox mode — plain file mirror, no iTunesDB)")
+
+    if args.pc_folders:
+        print("  WARNING: --pc-folder is ignored in Rockbox mode (not yet supported)")
+
+    def _report_progress(message: str) -> None:
+        print(f"  {message}")
+
+    try:
+        planned = plan_rockbox_sync(
+            device_info=device_info,
+            library_root=args.library_root,
+            state_root=args.state_root,
+            profile=profile,
+            skip_backup=args.skip_backup,
+            skip_podcasts=args.skip_podcasts,
+            progress_callback=_report_progress,
+        )
+    except RockboxSyncError as e:
+        return _fail(str(e))
+
+    for selection in planned.unresolved_selections:
+        print(f"  WARNING: external_library selection {selection!r} matched 0 files")
+    for selection in planned.unresolved_audiobook_selections:
+        print(f"  WARNING: audiobooks selection {selection!r} matched 0 files")
+
+    print(f"== Plan for {profile.profile!r} (Rockbox) ==")
+    _print_rockbox_plan(planned.plan)
+
+    if not args.execute:
+        print(
+            "\nPLAN ONLY (no --execute passed). Review the numbers above, "
+            "especially to_remove, before re-running with --execute."
+        )
+        print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
+        return 0
+
+    if planned.unresolved_selections:
+        return _fail(
+            f"{len(planned.unresolved_selections)} external_library selection(s) "
+            "matched 0 files (see WARNINGs above); refusing to execute until "
+            "the profile is fixed"
+        )
+    if planned.unresolved_audiobook_selections:
+        return _fail(
+            f"{len(planned.unresolved_audiobook_selections)} audiobooks selection(s) "
+            "matched 0 files (see WARNINGs above); refusing to execute until "
+            "the profile is fixed"
+        )
+    # Same safety gate as _run_sync's, just against RockboxSyncPlan's flat
+    # to_remove list (media files and stale playlist files alike — see
+    # rockbox_sync.plan_rockbox_sync, no separate playlist-removal list
+    # needed since a dropped playlist is just another file that fell out
+    # of scope).
+    if planned.plan.to_remove and not args.allow_removals:
+        return _fail(
+            f"plan proposes removing {len(planned.plan.to_remove)} file(s); "
+            "refusing to execute against a real device without --allow-removals "
+            "(review the removal list above first)"
+        )
+
+    print("== Executing ==")
+    try:
+        result = execute_rockbox_sync(planned, progress_callback=_report_progress)
+    except RockboxSyncError as e:
+        return _fail(str(e))
+
+    print(
+        f"  added={result['added']} updated={result['updated']} "
+        f"removed={result['removed']} playlists_written={result['playlists_written']}"
+    )
+    snapshot_note = (
+        f"Backup snapshot {planned.snapshot.id}"
+        if planned.snapshot is not None
+        else "The most recent backup snapshot"
+    )
+    print(
+        f"\nPASS: wrote {result['added'] + result['updated']} file(s) to a real device. "
+        f"{snapshot_note} is available for rollback if needed."
+    )
+
+    # No Rockbox equivalent yet — Rockbox keeps its own play history in
+    # .rockbox/, unreadable by this project today. Explicit no-op (with a
+    # debug log) rather than a silent skip — see the "Rockbox support"
+    # plan's open questions.
+    if profile.sync.push_play_status_back:
+        logger.debug(
+            "push_play_status_back is set but has no effect in Rockbox mode "
+            "(no reader for Rockbox's own play-history format yet)"
+        )
+
+    if not args.skip_eject:
+        try:
+            eject_device(device_info)
+            print("Device ejected — safe to disconnect.")
+        except EjectError as e:
+            print(f"WARNING: could not eject device automatically: {e}")
+
+    print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
+    return 0
+
+
+def _run_sync_for_profile(
+    args: argparse.Namespace, profile: ProfileConfig, *, profile_path: Path, config_root: Path
+) -> int:
+    """Single dispatch point used by every command that ends in a device
+    sync (`sync`, `full-sync`, `auto-sync`) — picks iTunes vs. Rockbox
+    mode off the profile itself, per common.models.SyncSettings.mode."""
+    if profile.sync.mode == "rockbox":
+        return _run_rockbox_sync(args, profile, profile_path=profile_path, config_root=config_root)
+    return _run_sync(args, profile, profile_path=profile_path, config_root=config_root)
 
 
 def _load_profiles_with_paths(directory: Path) -> list[tuple[Path, ProfileConfig]]:
@@ -539,7 +704,7 @@ def _run_full_sync(
         print("Fetch complete. Skipping device sync (--fetch-only passed).")
         return 0
 
-    return _run_sync(args, profile, profile_path=profile_path, config_root=config_root)
+    return _run_sync_for_profile(args, profile, profile_path=profile_path, config_root=config_root)
 
 
 def _cmd_auto_sync(args: argparse.Namespace) -> int:
@@ -601,7 +766,7 @@ def _cmd_auto_sync(args: argparse.Namespace) -> int:
     lock_path = Path(args.state_root) / f".sync_{matched_profile.profile}.lock"
     try:
         with FileLock(lock_path, timeout=args.lock_timeout):
-            return _run_sync(
+            return _run_sync_for_profile(
                 args,
                 matched_profile,
                 profile_path=path_by_name[matched_profile.profile],

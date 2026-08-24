@@ -58,7 +58,10 @@ service) — see "Running it" below.
   paused as of 2026-08-22 with a confirmed range on one test device but
   no fix yet — see
   [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#known-limitation-album-art-on-ipod-classic-family-devices-open-investigation-paused)
-  and `notes.md`.
+  and `notes.md`. A device running Rockbox firmware instead of stock
+  iPod firmware sidesteps this entirely (no `ArtworkDB` involved at
+  all) via `sync.mode: rockbox` — see
+  [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#rockbox-mode).
 - See the Status table above for the other known-incomplete pieces
   (Spotify downloads blocked on a Premium API requirement, podcast
   resume-position sync, alerting).

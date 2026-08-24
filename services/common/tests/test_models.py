@@ -11,6 +11,7 @@ from common.models import (
     ProfileBackupRetention,
     ProfilePodcastsConfig,
     ShowOverride,
+    SyncSettings,
 )
 
 
@@ -234,3 +235,22 @@ def test_profile_backup_retention_rejects_non_positive_values():
         ProfileBackupRetention(keep_last=0)
     with pytest.raises(ValidationError):
         ProfileBackupRetention(max_age_days=-1)
+
+
+def _sync_settings(**overrides):
+    base = dict(trigger="on_connect", transcode_format="aac", push_play_status_back=False)
+    base.update(overrides)
+    return SyncSettings(**base)
+
+
+def test_sync_settings_mode_defaults_to_itunes():
+    assert _sync_settings().mode == "itunes"
+
+
+def test_sync_settings_mode_accepts_rockbox():
+    assert _sync_settings(mode="rockbox").mode == "rockbox"
+
+
+def test_sync_settings_mode_rejects_unknown_value():
+    with pytest.raises(ValidationError):
+        _sync_settings(mode="winamp")

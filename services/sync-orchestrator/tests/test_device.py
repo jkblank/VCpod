@@ -103,6 +103,15 @@ def test_is_ipod_mount_false_for_unrelated_vfat_volume(tmp_path):
     assert is_ipod_mount(str(boot_efi)) is False
 
 
+def test_is_ipod_mount_true_for_rockbox_only_structure(tmp_path):
+    # A device with a .rockbox install but no iPod_Control at all (not
+    # yet confirmed against a real device — see the "Rockbox support"
+    # plan's open questions) must still be recognized.
+    rockbox_mount = tmp_path / "rockbox_ipod"
+    (rockbox_mount / ".rockbox").mkdir(parents=True)
+    assert is_ipod_mount(str(rockbox_mount)) is True
+
+
 def test_find_matching_device_by_volume_label(monkeypatch, tmp_path):
     ipod_mount = _make_ipod_mount(tmp_path, "ipod")
     other_mount = tmp_path / "boot_efi"

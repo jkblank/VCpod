@@ -303,6 +303,14 @@ class SyncSettings(StrictModel):
     trigger: Literal["on_connect", "manual", "cron"]
     transcode_format: str
     push_play_status_back: bool
+    # "itunes" (default): write iTunesDB/ArtworkDB via sync_orchestrator.sync
+    # (iopenpod's SyncEngine), same as every profile before this field
+    # existed. "rockbox": a plain filesystem mirror instead — no iTunesDB/
+    # ArtworkDB at all — via sync_orchestrator.rockbox_sync, for a device
+    # running Rockbox firmware (which reads file tags, not iTunesDB). See
+    # notes.md for why this is a separate code path rather than iopenpod's
+    # own rockbox_metadata_support bolt-on.
+    mode: Literal["itunes", "rockbox"] = "itunes"
 
 
 class FetchSettings(StrictModel):

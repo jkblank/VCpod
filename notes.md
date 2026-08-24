@@ -3164,3 +3164,49 @@ effort), or provisionally treating the testbed's ~327-340MB range as a
 working proxy and keeping primary's active scope under it. Real iTunes
 byte-diff comparison (Mac/Windows) remains the one untried lever if
 this gets picked back up later.
+
+## 2026-08-23: Rockbox mode added — sidesteps the album-art ceiling for good, doesn't fix it
+
+Earlier in this file's own binary-search writeup (album art size-ceiling
+section, "F1055 128x128... matching real iTunes' own set exactly"),
+Rockbox was noted as "considered as a hypothetical alternative firmware
+mid-session and set aside as out of scope — its album art mechanism is
+architecturally unrelated to Apple's ArtworkDB anyway, so this bug
+wouldn't apply there regardless." That's now built: `sync.mode: rockbox`
+on a profile (default `itunes`, every existing profile unaffected)
+routes device sync through a new `services/sync-orchestrator/src/
+sync_orchestrator/rockbox_sync.py` instead of `sync.py` — a plain
+filesystem mirror, no `iTunesDB`/`ArtworkDB`/`SyncEngine` at all. Full
+design writeup and reasoning: `services/sync-orchestrator/README.md`'s
+"Rockbox mode" section.
+
+Two things worth recording here specifically, since both were found by
+reading code rather than being obvious from the task itself:
+
+- iopenpod already ships an `EngineOptions.rockbox_metadata_support`
+  option (`sync/rockbox_metadata.py`) — looked like a possible shortcut
+  at first, but it's a *bolt-on* pass on top of the normal iTunesDB
+  sync (dual-boot use case): iTunesDB/ArtworkDB still get written in
+  full (still hits the size ceiling above), and its tag writer is
+  coupled to the obfuscated `iPod_Control/Music/...` layout and
+  `TrackInfo` objects from that same pipeline. Bigger problem: iopenpod
+  parses `.m3u8` files found in a synced folder purely as iTunesDB
+  playlist *definitions* (`sync/sync_playlist_files.py`) and never
+  copies the physical file to the device — under that option, Rockbox
+  (which never reads iTunesDB) would see no playlists at all. Not used
+  for this reason.
+- ffmpeg's audio-only transcode commands (`_cmd_alac`/`_cmd_aac`/
+  `_cmd_mp3` in iopenpod's `transcoder.py`) all pass `-vn`, which strips
+  any embedded cover-art stream even though basic text tags survive by
+  ffmpeg's own default metadata handling. So a straight file copy (no
+  transcode needed) preserves art for free, but any track that actually
+  gets transcoded loses it unless re-embedded afterward — `rockbox_sync.
+  execute_rockbox_sync` does this by reading the original art straight
+  from the source file (mutagen) and re-embedding it into the transcoded
+  output. Confirmed by reading the ffmpeg command-builder source, not
+  yet confirmed live against a real Rockbox device.
+
+Genuinely open, unverified against a real device: whether a Rockbox-
+loaded iPod still exposes `iPod_Control/Device/SysInfo` (device.py's
+`is_ipod_mount` now also accepts a `.rockbox/` directory, belt-and-
+suspenders, but this hasn't been tested live either way).
