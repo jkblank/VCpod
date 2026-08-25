@@ -75,6 +75,13 @@ class LibraryManagerConfig(StrictModel):
     # (unchanged default behavior, via the `library-manager` CLI).
     dedup_enabled: bool = False
     cleanup_enabled: bool = False
+    # Re-encodes embedded cover art through Pillow for any track whose
+    # art carries a marker Pillow's own encoder never writes (DRI,
+    # APP13/Photoshop, APP14/Adobe, progressive) — found live to break
+    # on-device album art rendering for at least one real track,
+    # independent of library size. See library_manager.artwork and
+    # notes.md, 2026-08-25.
+    normalize_artwork_enabled: bool = False
     # Mirror find_duplicate_groups'/sweep_quarantine's own defaults —
     # present here so these can be overridden via config (e.g. a GUI)
     # without a code change.

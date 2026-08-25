@@ -16,33 +16,64 @@ Standalone `uv` project (not part of the root workspace) — `iopenpod`
 pulls in PyQt6, a heavy dependency kept isolated from the other services,
 same reasoning as `services/fetcher-spotify`.
 
-## Known limitation: album art on iPod Classic-family devices (open, investigation paused)
+## Known limitations: album art on iPod Classic-family devices
 
-On iPod Classic-family devices (6th/7th gen — the 5.5th-gen iPod Video is
-unaffected, see `docs/iopenpod-artworkdb-missing-mhii-chunk.md`), album
-art can stop rendering on-device once the total on-device
-`ArtworkDB`/`.ithmb` footprint gets large enough, even though every
-byte written is independently verified correct (right pixels, right
-format, right `iTunesDB`↔`ArtworkDB` cross-references). Confirmed via a
-real binary search on a disposable test device: a genuine size ceiling
-exists somewhere in **[327MB, 340MB]** of combined `ArtworkDB`+`.ithmb`
-data for that unit. A from-scratch `iTunesDB`/`ArtworkDB` rewrite (no
-accumulated history at all) rules out "stale/orphaned DB data" as the
-cause — confirmed on two separate physical devices, including the
-primary 7th-gen device at full scale (6,388 tracks) — but does not fix
-it once the library is large. The primary device's own specific
-threshold has not been measured independently (paused 2026-08-22, see
-`notes.md` for the full investigation and the one untried lever: a
-real-iTunes byte-diff comparison, needs a Mac/Windows machine). No code
-fix exists yet — this is a real, open firmware/protocol-level limit as
-far as this project's investigation has determined so far, not
-something `sync-orchestrator` is doing wrong.
+Two separate, real causes on iPod Classic-family devices (6th/7th gen —
+the 5.5th-gen iPod Video is unaffected, see `docs/iopenpod-artworkdb-
+missing-mhii-chunk.md`), confirmed independent of each other by
+real-device testing (2026-08-24/25, see `notes.md` for the full
+investigation) — every byte written for both is independently verified
+correct (right pixels, right format, right `iTunesDB`↔`ArtworkDB`
+cross-references) in both cases, this is not a data-correctness bug in
+`sync-orchestrator`.
 
-**Rockbox mode (below) sidesteps this entirely** for a device running
-Rockbox firmware — it never touches `ArtworkDB`, so it isn't subject to
-this ceiling. It doesn't fix the limitation for stock-firmware devices;
-it's a different code path for a different firmware, not a workaround
-bolted onto the existing one.
+### 1. Specific tracks with Photoshop-processed cover art (fixed)
+
+At least one real track ("Cool Kids" by Echosmith) whose embedded JPEG
+cover art carries a DRI (Define Restart Interval) marker — consistent
+with having been processed through Photoshop or similar tooling —
+reliably broke rendering whenever it was on the device, confirmed
+independent of total track count/size (same exact track count and
+`ArtworkDB` byte size landed on both sides of "working" depending only
+on whether this track's art was included).
+
+**Fixed**: `library-manager normalize-artwork` re-encodes embedded
+cover art through Pillow (which never writes the flagged markers) for
+any affected track, unconditionally rather than trying to predict which
+files are actually broken (the marker alone isn't a usable predictor —
+94.5% of the real library carries it, most rendering fine) — see
+`services/library-manager/README.md`'s "Artwork normalization" section.
+Verified via a full clean-wipe real-device sync before merging.
+
+### 2. A separate, real total-`ArtworkDB`-size ceiling (open, paused)
+
+Independent of fix #1 above: a real total `ArtworkDB` byte-size ceiling
+also exists on the one 6th Gen/80GB test device measured — confirmed
+**working at 1,547 tracks/340.5MB**, confirmed **failing at 1,958
+tracks/394.8MB**, both via full clean-wipe syncs with fix #1 already
+applied either way. This narrows (and confirms) the original
+2026-08-20 binary search's [326MB, 340MB] finding, which briefly looked
+disproven mid-investigation before both effects were shown to coexist.
+The primary 7th-gen device's own specific threshold has not been
+measured independently. No code fix exists — this is a real,
+firmware/protocol-level limit.
+
+**Compressing source album art does NOT help** with this — on-device
+art is never a compressed image file — every embedded cover gets
+decoded and re-encoded to three fixed-size, *uncompressed* RGB565 raw
+pixel formats (128×128 = 32,768 bytes, 320×320 = 204,800 bytes,
+55×55 = 6,050 bytes; ~243KB per unique image, always, regardless of
+source file size). The real levers for total `ArtworkDB` size are dedup
+(already near-optimal — one image shared per album) and the number of
+*unique* album images synced — curating a large-library device down
+with `profile.music` scoping (see "Music library scope" above), or
+switching it to Rockbox mode below, are the two real mitigations.
+
+**Rockbox mode (below) sidesteps `ArtworkDB` entirely** for a device
+running Rockbox firmware — it reads embedded tags/art directly from
+each file, so neither issue above applies to it. It doesn't fix
+anything for stock-firmware devices; it's a different code path for a
+different firmware, not a workaround bolted onto the existing one.
 
 ## Rockbox mode
 

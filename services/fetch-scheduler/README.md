@@ -13,12 +13,13 @@ this service only adds the "which targets are due, and when" layer on top
 (`common.schedule`, `common.state`'s `fetch_runs` table).
 
 Each tick also runs library maintenance as a post-step whenever any
-profile actually fetched: cross-source dedup, quarantine cleanup
-(`library-manager`), and device backup pruning/GC (`common.backups`).
-These have no schedule of their own — gated purely by
-`config/global.yaml`'s `library_manager.dedup_enabled`/`cleanup_enabled`
-and `backups.prune_enabled` booleans, off by default. See "Library
-maintenance" below.
+profile actually fetched: cross-source dedup, quarantine cleanup,
+embedded-artwork normalization (all `library-manager`), and device
+backup pruning/GC (`common.backups`). These have no schedule of their
+own — gated purely by `config/global.yaml`'s
+`library_manager.dedup_enabled`/`cleanup_enabled`/
+`normalize_artwork_enabled` and `backups.prune_enabled` booleans, off
+by default. See "Library maintenance" below.
 
 ## Deployment
 
@@ -61,6 +62,7 @@ Two equally-supported ways to run it, pick whichever fits your setup:
 library_manager:
   dedup_enabled: true     # library-manager dedup, whenever any fetch happens
   cleanup_enabled: true   # library-manager cleanup-duplicates, same trigger
+  normalize_artwork_enabled: true   # library-manager normalize-artwork, same trigger
   fuzzy_threshold: 92.0             # optional, matches library-manager's own default
   quarantine_older_than_days: 14    # optional, ditto
 backups:

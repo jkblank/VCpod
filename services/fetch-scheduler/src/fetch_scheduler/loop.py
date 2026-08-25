@@ -12,6 +12,7 @@ from common.models import GlobalConfig, ProfileConfig
 from common.schedule import is_due, iter_fetch_targets, resolve_fetch_scope
 from common.state import StateDB
 
+from library_manager.artwork import normalize_library_artwork
 from library_manager.cleanup import sweep_quarantine
 from library_manager.dedup import find_duplicate_groups, quarantine_duplicates
 from library_manager.scan import scan_library
@@ -202,6 +203,11 @@ def _process_maintenance(
             ),
         ),
         (
+            "artwork_normalize",
+            global_config.library_manager.normalize_artwork_enabled,
+            lambda: _run_artwork_normalize(library_root=library_root, dry_run=dry_run),
+        ),
+        (
             "backup_prune",
             global_config.backups.prune_enabled,
             lambda: _run_backup_prune(
@@ -265,6 +271,14 @@ def _run_library_cleanup(*, library_root: Path, older_than_days: int, dry_run: b
     removed = sweep_quarantine(library_root / "music", older_than_days=older_than_days, dry_run=dry_run)
     verb = "would remove" if dry_run else "removed"
     return f"{verb} {len(removed)} quarantined file(s) older than {older_than_days} days"
+
+
+def _run_artwork_normalize(*, library_root: Path, dry_run: bool) -> str:
+    # normalize_library_artwork has a real dry-run mode (unlike dedup
+    # above) — called for real either way, same as cleanup.
+    result = normalize_library_artwork(library_root / "music", dry_run=dry_run)
+    verb = "would normalize" if dry_run else "normalized"
+    return f"scanned {result.scanned} tracks, {verb} {len(result.normalized)}"
 
 
 def _run_backup_prune(
