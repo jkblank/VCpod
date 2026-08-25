@@ -120,6 +120,12 @@ def _run_gamdl(
             "--playlist-folder-template", str(scratch_dir.relative_to(library_root)),
             "--playlist-file-template", "playlist",
             "--no-exceptions",
+            # This process's own stdout/stderr are already fully captured
+            # below and only ever surfaced on failure (in full, regardless
+            # of level) -- WARNING just cuts gamdl's own routine per-track
+            # progress/INFO noise, it doesn't reduce what we can see when
+            # something actually goes wrong.
+            "--log-level", "WARNING",
         ],
         capture_output=True,
         text=True,
@@ -229,6 +235,7 @@ def _run_gamdl_single_track(
             "--cookies-path", str(cookies_path),
             "--output-path", str(scratch_dir),
             "--no-exceptions",
+            "--log-level", "WARNING",
         ],
         capture_output=True,
         text=True,
