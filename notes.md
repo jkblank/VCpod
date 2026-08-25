@@ -3478,18 +3478,65 @@ based on that working, independent of having fully root-caused the
 underlying mechanism. See that branch's own commits for the real-device
 verification result once run.
 
-**Revised overall status**: the [326MB, 340MB] figure from the original
-2026-08-20 binary search was real data, but the *interpretation* — "a
-firmware size ceiling" — was likely wrong, or at best an incomplete
-explanation. The more likely account, given everything found this
-session: specific tracks with Photoshop-processed (restart-interval)
-JPEG art can break rendering independent of scale, and the original
-binary search rounds most likely crossed paths with one or more such
-tracks at various points, producing what looked like a clean size
-threshold by coincidence of *which* tracks happened to be included at
-each checkpoint. Not fully certain a size ceiling doesn't *also* exist
-independently — this session never tested pure growth using only
-already-confirmed-clean tracks all the way to a very large total — but
-given a real, reproducible per-file cause now in hand with a working
-fix, further chasing a possible *additional* size ceiling is left for
-if it resurfaces after this fix is verified and merged.
+**Revised overall status (superseded below)**: at this point the working
+theory was that the original [326MB, 340MB] finding was likely just
+Cool-Kids-class bad tracks masquerading as a size threshold. Real-device
+verification below settled it more precisely — both explanations turned
+out to be real and independent.
+
+## 2026-08-25: real-device verification — the Cool Kids fix works, AND there's a separate, real size ceiling
+
+Full real-device verification of the `library-manager normalize-artwork`
+fix (`fix/normalize-embedded-artwork` branch), following the plan's own
+bar for merging (verify on real hardware, merge on that working
+regardless of whether the underlying mechanism is fully understood):
+
+1. Ran `library-manager normalize-artwork --library-root library/music`
+   for real against the live library (1,998 tracks scanned) — re-ran
+   immediately after to confirm idempotency (`scanned 1998, normalized
+   0`, as designed).
+2. **Clean-wipe test, 1,547 tracks, 340.5MB Artwork**: full fresh sync
+   (`iPod_Control/Artwork`+`Music`+`iTunesDB`+iOpenPod mapping cache all
+   wiped first) including the real, now-fixed Cool Kids file — **album
+   art renders**. This is the actual proof the fix works: same real
+   file, same shipped code path, no leftover device-side cache or
+   staleness possible.
+   - Worth recording: an earlier *incremental* sync of just the fixed
+     Cool Kids file onto an already-heavily-churned device (dozens of
+     add/remove cycles earlier the same day, no fresh wipe) still
+     failed to render, despite the file itself being verified
+     byte-identical to what worked in ad hoc testing. Root cause not
+     fully pinned down, but consistent with this project's own
+     documented iopenpod integrity-check gotcha (`services/sync-
+     orchestrator/sync.py` era: iopenpod's fingerprint/mapping cache
+     not always correctly invalidating when file *content* changes at
+     the same path) — a clean wipe is what actually resolved the
+     ambiguity, not further inspection of the file itself.
+3. **Full real library, 1,958 tracks**: synced the *entire* real
+   `library/music`, both incrementally (429.8MB Artwork, still failed
+   to render) and via a second full clean wipe (394.8MB Artwork,
+   *still* failed to render, ruling out incremental-update staleness as
+   the explanation this time). Cool Kids' fix was intact and unrelated
+   to this failure — this is a **second, independent effect**.
+
+**Conclusion**: both things found this session are real and coexist.
+The Cool Kids-class bug (specific tracks with Photoshop-processed/
+restart-interval JPEG art) is real, reproducible, and now fixed by
+`normalize-artwork`. A **separate, real total-`ArtworkDB`-size ceiling
+also exists** on this 6th Gen/80GB device — now bounded more tightly
+than the original 2026-08-20 binary search: confirmed **working at
+1,547 tracks/340.5MB**, confirmed **failing at 1,958 tracks/394.8MB**
+(clean wipe, Cool Kids fix in place either way). The original [326MB,
+340MB] figure was real after all; this session's data narrows the
+upper edge of "still works" slightly higher (340.5MB) than previously
+measured, consistent with normal noise/different track mix rather than
+a contradiction.
+
+**Decision**: merge the `normalize-artwork` fix to `main` now — it's a
+real, verified fix for a real, distinct bug, independent of the
+still-open size ceiling. The size ceiling itself remains a separate,
+still-open, paused investigation (per the user's earlier 2026-08-22
+decision) — `profile.music` scoping and Rockbox mode remain the actual
+mitigations for a device whose desired library exceeds this device's
+own real ceiling, not something `normalize-artwork` was ever meant to
+solve.

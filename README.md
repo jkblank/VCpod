@@ -52,22 +52,26 @@ service) — see "Running it" below.
 ## Known issues
 
 - **Album art can fail to render on iPod Classic-family devices (6th/7th
-  gen) for specific tracks** — not a data-correctness bug (every byte
-  written is independently verified correct). Root cause found
-  2026-08-25: at least one real track with Photoshop-processed
-  (restart-interval) JPEG cover art reliably breaks rendering whenever
-  it's on the device, independent of total library size — an earlier
-  theory that this was purely a total `ArtworkDB` byte-size ceiling
-  (~326-340MB on the one test device measured) turned out not to fully
-  hold up once tested further. Fix (`library-manager normalize-artwork`)
-  built on branch `fix/normalize-embedded-artwork`, pending a
-  real-device verification pass before merging — see
-  [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#known-limitation-album-art-on-ipod-classic-family-devices-root-cause-found-fix-pending-merge)
-  and `notes.md`. Compressing source album art does not help with
-  on-device footprint size, a separate question (on-device art is
+  gen)** — two separate, real causes, not a data-correctness bug (every
+  byte written is independently verified correct in both cases):
+  1. **Fixed**: specific tracks with Photoshop-processed
+     (restart-interval) JPEG cover art reliably broke rendering whenever
+     they were on the device, independent of total library size —
+     `library-manager normalize-artwork`, merged, re-encodes affected
+     tracks' embedded art unconditionally (no cheap way was found to
+     predict which files are actually affected).
+  2. **Open, paused**: a real, separate total `ArtworkDB` byte-size
+     ceiling also exists (confirmed working at 1,547 tracks/340.5MB,
+     failing at 1,958 tracks/394.8MB on the one test device measured,
+     with fix #1 already applied either way) — no code fix exists, this
+     is a real firmware/protocol-level limit.
+  See
+  [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#known-limitations-album-art-on-ipod-classic-family-devices)
+  and `notes.md` for the full investigation. Compressing source album
+  art does not help with #2's footprint size (on-device art is
   fixed-size uncompressed pixel data, not the original file — see the
   README section above). A device running Rockbox firmware instead of
-  stock iPod firmware sidesteps `ArtworkDB` entirely via
+  stock iPod firmware sidesteps `ArtworkDB` entirely (both issues) via
   `sync.mode: rockbox` — see
   [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#rockbox-mode).
 - See the Status table above for the other known-incomplete pieces
