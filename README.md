@@ -52,15 +52,23 @@ service) — see "Running it" below.
 ## Known issues
 
 - **Album art can fail to render on iPod Classic-family devices (6th/7th
-  gen) once the on-device library gets large enough** — a real total
-  `ArtworkDB`/`.ithmb` size ceiling, not a data-correctness bug (every
-  byte written is independently verified correct). Investigation
-  paused as of 2026-08-22 with a confirmed range on one test device but
-  no fix yet — see
-  [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#known-limitation-album-art-on-ipod-classic-family-devices-open-investigation-paused)
-  and `notes.md`. A device running Rockbox firmware instead of stock
-  iPod firmware sidesteps this entirely (no `ArtworkDB` involved at
-  all) via `sync.mode: rockbox` — see
+  gen) for specific tracks** — not a data-correctness bug (every byte
+  written is independently verified correct). Root cause found
+  2026-08-25: at least one real track with Photoshop-processed
+  (restart-interval) JPEG cover art reliably breaks rendering whenever
+  it's on the device, independent of total library size — an earlier
+  theory that this was purely a total `ArtworkDB` byte-size ceiling
+  (~326-340MB on the one test device measured) turned out not to fully
+  hold up once tested further. Fix (`library-manager normalize-artwork`)
+  built on branch `fix/normalize-embedded-artwork`, pending a
+  real-device verification pass before merging — see
+  [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#known-limitation-album-art-on-ipod-classic-family-devices-root-cause-found-fix-pending-merge)
+  and `notes.md`. Compressing source album art does not help with
+  on-device footprint size, a separate question (on-device art is
+  fixed-size uncompressed pixel data, not the original file — see the
+  README section above). A device running Rockbox firmware instead of
+  stock iPod firmware sidesteps `ArtworkDB` entirely via
+  `sync.mode: rockbox` — see
   [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#rockbox-mode).
 - See the Status table above for the other known-incomplete pieces
   (Spotify downloads blocked on a Premium API requirement, podcast

@@ -1,9 +1,9 @@
 # library-manager
 
-Cross-source deduplication and quarantine cleanup for the shared
-`library/music/` — catches the same song downloaded from more than one
-source (Apple Music + YouTube Music, say) and collapses it down to one
-canonical file. Root workspace member.
+Cross-source deduplication, quarantine cleanup, and embedded-artwork
+normalization for the shared `library/music/`. Dedup catches the same
+song downloaded from more than one source (Apple Music + YouTube Music,
+say) and collapses it down to one canonical file. Root workspace member.
 
 ## How dedup works
 
@@ -45,17 +45,43 @@ uv run library-manager cleanup-duplicates \
     --library-root library/music \
     --older-than-days 14 \
     --dry-run   # list what would be removed without touching anything
+
+# Re-encode embedded cover art that carries markers Pillow's own
+# encoder never writes (see "Artwork normalization" below).
+uv run library-manager normalize-artwork --library-root library/music
 ```
+
+## Artwork normalization
+
+Found live (2026-08-25): a real track's embedded JPEG cover art carried
+a DRI (Define Restart Interval) marker plus an APP13/Photoshop segment
+— consistent with having been processed through Photoshop or similar
+tooling — and reliably broke on-device album art rendering on a real
+iPod Classic test unit, confirmed independent of total library size and
+of image dimensions (re-encoding at the *same* resolution fixed it just
+as well as shrinking it did, isolating the fix to "re-encode" rather
+than "resize"). The marker alone isn't a usable predictor of which
+tracks are actually affected — the large majority of a real library
+carries it, most rendering fine — so `normalize_track_artwork`
+(`artwork.py`) re-encodes through Pillow (which never writes these
+markers) unconditionally for any track that shows one, rather than
+trying to guess further which specific files are actually broken. See
+`notes.md`, 2026-08-25, for the full investigation.
+
+Self-limiting on repeat runs: once re-encoded, a track's art no longer
+carries any of the flagged markers, so later passes skip it without
+even decoding it — safe to run over the whole library on every
+scheduler tick without repeated lossy recompression.
 
 ## Automatic scheduling
 
-Both commands also run automatically as a post-step in
+All three commands also run automatically as a post-step in
 `fetch-scheduler`'s tick, whenever any profile actually fetches — see
 `config/global.yaml`'s `library_manager.dedup_enabled`/
-`cleanup_enabled` and `services/fetch-scheduler/README.md`. No separate
-schedule of their own; toggling these two booleans is the only config
-needed, the CLI above stays available for manual/ad hoc runs on top of
-that.
+`cleanup_enabled`/`normalize_artwork_enabled` and
+`services/fetch-scheduler/README.md`. No separate schedule of their
+own; toggling these booleans is the only config needed, the CLI above
+stays available for manual/ad hoc runs on top of that.
 
 ## Known gap
 

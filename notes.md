@@ -3287,3 +3287,209 @@ is a per-run scope choice, not an "I removed this" signal).
 actual fetch (`music-stack sync`, or `sync-orchestrator full-sync`,
 which does both stages) — running `sync-orchestrator sync` alone will
 never prune a stale playlist, by design (it doesn't own that folder).
+
+## 2026-08-24: album-art investigation resumed — confirmed it's a byte-size ceiling, not a bad track; and why source art compression can't fix it
+
+Investigation un-paused at the user's request, using the disposable 6th
+Gen testbed device (still sitting untouched at its last state from the
+2026-08-20 growth-rate test: 1,715 tracks/364MB, no art — see "growth
+*rate* vs. total size" above). The user's hypothesis going in: a single
+bad track (or a handful) causes the failure, not scale itself, since
+they'd personally seen other real iPods with 5,000+ tracks and visible
+art.
+
+**Methodology note, a real mistake caught mid-session**: the device's
+own iTunesDB cleanly splits its 1,715 tracks into two batches by
+`date_added` — 1,555 tracks from the last known-*working* sync
+(19:48 UTC) and 160 tracks from the failed jump 22 minutes later
+(20:10 UTC), giving an exact reproduction of the original growth-rate
+test's two checkpoints without needing the long-deleted source library.
+First attempt extracted both batches' audio files straight off the
+device's own `iPod_Control/Music/` — but a real iPod stores **no
+metadata or art in the file itself**; title/artist/album/art all live
+in the separate iTunesDB/ArtworkDB. Syncing those extracted files
+produced "Unknown Artist/Unknown Album" and (correctly, given the
+input) no art at all — a red herring, not a real result. Fixed by
+matching each track (title+artist, normalized) back against the real,
+still-intact source files in `library/music/` (which do carry embedded
+tags/art) and building the test library from those instead — a
+one-off track-number-stripping regex bug in the matcher briefly ate
+real digits out of titles like "4 Minute Warning"/"24/7" before all
+1,715 tracks matched cleanly.
+
+**Recreated baseline**: 1,534 tracks, 338MB (below, after settling) —
+confirmed **album art renders correctly**, matching the original
+"1,550 works" checkpoint almost exactly. Bisected the 160 candidate
+tracks from the failed jump by halving (160→80→40→20→10→5→2), each
+round confirming album art broken at every step down to a specific
+pair: **The Big Moon "Fun" + Slackr "Friends with you"** (baseline +
+these 2 = 1,536 tracks) reproduced the failure.
+
+**Then the actual finding, once isolating further**: neither track
+fails on its own (baseline + Big Moon alone = 1,535, works; baseline−2
++ Slackr alone = 1,533, works), and the *pair* together still works
+when the total count is pushed below 1,536 (baseline−1 + both = 1,533,
+works). But the exact same pair at 1,536 fails. **Decisive test**:
+baseline + two different, previously-untested tracks (Rosa Walton &
+Hallie Coggins, The Beatles "Hey Jude") landing at the *identical*
+1,536 track count — **works, art renders**. Same count, different
+content, opposite results. This rules out both "one bad track" and
+pure track-count as the driving variable. Measured the `Artwork`
+directory at this working 1,536-track state: **353,663,066 bytes
+(338MB)** — squarely inside the original binary search's [326MB,
+340MB] range from 2026-08-20, independently reproducing and tightening
+confidence in that same byte-size-ceiling finding via a completely
+different content set. Big Moon + Slackr's combined art evidently
+pushed the same 1,536-track state just over the real boundary; Rosa
+Walton + Hey Jude's didn't. Round 12 (this exact test) hit a real
+mid-write device disconnect on the first attempt — iopenpod's own
+`filesystem_safety` check aborted cleanly before writing
+(`mount instance changed after inspection`), iTunesDB was verified
+still consistent at its pre-sync 1,535-track state afterward, no
+corruption; the retry completed cleanly. The testbed device's USB
+connection dropped and needed remounting close to a dozen times over
+this session — environmental, not a code issue, but worth flagging if
+this device is used again.
+
+**User's follow-up question, with an important structural answer**: can
+shrinking source album art file sizes reduce the on-device footprint
+for a much larger (60k-track) library? **No — confirmed by reading
+iopenpod's own encoder** (`artworkdb_writer/ithmb_codecs.py`/
+`rgb565.py`): on-device art is never a compressed image file at all.
+Every embedded cover gets decoded and re-encoded to exactly three
+**fixed-size, uncompressed RGB565 raw pixel** formats, matching real
+iTunes' own shape (see the "F1055/F1060/F1061... matching real iTunes'
+own set exactly" note earlier in this file):
+
+| Format | Resolution | Size (fixed, always) |
+|---|---|---|
+| F1055 | 128×128 | 32,768 bytes |
+| F1060 | 320×320 | 204,800 bytes |
+| F1061 | 55×55 | 6,050 bytes |
+| **Total per unique image** | | **~243KB, always** |
+
+A source cover that's 20KB or 5MB costs the device the exact same
+~243KB either way — source compression/resolution has **zero** effect
+on `ArtworkDB` size. The only two real levers are dedup (already
+near-optimal — one image shared per album, ~99% efficient in earlier
+testing) and the raw count of unique album images synced. Back-of-
+envelope from the measured 338MB/1,536-track boundary: ≈338MB ÷ 243KB
+≈ **~1,400 unique album images** is roughly this device's real ceiling,
+independent of track count. For 60,000 tracks to fit under that would
+need a ~43:1 track-to-unique-image dedup ratio — unrealistic even for a
+well-organized library (this project's own real primary library
+measured ~3:1, see the dedup-efficiency note earlier in this file). So
+even best-case, 60k tracks would need ~20,000 unique images ≈ 4.7GB,
+nowhere close.
+
+**Practical implication (superseded below — kept for the record)**: at
+this point in the investigation the working theory was still "a real
+`ArtworkDB` byte-size ceiling, ~326-340MB, tracking unique image count."
+Continued testing the same session overturned that as the *primary*
+explanation — see the next entry.
+
+## 2026-08-25: root cause found — not a size ceiling, a specific bad file ("Cool Kids" by Echosmith)
+
+Continued growing past the working 1,536-track/338MB state with fresh,
+previously-untested tracks (a session/machine restart wiped the scratch
+staging dir mid-session — re-matched the device's then-current 1,545
+tracks back against the real library by title/artist, 100% match, no
+data lost since the device's own physical state survived untouched):
+
+| Tracks | Artwork dir | Result |
+|---|---|---|
+| 1,538 | — | works |
+| 1,542 | — | works |
+| 1,545 | 339.4MB | works |
+| 1,549 | **340.5MB** | **works** — already past the old "340MB" ceiling assumption |
+| 1,557 | **327.5MB** | **fails** — *fewer* bytes than the working 1,549 state |
+
+The 1,557 result is the key one: total `ArtworkDB` bytes went *down*
+between a working and a failing checkpoint (most likely `.ithmb`
+chunk-packing/allocation across the fixed 32MB-per-file boundary
+reshuffling non-linearly with content, not a smooth function of byte
+count — not fully explained, but the byte-size-ceiling theory cannot
+account for a failure at a lower byte count than an already-confirmed
+success). This directly falsified pure total-size as the explanation
+for at least this failure.
+
+Bisected the 8 tracks added between 1,549 (works) and 1,557 (fails) by
+halving (8→7→3→1) down to a single track: **"Cool Kids" by Echosmith**
+(from the "100 Greatest Throwback Songs" compilation). Confirmed
+decisively, the same rigor as the earlier Big Moon/Slackr false lead:
+- Baseline alone (1,545, confirmed working) + Cool Kids alone (1,546)
+  → **fails**.
+- Cool Kids alone at a count *below* the confirmed-safe baseline
+  (baseline −3 tracks, 1,543 total) → **still fails** — rules out a
+  size-crossing coincidence this time, unlike Big Moon/Slackr.
+- Same exact 1,543 count with Cool Kids swapped out for a different
+  track ("Drops of Jupiter (Tell Me)") → **works**. Same count,
+  different content, opposite result — this is a real per-file defect,
+  not a size effect.
+
+**What's different about this file**: its embedded JPEG carries a DRI
+(Define Restart Interval) marker (`0xFFDD`) plus an APP13/Photoshop
+segment — a real, inspectable marker-level difference, consistent with
+the file having been processed through Photoshop or similar tooling at
+some point (also explains an earlier, otherwise-unremarkable oddity:
+this file carries EXIF metadata in its cover art, unusual for album
+art). Confirmed the fix by isolating resize from re-encode:
+- Resizing Cool Kids' art 1200×1200 → 500×500 (through Pillow) → art
+  renders again.
+- Re-encoding at the **same** 1200×1200 (decode + re-save through
+  Pillow, no resize at all) → **also** renders again.
+
+Since both fix it, the size reduction was never the actual variable —
+Pillow's own JPEG encoder never writes restart markers, so any Pillow
+re-encode strips whatever's actually mishandled downstream (not
+established whether that's iopenpod's own art-extraction/RGB565
+conversion path, or the device firmware's own thumbnail decoder — out
+of scope to chase further given a working fix in hand).
+
+**Why this isn't a simple "scan for the marker and warn" fix**: checked
+how common each candidate signal is across the real library (1,997
+tracks with embedded art) — EXIF: 1,897 tracks (95%), DRI marker: 1,887
+tracks (94.5%), including several *already individually confirmed
+working* earlier this same session (Slackr, RAT BOY, Koyo, The Bouncing
+Souls, Chief State, Making Friends all carry the DRI marker and
+rendered fine). Also checked non-square art dimensions (a separate, much
+rarer trait — 44 tracks, 2.2%) as an alternate lead: batch-tested all
+44 together against the confirmed-good baseline (with Cool Kids
+excluded) — worked fine, ruling out non-square art as a general failure
+class too. So no cheap library-wide signal was found that reliably
+separates "affected" from "shares a marker, but fine" — whatever's
+actually wrong with Cool Kids' specific encoding remains only
+empirically characterized, not fully root-caused at the byte level.
+
+**Fix shipped**: `services/library-manager/src/library_manager/
+artwork.py` (new) re-encodes embedded cover art through Pillow,
+unconditionally, for any track whose art shows one of the markers
+Pillow's own encoder never writes (DRI, APP13/Photoshop, APP14/Adobe,
+progressive SOF2) — given no cheap way was found to predict which files
+are actually affected, and the cost is low (thumbnails ultimately
+downsampled to ≤320×320 on-device; Pillow re-encode at quality 90 is
+visually imperceptible at that scale). New `library-manager
+normalize-artwork` CLI command + `LibraryManagerConfig.
+normalize_artwork_enabled` config flag, wired into `fetch-scheduler`'s
+maintenance tasks the same way dedup/cleanup already are. Built on
+`fix/normalize-embedded-artwork`, not yet merged to `main` — the user's
+explicit call was to verify via a real device test first and merge
+based on that working, independent of having fully root-caused the
+underlying mechanism. See that branch's own commits for the real-device
+verification result once run.
+
+**Revised overall status**: the [326MB, 340MB] figure from the original
+2026-08-20 binary search was real data, but the *interpretation* — "a
+firmware size ceiling" — was likely wrong, or at best an incomplete
+explanation. The more likely account, given everything found this
+session: specific tracks with Photoshop-processed (restart-interval)
+JPEG art can break rendering independent of scale, and the original
+binary search rounds most likely crossed paths with one or more such
+tracks at various points, producing what looked like a clean size
+threshold by coincidence of *which* tracks happened to be included at
+each checkpoint. Not fully certain a size ceiling doesn't *also* exist
+independently — this session never tested pure growth using only
+already-confirmed-clean tracks all the way to a very large total — but
+given a real, reproducible per-file cause now in hand with a working
+fix, further chasing a possible *additional* size ceiling is left for
+if it resurfaces after this fix is verified and merged.

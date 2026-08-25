@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from library_manager.artwork import normalize_library_artwork
 from library_manager.cleanup import sweep_quarantine
 from library_manager.dedup import find_duplicate_groups, quarantine_duplicates
 from library_manager.scan import scan_library
@@ -51,6 +52,16 @@ def _cmd_cleanup_duplicates(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_normalize_artwork(args: argparse.Namespace) -> int:
+    result = normalize_library_artwork(args.library_root)
+    print(f"Scanned {result.scanned} tracks, normalized {len(result.normalized)}.")
+    for path in result.normalized:
+        print(f"  normalized {path}")
+    for path, error in result.failures:
+        print(f"  FAILED {path}: {error}")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="library-manager")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -73,6 +84,12 @@ def main() -> None:
     cleanup_parser.add_argument("--older-than-days", type=int, default=14)
     cleanup_parser.add_argument("--dry-run", action="store_true")
     cleanup_parser.set_defaults(func=_cmd_cleanup_duplicates)
+
+    normalize_artwork_parser = subparsers.add_parser(
+        "normalize-artwork", help="Re-encode embedded cover art that carries markers Pillow's own encoder never writes"
+    )
+    normalize_artwork_parser.add_argument("--library-root", required=True)
+    normalize_artwork_parser.set_defaults(func=_cmd_normalize_artwork)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

@@ -200,6 +200,7 @@ def test_library_manager_config_defaults():
     cfg = LibraryManagerConfig()
     assert cfg.dedup_enabled is False
     assert cfg.cleanup_enabled is False
+    assert cfg.normalize_artwork_enabled is False
     assert cfg.fuzzy_threshold == 92.0
     assert cfg.quarantine_older_than_days == 14
 

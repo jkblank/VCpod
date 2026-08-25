@@ -191,6 +191,7 @@ podcasts:
 library_manager:
   dedup_enabled: {dedup_enabled}
   cleanup_enabled: {cleanup_enabled}
+  normalize_artwork_enabled: {normalize_artwork_enabled}
 backups:
   prune_enabled: {prune_enabled}
 """
@@ -201,6 +202,7 @@ def _setup_maintenance(
     *,
     dedup_enabled: bool = False,
     cleanup_enabled: bool = False,
+    normalize_artwork_enabled: bool = False,
     prune_enabled: bool = False,
     profiles: dict[str, str | None] | None = None,
 ) -> Path:
@@ -209,6 +211,7 @@ def _setup_maintenance(
     yaml_text = MAINTENANCE_GLOBAL_YAML.format(
         dedup_enabled=str(dedup_enabled).lower(),
         cleanup_enabled=str(cleanup_enabled).lower(),
+        normalize_artwork_enabled=str(normalize_artwork_enabled).lower(),
         prune_enabled=str(prune_enabled).lower(),
     )
     (config_root / "global.yaml").write_text(yaml_text)
@@ -275,6 +278,71 @@ def test_run_tick_dedup_fires_when_enabled_and_a_fetch_happens(monkeypatch, tmp_
     # it's excluded from the glob passed to quarantine_duplicates.
     assert tmp_path / "state" / "john.sqlite" in captured["state_db_paths"]
     assert tmp_path / "state" / "global.sqlite" not in captured["state_db_paths"]
+
+
+def test_run_tick_artwork_normalize_fires_when_enabled_and_a_fetch_happens(monkeypatch, tmp_path):
+    # No schedule of its own, same as dedup/cleanup — runs as a post-step
+    # whenever any profile actually fetches this tick, gated only by
+    # normalize_artwork_enabled.
+    config_root = _setup_maintenance(
+        tmp_path, normalize_artwork_enabled=True, profiles={"john": "* * * * *"}
+    )
+    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+
+    class _FakeArtworkResult:
+        scanned = 5
+        normalized = [object(), object()]
+
+    captured = {}
+
+    def fake_normalize(library_root, *, dry_run=False):
+        captured["library_root"] = library_root
+        captured["dry_run"] = dry_run
+        return _FakeArtworkResult()
+
+    monkeypatch.setattr(loop_module, "normalize_library_artwork", fake_normalize)
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+    )
+
+    assert "artwork_normalize" in result.maintenance
+    assert captured["library_root"] == tmp_path / "library" / "music"
+    assert captured["dry_run"] is False
+    assert "scanned 5" in result.maintenance["artwork_normalize"]
+    assert "normalized 2" in result.maintenance["artwork_normalize"]
+
+
+def test_run_tick_artwork_normalize_dry_run_does_not_write(monkeypatch, tmp_path):
+    config_root = _setup_maintenance(
+        tmp_path, normalize_artwork_enabled=True, profiles={"john": "* * * * *"}
+    )
+
+    class _FakeArtworkResult:
+        scanned = 3
+        normalized = [object()]
+
+    captured = {}
+
+    def fake_normalize(library_root, *, dry_run=False):
+        captured["dry_run"] = dry_run
+        return _FakeArtworkResult()
+
+    monkeypatch.setattr(loop_module, "normalize_library_artwork", fake_normalize)
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+        dry_run=True,
+    )
+
+    assert captured["dry_run"] is True
+    assert "would normalize" in result.maintenance["artwork_normalize"]
 
 
 def test_run_tick_maintenance_skipped_when_not_enabled(monkeypatch, tmp_path):
