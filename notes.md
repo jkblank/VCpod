@@ -3539,4 +3539,58 @@ still-open, paused investigation (per the user's earlier 2026-08-22
 decision) — `profile.music` scoping and Rockbox mode remain the actual
 mitigations for a device whose desired library exceeds this device's
 own real ceiling, not something `normalize-artwork` was ever meant to
-solve.
+solve. Merged as `101e927`.
+
+## 2026-08-25: "can't run two syncs simultaneously" — investigated, not actually a structural limitation
+
+User hit `enrich: SysInfo authority update failed: Another iOpenPod
+process is already writing to this iPod` trying to sync their primary
+device (`john.yaml`) while a testbed sync (this session's own
+continued album-art investigation) was running against the disposable
+6th Gen unit — a different physical device entirely. Read the actual
+locking code before assuming this is a real gap, since the user
+specifically asked for it to be tackled as a headless multi-device
+limitation:
+
+`iopenpod.device.write_guard.DeviceWriteGuard` (used both by
+`enrich()`'s SysInfo-authority reconciliation and by the real sync
+write session) is **already per-device by design** — the lock file
+name is a SHA-256 hash of the device's own volume identity key
+(`_writer_lock_identity`), stored per-user under `/tmp/iopenpod-device-
+locks-{uid}/<hash>.lock`, deliberately collapsing only mount
+aliases/bind-mounts of the *same* underlying volume, not different
+devices. Confirmed live at the exact moment this was investigated: two
+real syncs (testbed + primary) were genuinely running concurrently,
+each holding its own distinct lock file, no conflict, no stray/orphaned
+processes found. So the code doesn't have the limitation the user
+described — headless multi-device operation already works as designed.
+
+The specific error is still real and unexplained — most likely a
+near-simultaneous double-invocation racing against itself, or a stale
+lock specific to the primary device left over from something earlier in
+this same long session (this session has interrupted/killed
+sync-orchestrator processes more than once today — see the mid-write
+disconnect entries above), not a genuine cross-device conflict. Not
+pursued further since it resolved on its own moments later and the
+underlying mechanism is confirmed correctly scoped; worth investigating
+for real (e.g. capturing the exact stale lock file, if any) if this
+recurs.
+
+## Backlog: `sync`/`full-sync` should auto-mount a detected-but-unmounted device
+
+Raised by the user 2026-08-25, from direct experience this session —
+the testbed device disconnected and needed a manual `udisksctl mount`
+close to a dozen separate times over the course of the album-art
+investigation before each retry. `device.py`'s own module docstring
+already states the assumption plainly: "Assumes the device is already
+mounted... detecting a new connection and mounting it is M9's job
+('automation'), not this one." `mount_candidate_devices()`
+(`device.py`) already exists and does exactly this — but it's only
+ever called from `_cmd_auto_sync` (the unattended, udev-triggered
+path), never from the interactive `sync`/`full-sync` commands, which
+just call `find_matching_device()` directly and fail immediately if
+nothing's mounted yet. Fix would be straightforward: have
+`_run_sync`/`_cmd_full_sync` call `mount_candidate_devices()` once
+before `find_matching_device()` (mirroring `_cmd_auto_sync`'s own
+pattern) rather than requiring a human to run `udisksctl mount` by
+hand first. Not implemented yet — noted for a future session.
