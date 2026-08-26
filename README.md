@@ -51,28 +51,30 @@ service) — see "Running it" below.
 
 ## Known issues
 
-- **Album art can fail to render on iPod Classic-family devices (6th/7th
-  gen)** — two separate, real causes, not a data-correctness bug (every
-  byte written is independently verified correct in both cases):
+- **Album art could fail to render on iPod Classic-family devices (6th/7th
+  gen)** — two separate, real causes, both now fixed (every byte written
+  was independently verified correct in both cases; neither was a
+  data-correctness bug):
   1. **Fixed**: specific tracks with Photoshop-processed
      (restart-interval) JPEG cover art reliably broke rendering whenever
      they were on the device, independent of total library size —
      `library-manager normalize-artwork`, merged, re-encodes affected
      tracks' embedded art unconditionally (no cheap way was found to
      predict which files are actually affected).
-  2. **Open, paused**: a real, separate total `ArtworkDB` byte-size
-     ceiling also exists (confirmed working at 1,547 tracks/340.5MB,
-     failing at 1,958 tracks/394.8MB on the one test device measured,
-     with fix #1 already applied either way) — no code fix exists, this
-     is a real firmware/protocol-level limit.
+  2. **Fixed**: what looked like a real total `ArtworkDB` byte-size
+     ceiling (working at 1,547 tracks/340.5MB, failing at
+     1,958 tracks/394.8MB) turned out to be iopenpod's own internal
+     32MB-per-`.ithmb`-file chunking, not a device/firmware limit — real
+     Apple iTunes was observed writing a single 335MB `.ithmb` with no
+     chunking and rendering fine. `sync_orchestrator/sync.py` now raises
+     iopenpod's `ITHMB_MAX_SIZE_BYTES` to FAT32's real per-file limit
+     (4GiB−1) at import time; verified on real hardware at 1,984 tracks.
   See
   [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#known-limitations-album-art-on-ipod-classic-family-devices)
-  and `notes.md` for the full investigation. Compressing source album
-  art does not help with #2's footprint size (on-device art is
-  fixed-size uncompressed pixel data, not the original file — see the
-  README section above). A device running Rockbox firmware instead of
-  stock iPod firmware sidesteps `ArtworkDB` entirely (both issues) via
-  `sync.mode: rockbox` — see
+  and `notes.md` for the full investigation. `profile.music` scoping and
+  Rockbox mode (`sync.mode: rockbox`, which sidesteps `ArtworkDB`
+  entirely) remain useful for other reasons but are no longer required
+  as workarounds for this — see
   [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#rockbox-mode).
 - See the Status table above for the other known-incomplete pieces
   (Spotify downloads blocked on a Premium API requirement, podcast

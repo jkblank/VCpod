@@ -3594,3 +3594,83 @@ nothing's mounted yet. Fix would be straightforward: have
 before `find_matching_device()` (mirroring `_cmd_auto_sync`'s own
 pattern) rather than requiring a human to run `udisksctl mount` by
 hand first. Not implemented yet — noted for a future session.
+
+## 2026-08-26: album-art size ceiling — actually solved, not a device limit at all
+
+The 2026-08-22/25 "separate, real total-ArtworkDB-size ceiling" (paused,
+confirmed working at 1,547 tracks/340.5MB, failing at 1,818–1,958
+tracks/370–395MB) turned out not to be a hardware/firmware ceiling —
+it was iopenpod's own `ITHMB_MAX_SIZE_BYTES` (32MB) rolling each
+artwork format over to a new `F{format}_N.ithmb` file once the current
+one filled up. Found via a real comparison point: John linked the
+whole real library to genuine Apple iTunes (Windows, network share) and
+told it to sync everything onto the 6th Gen testbed. iTunes wrote a
+single 335MB `F1060_1.ithmb` — no rollover to `_2` — and rendered fine.
+Parsed the resulting `ArtworkDB` with iopenpod's own
+`read_existing_artwork()` (not just file sizes) to get ground truth:
+only 1,478 tracks had live art entries, all referencing just the `_1`
+files; the `_2` through `_11` chunk files on disk (~314MB) were
+orphaned leftovers from an earlier, smaller iTunes session iTunes never
+reclaimed. That directly falsified total bytes as the limiting factor —
+434MB of *live* iTunes-written artwork rendered fine, well past our own
+370–395MB failing point.
+
+User's hypothesis, confirmed by that data: the multi-file split itself
+breaks device-side rendering, not total bytes. `ITHMB_MAX_SIZE_BYTES`
+is an iopenpod-internal budget unrelated to any real device/filesystem
+limit — iopenpod separately tracks the actual FAT32 per-file ceiling in
+`device/filesystem_profile.py`'s `_MAX_FILE_SIZE_BYTES` (4GiB−1 for
+fat32/vfat) but never threads it into the artwork writer at all.
+
+**Fix** (branch `experiment/no-ithmb-chunking`): `sync_orchestrator/
+sync.py` now overrides `iopenpod.artworkdb_writer.artwork_writer.
+ITHMB_MAX_SIZE_BYTES` to `4 * 1024**3 - 1` (FAT32's real per-file
+limit, same number iopenpod itself already uses elsewhere) at import
+time, since `iopenpod==1.68.1` is a plain pinned PyPI dependency, not
+vendored — this is a runtime monkeypatch, not an upstream fix. Verified
+on real hardware: full clean wipe of the 6th Gen testbed, fresh sync of
+the entire real library (1,984 tracks, 1,983 artwork entries, single
+un-chunked `.ithmb` per format) — **album art renders**, well past
+every previously-failing scale.
+
+This resolves the investigation opened 2026-08-20 and paused
+2026-08-22/25. `profile.music` scoping and Rockbox mode remain useful
+for other reasons (device-specific curation, Rockbox users) but are no
+longer required as ceiling workarounds. Worth upstreaming to iopenpod
+proper at some point — the monkeypatch works but is inherently fragile
+against a future iopenpod version restructuring this module.
+
+**Upstreamed**: forked `TheRealSavi/iOpenPod`, implemented the real fix
+there (not just the local monkeypatch — threads `FilesystemProfile.
+max_file_size_bytes` through `write_artworkdb()`/`write_itunesdb()`,
+self-resolving via the same `inspect_device_write_readiness()` call the
+codebase already makes elsewhere, so every existing caller gets it with
+no plumbing required), added tests, verified nothing else broke against
+a clean checkout of the 9 pre-existing unrelated failures in this
+environment. Opened as
+[TheRealSavi/iOpenPod#186](https://github.com/TheRealSavi/iOpenPod/pull/186).
+Also posted the investigation writeup as a comment on
+[TheRealSavi/iOpenPod#178](https://github.com/TheRealSavi/iOpenPod/issues/178)
+(a related but distinct 7th-gen issue).
+
+**Once #186 (or an equivalent fix) merges upstream and lands in a
+released iopenpod version** — remove the local workaround, in this
+order:
+1. Bump the pin in `services/sync-orchestrator/pyproject.toml`
+   (`iopenpod==1.68.1` → the fixed version), then `uv sync` inside
+   `services/sync-orchestrator/`.
+2. Delete the monkeypatch block in `services/sync-orchestrator/src/
+   sync_orchestrator/sync.py`: the `from iopenpod.artworkdb_writer
+   import artwork_writer as _artwork_writer` import, the explanatory
+   comment block above it, and the
+   `_artwork_writer.ITHMB_MAX_SIZE_BYTES = 4 * 1024**3 - 1` line itself
+   — all marked `TEMPORARY WORKAROUND` in-place for easy grep.
+3. Delete `test_ithmb_max_size_raised_to_fat32_file_limit` in
+   `services/sync-orchestrator/tests/test_sync.py` — it only exists to
+   assert the workaround stayed applied; once iopenpod resolves this
+   itself, there's nothing left for it to check.
+4. Run `uv run pytest` in both `services/sync-orchestrator/` and the
+   root workspace to confirm nothing else referenced it.
+
+No config schema, no other call sites, nothing else in the codebase
+depends on this — it's fully self-contained to those two files.

@@ -874,3 +874,16 @@ def test_apply_mhit_duplicate_store_fields_workaround_is_idempotent(monkeypatch)
     expected = sync_module._write_mhit_with_duplicate_store_fields(track, track_id=1)
     assert result == expected
     assert struct.unpack_from("<Q", result, 0x1B0)[0] == 1415688729
+
+
+def test_ithmb_max_size_raised_to_fat32_file_limit():
+    # Confirmed live (2026-08-26): iopenpod's own 32MB-per-file
+    # ITHMB_MAX_SIZE_BYTES budget -- unrelated to any real device/
+    # filesystem limit -- is what broke on-device album art rendering
+    # past ~1,500-1,800 tracks, not total ArtworkDB bytes (real Apple
+    # iTunes wrote a single 335MB .ithmb with no chunking and rendered
+    # fine on the same test device). Importing sync_orchestrator.sync
+    # must raise this to FAT32's real per-file ceiling. See notes.md.
+    from iopenpod.artworkdb_writer import artwork_writer as artwork_writer_module
+
+    assert artwork_writer_module.ITHMB_MAX_SIZE_BYTES == 4 * 1024**3 - 1
