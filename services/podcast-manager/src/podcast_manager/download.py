@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -19,7 +20,9 @@ from podcast_manager.api import (
     list_full_episodes,
     update_episode_status,
 )
-from podcast_manager.rss import fetch_rss_episodes, resolve_feed_url
+from podcast_manager.rss import fetch_feed_image_url, fetch_rss_episodes, resolve_feed_url
+
+logger = logging.getLogger(__name__)
 
 _ILLEGAL_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
 
@@ -32,6 +35,14 @@ def _sanitize(text: str) -> str:
 def _guess_extension(url: str) -> str:
     suffix = Path(urlparse(url).path).suffix
     return suffix if suffix else ".mp3"
+
+
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
+
+
+def _guess_image_extension(url: str) -> str:
+    suffix = Path(urlparse(url).path).suffix.lower()
+    return suffix if suffix in _IMAGE_EXTS else ".jpg"
 
 
 def _episode_path(show_dir: Path, episode: FullEpisode) -> Path:
@@ -154,6 +165,26 @@ def sync_podcast(
     )
 
     show_dir = library_root / _sanitize(podcast.title)
+
+    # Episode audio files carry no embedded art of their own, and never
+    # will (podcast RSS enclosures essentially never embed per-episode
+    # art) -- but iopenpod's own art extraction already falls back to a
+    # folder-level cover image sitting next to the audio file if there's
+    # no embedded art, and every episode of a show lands in this same
+    # show_dir. So a single show-level cover, written once, retroactively
+    # gives every episode on-device artwork for free with no changes
+    # needed on the sync-orchestrator/iopenpod side. Skipped once a cover
+    # already exists (whatever extension it landed as) -- no need to
+    # re-fetch the feed just for this on every run. Best-effort, same as
+    # every other RSS-sourced enrichment in this module: a show with no
+    # resolvable feed or no <image> tag just goes without a cover.
+    if feed_url and not any(show_dir.glob("cover.*")):
+        image_url = fetch_feed_image_url(feed_url)
+        if image_url:
+            try:
+                _download_enclosure(image_url, show_dir / f"cover{_guess_image_extension(image_url)}")
+            except httpx.HTTPError as exc:
+                logger.warning("podcasts: could not download cover art for %r: %s", podcast.title, exc)
 
     with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
         # Pocket Casts' own EpisodeState only has a row for episodes the

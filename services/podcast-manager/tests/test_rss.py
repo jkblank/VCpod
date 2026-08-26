@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from podcast_manager import rss as rss_module
-from podcast_manager.rss import fetch_rss_episodes, resolve_feed_url
+from podcast_manager.rss import fetch_feed_image_url, fetch_rss_episodes, resolve_feed_url
 
 
 class FakeResponse:
@@ -163,3 +163,66 @@ def test_fetch_rss_episodes_returns_empty_on_http_error(monkeypatch):
     monkeypatch.setattr(rss_module.httpx, "get", fake_get)
 
     assert fetch_rss_episodes("https://example.com/feed.xml") == []
+
+
+_FEED_WITH_ITUNES_IMAGE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" version="2.0">
+<channel>
+<title>Test Show</title>
+<itunes:image href="https://cdn.example.com/itunes-cover.jpg"/>
+<image><url>https://cdn.example.com/plain-cover.jpg</url></image>
+</channel>
+</rss>
+"""
+
+_FEED_WITH_PLAIN_IMAGE_ONLY = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>Test Show</title>
+<image><url>https://cdn.example.com/plain-cover.jpg</url></image>
+</channel>
+</rss>
+"""
+
+
+def test_fetch_feed_image_url_prefers_itunes_image_over_plain_image(monkeypatch):
+    monkeypatch.setattr(
+        rss_module.httpx,
+        "get",
+        lambda url, timeout=None, follow_redirects=True: FakeResponse(
+            content=_FEED_WITH_ITUNES_IMAGE
+        ),
+    )
+
+    assert fetch_feed_image_url("https://example.com/feed.xml") == "https://cdn.example.com/itunes-cover.jpg"
+
+
+def test_fetch_feed_image_url_falls_back_to_plain_image(monkeypatch):
+    monkeypatch.setattr(
+        rss_module.httpx,
+        "get",
+        lambda url, timeout=None, follow_redirects=True: FakeResponse(
+            content=_FEED_WITH_PLAIN_IMAGE_ONLY
+        ),
+    )
+
+    assert fetch_feed_image_url("https://example.com/feed.xml") == "https://cdn.example.com/plain-cover.jpg"
+
+
+def test_fetch_feed_image_url_returns_none_when_no_image_tag(monkeypatch):
+    monkeypatch.setattr(
+        rss_module.httpx,
+        "get",
+        lambda url, timeout=None, follow_redirects=True: FakeResponse(content=_SAMPLE_FEED),
+    )
+
+    assert fetch_feed_image_url("https://example.com/feed.xml") is None
+
+
+def test_fetch_feed_image_url_returns_none_on_http_error(monkeypatch):
+    def fake_get(url, timeout=None, follow_redirects=True):
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(rss_module.httpx, "get", fake_get)
+
+    assert fetch_feed_image_url("https://example.com/feed.xml") is None

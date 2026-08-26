@@ -91,16 +91,22 @@ def _find_itunes_tag(item: ET.Element, tag: str) -> int | None:
         return None
 
 
+def _fetch_feed_root(feed_url: str) -> ET.Element | None:
+    try:
+        resp = httpx.get(feed_url, timeout=_REQUEST_TIMEOUT, follow_redirects=True)
+        resp.raise_for_status()
+        return ET.fromstring(resp.content)
+    except (httpx.HTTPError, ET.ParseError) as exc:
+        logger.warning("rss: could not fetch/parse feed %r: %s", feed_url, exc)
+        return None
+
+
 def fetch_rss_episodes(feed_url: str) -> list[RssEpisodeMeta]:
     """Fetches and parses a podcast RSS feed. Returns [] (logged) on any
     fetch or parse failure -- never raises, matching resolve_feed_url's
     same "one bad show doesn't block the sync" contract."""
-    try:
-        resp = httpx.get(feed_url, timeout=_REQUEST_TIMEOUT, follow_redirects=True)
-        resp.raise_for_status()
-        root = ET.fromstring(resp.content)
-    except (httpx.HTTPError, ET.ParseError) as exc:
-        logger.warning("rss: could not fetch/parse feed %r: %s", feed_url, exc)
+    root = _fetch_feed_root(feed_url)
+    if root is None:
         return []
 
     episodes: list[RssEpisodeMeta] = []
@@ -120,3 +126,24 @@ def fetch_rss_episodes(feed_url: str) -> list[RssEpisodeMeta]:
             )
         )
     return episodes
+
+
+def fetch_feed_image_url(feed_url: str) -> str | None:
+    """Returns a podcast's show-level cover art URL from the <channel>
+    (not per-episode) -- prefers the <itunes:image href> extension
+    (present on virtually every real podcast feed, usually the
+    higher-res artwork) over the plain RSS <image><url> fallback.
+    Returns None on any fetch/parse failure, or if neither tag is
+    present, matching this module's existing best-effort contract."""
+    root = _fetch_feed_root(feed_url)
+    if root is None:
+        return None
+    channel = root.find("channel")
+    if channel is None:
+        return None
+    itunes_image = channel.find(f"{{{_ITUNES_NS}}}image")
+    if itunes_image is not None:
+        href = itunes_image.get("href")
+        if href:
+            return href
+    return channel.findtext("image/url") or None
