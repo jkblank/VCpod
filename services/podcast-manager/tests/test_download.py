@@ -392,6 +392,7 @@ def test_sync_podcast_attaches_rss_metadata_matched_by_enclosure_url(
     monkeypatch.setattr(
         download_module, "resolve_feed_url", lambda title, author: "https://example.com/feed.xml"
     )
+    monkeypatch.setattr(download_module, "fetch_feed_image_url", lambda feed_url: None)
     monkeypatch.setattr(
         download_module,
         "fetch_rss_episodes",
@@ -439,6 +440,106 @@ def test_sync_podcast_falls_back_to_pocket_casts_published_when_rss_unresolved(
     assert record.description == ""
     assert record.episode_number is None
     assert record.published_at == "2026-03-01T00:00:00Z"  # FULL_EPISODES[0].published
+
+
+def test_sync_podcast_writes_show_cover_from_feed_image(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # Episode files never carry embedded art of their own -- but iopenpod's
+    # own folder-art fallback picks up a cover image sitting next to the
+    # audio file, and every episode of a show lands in the same show_dir.
+    # A single show-level cover, written once, is what actually gives
+    # podcast episodes on-device artwork.
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    monkeypatch.setattr(
+        download_module, "resolve_feed_url", lambda title, author: "https://example.com/feed.xml"
+    )
+    monkeypatch.setattr(
+        download_module, "fetch_feed_image_url", lambda feed_url: "https://cdn.example.com/cover.png"
+    )
+
+    _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    assert (tmp_path / "library" / "Test Show" / "cover.png").exists()
+
+
+def test_sync_podcast_skips_cover_fetch_when_one_already_exists(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    monkeypatch.setattr(
+        download_module, "resolve_feed_url", lambda title, author: "https://example.com/feed.xml"
+    )
+
+    def _fail_fetch_image(feed_url):
+        raise AssertionError("should not re-fetch the feed just for an already-present cover")
+
+    monkeypatch.setattr(download_module, "fetch_feed_image_url", _fail_fetch_image)
+
+    show_dir = tmp_path / "library" / "Test Show"
+    show_dir.mkdir(parents=True)
+    existing_cover = show_dir / "cover.jpg"
+    existing_cover.write_bytes(b"already here")
+
+    _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    assert existing_cover.read_bytes() == b"already here"
+
+
+def test_sync_podcast_no_cover_attempted_when_feed_unresolved(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # patched_pipeline's default resolve_feed_url returns None.
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+
+    def _fail_fetch_image(feed_url):
+        raise AssertionError("no feed resolved -- must not attempt a cover fetch")
+
+    monkeypatch.setattr(download_module, "fetch_feed_image_url", _fail_fetch_image)
+
+    _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    assert not any((tmp_path / "library" / "Test Show").glob("cover.*"))
+
+
+def test_sync_podcast_cover_download_failure_does_not_abort_sync(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    monkeypatch.setattr(
+        download_module, "resolve_feed_url", lambda title, author: "https://example.com/feed.xml"
+    )
+    monkeypatch.setattr(
+        download_module, "fetch_feed_image_url", lambda feed_url: "https://cdn.example.com/cover.jpg"
+    )
+
+    def _stream(method, url, **kwargs):
+        if url == "https://cdn.example.com/cover.jpg":
+            raise httpx.ReadTimeout("simulated drop fetching cover")
+        return FakeStreamResponse()
+
+    monkeypatch.setattr(httpx, "stream", _stream)
+
+    result = _fetch(
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+        max_episodes_per_show=1,
+    )
+
+    assert len(result.downloaded) == 1  # episode itself still synced fine
+    assert not (tmp_path / "library" / "Test Show" / "cover.jpg").exists()
 
 
 def test_sync_podcast_keeps_file_when_delete_played_episodes_disabled(
@@ -631,6 +732,11 @@ def test_sync_podcast_backfills_metadata_without_redownloading_existing_file(
     # title/audio_url/duration metadata from the fresh API response.
     monkeypatch.setattr(download_module, "list_full_episodes", lambda token, uuid: FULL_EPISODES[:1])
     monkeypatch.setattr(download_module, "list_episode_states", lambda token, uuid: [])
+    # Not using the patched_pipeline fixture here (this test builds its own
+    # library_root), so needs its own no-feed stub -- otherwise
+    # resolve_feed_url hits the real iTunes Search API. See patched_pipeline's
+    # comment above.
+    monkeypatch.setattr(download_module, "resolve_feed_url", lambda title, author: None)
 
     library_root = tmp_path / "library"
     show_dir = library_root / "Test Show"
