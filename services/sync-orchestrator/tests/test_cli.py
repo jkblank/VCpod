@@ -578,6 +578,7 @@ def test_run_sync_refuses_execute_when_playlist_removal_proposed_without_allow_r
         profile="john",
         device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
     )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
     monkeypatch.setattr(
         cli_module, "find_matching_device",
         lambda match: SimpleNamespace(
@@ -612,6 +613,7 @@ def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
         device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
         sync=SimpleNamespace(push_play_status_back=False),
     )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
     monkeypatch.setattr(
         cli_module, "find_matching_device",
         lambda match: SimpleNamespace(
@@ -639,6 +641,87 @@ def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
 
     assert result == 0
     assert len(execute_calls) == 1
+
+
+def test_run_sync_auto_mounts_before_finding_device(monkeypatch, capsys):
+    # Regression: `sync`/`full-sync` used to assume a human had already
+    # seen the device auto-mount by the time they ran the command --
+    # unlike auto-sync, which already called mount_candidate_devices()
+    # itself. See notes.md ("Fixed: sync/full-sync now auto-mount...").
+    profile = SimpleNamespace(
+        profile="john",
+        device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+        sync=SimpleNamespace(push_play_status_back=False),
+    )
+    call_order = []
+    monkeypatch.setattr(
+        cli_module, "mount_candidate_devices",
+        lambda: call_order.append("mount") or ["/dev/sdb1"],
+    )
+
+    def _fake_find_matching_device(match):
+        call_order.append("find")
+        return SimpleNamespace(
+            path="/mnt/ipod", model_family="iPod", generation="5.5th Gen",
+            model_number="MA450", capacity="80GB",
+        )
+
+    monkeypatch.setattr(cli_module, "find_matching_device", _fake_find_matching_device)
+    planned = _fake_planned(plan=_fake_plan())
+    monkeypatch.setattr(cli_module, "plan_sync", lambda **kwargs: planned)
+
+    result = cli_module._run_sync(
+        _run_sync_args(execute=False),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 0
+    assert call_order == ["mount", "find"]
+    assert "auto-mounted /dev/sdb1" in capsys.readouterr().out
+
+
+def test_run_rockbox_sync_auto_mounts_before_finding_device(monkeypatch, capsys):
+    from sync_orchestrator.rockbox_sync import PlannedRockboxSync, RockboxSyncPlan
+
+    profile = _dispatch_profile(mode="rockbox")
+    planned = PlannedRockboxSync(
+        plan=RockboxSyncPlan(to_remove=[]),
+        device_info=SimpleNamespace(path="/mnt/ipod"),
+        snapshot=None,
+        before_file_count=1,
+    )
+    call_order = []
+    monkeypatch.setattr(
+        cli_module, "mount_candidate_devices",
+        lambda: call_order.append("mount") or ["/dev/sdb1"],
+    )
+
+    def _fake_find_matching_device(match):
+        call_order.append("find")
+        return planned.device_info
+
+    monkeypatch.setattr(cli_module, "find_matching_device", _fake_find_matching_device)
+    monkeypatch.setattr(cli_module, "plan_rockbox_sync", lambda **kwargs: planned)
+
+    args = argparse.Namespace(
+        pc_folders=None,
+        library_root="/lib",
+        state_root="/state",
+        skip_backup=False,
+        skip_podcasts=False,
+        execute=False,
+        allow_removals=False,
+        skip_eject=True,
+    )
+    result = cli_module._run_rockbox_sync(
+        args, profile, profile_path=Path("p"), config_root=Path("c")
+    )
+
+    assert result == 0
+    assert call_order == ["mount", "find"]
+    assert "auto-mounted /dev/sdb1" in capsys.readouterr().out
 
 
 def test_cmd_auto_sync_fails_after_wait_seconds_exhausted_with_no_match(monkeypatch, tmp_path):
@@ -921,6 +1004,7 @@ def test_run_rockbox_sync_refuses_execute_when_removal_proposed_without_allow_re
         snapshot=None,
         before_file_count=1,
     )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
     monkeypatch.setattr(cli_module, "find_matching_device", lambda match: planned.device_info)
     monkeypatch.setattr(cli_module, "plan_rockbox_sync", lambda **kwargs: planned)
 
@@ -952,6 +1036,7 @@ def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(mo
         snapshot=None,
         before_file_count=1,
     )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
     monkeypatch.setattr(cli_module, "find_matching_device", lambda match: planned.device_info)
     monkeypatch.setattr(cli_module, "plan_rockbox_sync", lambda **kwargs: planned)
     monkeypatch.setattr(

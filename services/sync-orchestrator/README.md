@@ -132,9 +132,12 @@ lives on the profile, not the CLI invocation.
 
 ## Usage
 
-Assumes the target iPod is already connected and mounted (auto-mounted by
-the desktop environment) — detecting a new connection and mounting it is
-M9's job ("automation"), not this one.
+Assumes the target iPod is already connected. If it isn't mounted yet
+(no desktop auto-mount daemon in the session, or a testbed device that
+was just unplugged/replugged), `sync`/`full-sync`/`auto-sync` all
+best-effort auto-mount every unmounted vfat/hfsplus partition first via
+`mount_candidate_devices()` before scanning for a match — see the
+auto-sync section below for the mechanism.
 
 ```bash
 cd services/sync-orchestrator
