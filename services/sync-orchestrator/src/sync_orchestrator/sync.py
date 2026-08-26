@@ -37,7 +37,29 @@ from typing import Any
 import iopenpod.device as _iopenpod_device
 from common.models import ProfileConfig
 from common.state import StateDB
+from iopenpod.artworkdb_writer import artwork_writer as _artwork_writer
 from iopenpod.artworkdb_writer import artworkdb_chunks as _artworkdb_chunks
+
+# iopenpod rolls each artwork format over to a new F{format}_N.ithmb file
+# once the current one passes 32MB (its own ITHMB_MAX_SIZE_BYTES) -- a
+# budget unrelated to any real device/filesystem limit (iopenpod tracks
+# the actual FAT32 per-file ceiling separately, in
+# device/filesystem_profile.py's _MAX_FILE_SIZE_BYTES, but never threads
+# it into this writer). Confirmed live (2026-08-26) on the 6th Gen
+# testbed: real Apple iTunes wrote a single 335MB F1060_1.ithmb with no
+# rollover and rendered fine; iopenpod's own 32MB-chunked write produced
+# total on-device artwork failure past ~1,818-1,958 tracks even though
+# that's a *smaller* total byte count. Re-synced the same testbed at
+# 1,984 tracks with this raised to FAT32's real per-file ceiling (same
+# number iopenpod's own filesystem_profile.py already uses) instead of
+# 32MB, confirmed art renders. See notes.md.
+#
+# TEMPORARY WORKAROUND: upstreamed as TheRealSavi/iOpenPod#186. Once that
+# (or an equivalent fix) merges and iopenpod's own pinned version here is
+# bumped past it, delete this monkeypatch entirely (import above included)
+# and the now-redundant regression test in test_sync.py -- see notes.md's
+# "album-art size ceiling" entry for the full removal steps.
+_artwork_writer.ITHMB_MAX_SIZE_BYTES = 4 * 1024**3 - 1  # FAT32 max file size
 from iopenpod.device.info import DeviceInfo, resolve_itdb_path
 from iopenpod.itunesdb_writer import mhlt_writer as _mhlt_writer
 from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
