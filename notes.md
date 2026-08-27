@@ -3576,24 +3576,30 @@ underlying mechanism is confirmed correctly scoped; worth investigating
 for real (e.g. capturing the exact stale lock file, if any) if this
 recurs.
 
-## Backlog: `sync`/`full-sync` should auto-mount a detected-but-unmounted device
+## Fixed: `sync`/`full-sync` now auto-mount a detected-but-unmounted device
 
-Raised by the user 2026-08-25, from direct experience this session —
+Raised by the user 2026-08-25, from direct experience that session —
 the testbed device disconnected and needed a manual `udisksctl mount`
 close to a dozen separate times over the course of the album-art
 investigation before each retry. `device.py`'s own module docstring
 already states the assumption plainly: "Assumes the device is already
 mounted... detecting a new connection and mounting it is M9's job
 ('automation'), not this one." `mount_candidate_devices()`
-(`device.py`) already exists and does exactly this — but it's only
+(`device.py`) already existed and did exactly this — but it was only
 ever called from `_cmd_auto_sync` (the unattended, udev-triggered
 path), never from the interactive `sync`/`full-sync` commands, which
-just call `find_matching_device()` directly and fail immediately if
-nothing's mounted yet. Fix would be straightforward: have
-`_run_sync`/`_cmd_full_sync` call `mount_candidate_devices()` once
-before `find_matching_device()` (mirroring `_cmd_auto_sync`'s own
-pattern) rather than requiring a human to run `udisksctl mount` by
-hand first. Not implemented yet — noted for a future session.
+just called `find_matching_device()` directly and failed immediately
+if nothing was mounted yet.
+
+Fixed 2026-08-26: `_run_sync` and `_run_rockbox_sync`
+(`sync_orchestrator/cli.py`) both now call `mount_candidate_devices()`
+once, right before `find_matching_device()`, mirroring
+`_cmd_auto_sync`'s own pattern — same best-effort semantics (an
+unrelated USB drive that can't be mounted never blocks finding the
+actual iPod), just a single attempt instead of a poll loop, since these
+are human-initiated commands rather than a udev-triggered wait.
+`full-sync` gets this for free too, since it dispatches into
+`_run_sync`/`_run_rockbox_sync` for its device stage.
 
 ## 2026-08-26: album-art size ceiling — actually solved, not a device limit at all
 

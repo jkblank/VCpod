@@ -152,6 +152,18 @@ def _run_sync(
     start_time = time.monotonic()
     print(f"== Finding device for profile {profile.profile!r} "
           f"({profile.device.match_by}={profile.device.match_value!r}) ==")
+    # Unlike auto-sync (udev-triggered, no desktop session guaranteed to be
+    # watching), an interactive `sync`/`full-sync` invocation used to assume
+    # a human had already seen the device auto-mount by their file manager
+    # by the time they ran the command -- true often enough, but not when
+    # the device is plugged in and this command run back-to-back (e.g. a
+    # disposable testbed unit with no desktop auto-mount daemon at all,
+    # confirmed live during the album-art investigation: needed a manual
+    # `udisksctl mount` before nearly every retry). Best-effort, same as
+    # auto-sync's own call -- an unrelated USB drive that can't be mounted
+    # must never block finding the actual iPod. See notes.md.
+    for block_device in mount_candidate_devices():
+        print(f"  auto-mounted {block_device}")
     try:
         device_info = find_matching_device(profile.device)
     except DeviceNotFoundError as e:
@@ -339,6 +351,10 @@ def _run_rockbox_sync(
         f"== Finding device for profile {profile.profile!r} "
         f"({profile.device.match_by}={profile.device.match_value!r}) =="
     )
+    # See _run_sync's matching comment -- same best-effort auto-mount,
+    # needed just as much in Rockbox mode.
+    for block_device in mount_candidate_devices():
+        print(f"  auto-mounted {block_device}")
     try:
         device_info = find_matching_device(profile.device)
     except DeviceNotFoundError as e:
