@@ -3680,3 +3680,51 @@ order:
 
 No config schema, no other call sites, nothing else in the codebase
 depends on this — it's fully self-contained to those two files.
+
+## Fixed: podcast episodes synced before the show-cover-art fix never got artwork backfilled
+
+Follow-up to "Give podcast episodes on-device album art via a show-level
+cover image" (2026-08-26, commit `88e24b7`, merged as PR #3): user ran a
+real full sync on 2026-09-01 and reported podcast artwork still wasn't
+showing on-device. Traced through iopenpod's actual artwork-writing
+code (`podcasts/podcast_sync.py`, `artworkdb_writer/artwork_writer.py`,
+`sync/sync_executor.py`) rather than assuming — the show-level `cover.*`
+fix genuinely does feed correctly into iopenpod's folder-art fallback
+(`extract_art_with_folder`), but only at the moment an episode is
+*added* to the device for the first time.
+
+**Root cause**: `iopenpod.podcasts.podcast_sync.build_podcast_sync_plan`
+(used for `to_add` in `sync.py`) filters out any episode already matched
+on the device (by enclosure URL, falling back to title+album) before it
+ever computes artwork — it has no code path that revisits an
+already-synced episode. And `sync_orchestrator/sync.py`'s own podcast
+handling only ever called that function for `to_add`; it never generated
+`to_update_artwork` items for podcasts. The *generic* artwork-diffing
+pass that does that for music tracks (`fingerprint_diff_engine.py`) only
+scans the PC music library — podcast episode files are injected
+separately and are entirely outside its scope. Net effect: any episode
+already on the device before 2026-08-26 was permanently stuck without
+artwork, no matter how many syncs ran afterward. With ~1600+ episodes
+already on a real device and only a handful of new episodes per sync,
+this was most of what the user was actually seeing.
+
+**Fix**: new `sync_orchestrator/podcast_artwork_backfill.py`,
+`build_podcast_artwork_backfill_items(feeds, ipod_tracks)` — a small,
+targeted diff mirroring `podcast_removal.py`'s existing shape and
+matching convention (enclosure URL, falling back to title+album). For
+every already-on-device episode whose local file still exists: if the
+on-device track's own `artwork_count`/`artwork_id_ref` show it currently
+has no artwork, and `extract_art_with_folder` finds something (embedded
+or the show-level `cover.*` fallback), it's proposed as a
+`to_update_artwork` `SyncItem`. Wired into `sync.py`'s podcast block
+right after the existing `to_add` loop; the returned `matched_pc_paths`
+must also be merged into `plan.matched_pc_paths` — the artwork writer
+only re-encodes a `to_update_artwork` item once it can resolve a PC-side
+source path for that `db_track_id` (`artwork_writer.py`'s
+`_collect_track_artwork_decisions`).
+
+Deliberately gates on the on-device track's own artwork state rather
+than a locally-cached hash — no mapping-file plumbing needed, and it's
+naturally idempotent: once a write succeeds, the next sync's device
+read-back reports nonzero artwork and the episode is never proposed
+again. 10 new tests in `test_podcast_artwork_backfill.py`.
