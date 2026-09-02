@@ -483,7 +483,7 @@ def _run_sync_for_profile(
 def _load_profiles_with_paths(directory: Path) -> list[tuple[Path, ProfileConfig]]:
     """Like common.config.load_all_profiles, but keeps each profile's
     source path alongside it — auto-sync needs the path to invoke
-    `music-stack sync --profile <path>` for its pre-fetch subprocess (see
+    `music-stack fetch --profile <path>` for its pre-fetch subprocess (see
     _maybe_pre_fetch), which load_all_profiles' plain name-keyed dict
     doesn't retain. Re-derives the same fail-fast duplicate-name check
     load_all_profiles does, rather than depending on it directly, so this
@@ -505,7 +505,7 @@ def _load_profiles_with_paths(directory: Path) -> list[tuple[Path, ProfileConfig
     return pairs
 
 
-def _build_music_stack_sync_cmd(
+def _build_music_stack_fetch_cmd(
     args: argparse.Namespace,
     profile_path: Path,
     config_root: Path,
@@ -514,14 +514,14 @@ def _build_music_stack_sync_cmd(
     playlist_names: Iterable[str] = (),
     show_names: Iterable[str] = (),
 ) -> list[str]:
-    """Build a `music-stack sync` subprocess command — shared by
+    """Build a `music-stack fetch` subprocess command — shared by
     _maybe_pre_fetch (auto-sync's due-soon-only pre-fetch) and
     _cmd_full_sync (an on-demand full or narrowed fetch). See
     _maybe_pre_fetch's docstring for why this is always a subprocess,
     never an in-process import."""
     cmd = [
         "uv", "run", "--project", str(args.music_stack_project_dir),
-        "music-stack", "sync",
+        "music-stack", "fetch",
         "--profile", str(profile_path),
         "--global-config", str(config_root / "global.yaml"),
         "--library-root", str(args.library_root),
@@ -550,8 +550,8 @@ def _maybe_pre_fetch(
     a no-op: auto-sync syncs whatever fetch-scheduler already put in
     library/, keeping device-plug-in fast.
 
-    Invokes `music-stack sync` as a subprocess rather than importing
-    music_stack_cli.orchestrate.run_sync in-process — deliberate: this
+    Invokes `music-stack fetch` as a subprocess rather than importing
+    music_stack_cli.orchestrate.run_fetch in-process — deliberate: this
     package is kept standalone specifically so its `iopenpod` dependency
     tree never merges with anything else (same reason fetcher-spotify is
     also standalone). music-stack-cli drags in fetcher-apple/gamdl,
@@ -581,7 +581,7 @@ def _maybe_pre_fetch(
             f"== Pre-fetching (due within {args.pre_fetch_horizon_hours}h): "
             f"{', '.join(target.target_id for target in due_soon)} =="
         )
-        cmd = _build_music_stack_sync_cmd(
+        cmd = _build_music_stack_fetch_cmd(
             args,
             profile_path,
             config_root,
@@ -637,7 +637,7 @@ def _maybe_push_play_status(
     that finds nothing new on the device must still flush whatever's
     already sitting in pending_push, or that state is lost for good.
 
-    Shells out to `music-stack sync --source podcasts` rather than
+    Shells out to `music-stack fetch --source podcasts` rather than
     importing podcast_manager in-process -- same reasoning as
     _maybe_pre_fetch: keeps sync-orchestrator's dependency tree isolated
     from music-stack-cli's heavier one.
@@ -658,7 +658,7 @@ def _maybe_push_play_status(
         return
 
     print(f"== Pushing {pending_count} play-state update(s) to Pocket Casts ==")
-    cmd = _build_music_stack_sync_cmd(
+    cmd = _build_music_stack_fetch_cmd(
         args, profile_path, config_root, sources=["podcasts"]
     )
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -716,7 +716,7 @@ def _run_full_sync(
     args: argparse.Namespace, profile: ProfileConfig, *, profile_path: Path, config_root: Path
 ) -> int:
     print(f"== Fetching for profile {profile.profile!r} ==")
-    cmd = _build_music_stack_sync_cmd(
+    cmd = _build_music_stack_fetch_cmd(
         args,
         profile_path,
         config_root,
@@ -889,7 +889,7 @@ def main() -> None:
         "--music-stack-project-dir",
         default=_default_music_stack_project_dir(),
         help="Path to the music-stack-cli project, used to invoke "
-        "`music-stack sync --source podcasts` as a subprocess after a "
+        "`music-stack fetch --source podcasts` as a subprocess after a "
         "successful --execute (to push device-observed play state to "
         "Pocket Casts) — kept out-of-process deliberately, see "
         "_maybe_push_play_status.",
@@ -919,19 +919,19 @@ def main() -> None:
         "--library-root",
         default=None,
         help="Host path to the library root. Defaults to a 'library' "
-        "directory next to --config-root, same convention as `music-stack sync`.",
+        "directory next to --config-root, same convention as `music-stack fetch`.",
     )
     full_sync_parser.add_argument(
         "--state-root",
         default=None,
         help="Host path to the state root. Defaults to a 'state' "
-        "directory next to --config-root, same convention as `music-stack sync`.",
+        "directory next to --config-root, same convention as `music-stack fetch`.",
     )
     full_sync_parser.add_argument(
         "--source",
         action="append",
         help="Restrict fetch to this source (repeatable). Defaults to every "
-        "configured source, forwarded to `music-stack sync`.",
+        "configured source, forwarded to `music-stack fetch`.",
     )
     full_sync_parser.add_argument(
         "--playlist",
@@ -977,7 +977,7 @@ def main() -> None:
         "--music-stack-project-dir",
         default=_default_music_stack_project_dir(),
         help="Path to the music-stack-cli project, used to invoke "
-        "`music-stack sync` as a subprocess for both the fetch stage and "
+        "`music-stack fetch` as a subprocess for both the fetch stage and "
         "the post-execute play-status push — kept out-of-process "
         "deliberately, see _maybe_pre_fetch.",
     )
@@ -1019,7 +1019,7 @@ def main() -> None:
         "--music-stack-project-dir",
         default=_default_music_stack_project_dir(),
         help="Path to the music-stack-cli project, used to invoke "
-        "`music-stack sync` as a subprocess for the pre-fetch step — kept "
+        "`music-stack fetch` as a subprocess for the pre-fetch step — kept "
         "out-of-process deliberately (see README): sync-orchestrator stays "
         "isolated from music-stack-cli's heavier dependency tree.",
     )

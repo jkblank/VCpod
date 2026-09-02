@@ -127,8 +127,8 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 
 def _cmd_push_play_status(args: argparse.Namespace) -> int:
     # Kept as a manual/standalone entrypoint (e.g. to flush pending pushes
-    # without running a full podcast sync) — the normal automated path is
-    # run_sync calling push_pending_play_status directly, see its docstring.
+    # without running a full podcast fetch) — the normal automated path is
+    # run_fetch calling push_pending_play_status directly, see its docstring.
     try:
         email, password = load_credentials(args.credentials_path)
         token = login(email, password)

@@ -354,7 +354,7 @@ required together — `--execute` alone still refuses on any removal,
 
 `sync-orchestrator sync` (above) only writes to the device — it assumes
 whatever's already in `library/` is what you want synced. Getting fresh
-content there first means running `music-stack sync` separately, with
+content there first means running `music-stack fetch` separately, with
 its own full path flags. `full-sync` does both in one command, built for
 an interactive human at a terminal (as opposed to `auto-sync` below,
 which is unattended-only):
@@ -378,11 +378,11 @@ uv run sync-orchestrator full-sync --profile john --config-root ../../config \
   work everywhere `--profile` appears in this project, this is just the
   first command where the name form is genuinely convenient.
 - `--library-root`/`--state-root` default to `library`/`state` next to
-  `--config-root` when omitted — same convention `music-stack sync`
+  `--config-root` when omitted — same convention `music-stack fetch`
   already uses, so the common case needs no path flags at all beyond
   `--config-root`.
 - `--source`/`--playlist`/`--show` (repeatable) narrow the fetch stage,
-  forwarded straight to the `music-stack sync` subprocess — same
+  forwarded straight to the `music-stack fetch` subprocess — same
   semantics as that command's own flags.
 - `--fetch-only` stops after fetching, skipping the device stage
   entirely.
@@ -424,7 +424,7 @@ uv run sync-orchestrator auto-sync \
 2. **Conditionally pre-fetches.** If any of the matched profile's
    playlists/podcast shows have their next scheduled fetch (see
    `fetch_schedule` in `music-stack-planning.md` §3) due within
-   `--pre-fetch-horizon-hours` (default 4), invokes `music-stack sync` as
+   `--pre-fetch-horizon-hours` (default 4), invokes `music-stack fetch` as
    a subprocess for just those targets before syncing to device — so
    "plug in before bed" doesn't miss data that was about to refresh
    anyway. This is deliberately a **subprocess** call

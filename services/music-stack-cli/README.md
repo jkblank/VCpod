@@ -1,6 +1,6 @@
 # music-stack-cli
 
-The single "sync everything" entrypoint — one call fetches every
+The single "fetch everything" entrypoint — one call fetches every
 configured playlist across every music source *and* every podcast show
 for a profile, instead of invoking `fetcher-apple`/`fetcher-ytmusic`/
 `podcast-manager` separately per playlist. Root workspace member;
@@ -11,7 +11,7 @@ doesn't subprocess out to their own CLIs).
 ## Usage
 
 ```bash
-uv run music-stack sync --profile config/profiles/<you>.yaml
+uv run music-stack fetch --profile config/profiles/<you>.yaml
 ```
 
 Run from the repo root with a real `config/global.yaml` present, that's
@@ -29,7 +29,7 @@ the whole command — every other flag has a sensible default:
   ignored.
 - `--playlist` (repeatable) — restrict to specific playlist name(s)
   across whichever sources are selected.
-- `--show` (repeatable) — restrict podcast sync to specific show(s), by
+- `--show` (repeatable) — restrict podcast fetch to specific show(s), by
   UUID or case-insensitive title.
 - `--storefront` (default `us`) — Apple Music storefront.
 - `--lock-timeout` (default 1800)
@@ -40,7 +40,7 @@ and reported, not raised — the rest of the run continues. Unmatched
 (likely a typo, not necessarily fatal).
 
 **Removing a playlist from a profile's `playlists:` list requires
-running this command (a fetch), not just `sync-orchestrator sync`.**
+running this command, not just `sync-orchestrator sync`.**
 This command owns `library/playlists/{profile}/` — it's the only thing
 that prunes a playlist's stale `.m3u8` file once it's no longer
 configured (`prune_removed_playlists` in `common/playlist.py`, same
@@ -72,12 +72,12 @@ or silently doing nothing.
 Two other services call into this one rather than duplicating fetch
 orchestration:
 
-- **`fetch-scheduler`** imports `run_sync` directly (in-process) to
+- **`fetch-scheduler`** imports `run_fetch` directly (in-process) to
   drive its own cron-scheduled ticks — see
   `services/fetch-scheduler/README.md`.
 - **`sync-orchestrator auto-sync`** (opportunistic pre-fetch step) and
   **`sync-orchestrator full-sync`** (its whole fetch stage) both shell
-  out to `music-stack sync` as a **subprocess** (deliberately, not an
+  out to `music-stack fetch` as a **subprocess** (deliberately, not an
   import — keeps `sync-orchestrator`'s own `iopenpod`/PyQt6 dependency
   tree from merging with this one). See
   `services/sync-orchestrator/README.md`.

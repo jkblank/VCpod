@@ -17,7 +17,7 @@ from library_manager.cleanup import sweep_quarantine
 from library_manager.dedup import find_duplicate_groups, quarantine_duplicates
 from library_manager.scan import scan_library
 
-from music_stack_cli.orchestrate import resolve_roots, run_sync
+from music_stack_cli.orchestrate import resolve_roots, run_fetch
 
 logger = logging.getLogger("fetch_scheduler")
 
@@ -28,7 +28,7 @@ class TickResult:
     fetched: dict[str, list[str]] = field(default_factory=dict)
     # profile names whose processing raised an unexpected exception this tick
     errors: list[str] = field(default_factory=list)
-    # profile name -> run_sync's own source_errors (auth/fetch failures for
+    # profile name -> run_fetch's own source_errors (auth/fetch failures for
     # a due source, e.g. expired cookies) — surfaced separately from
     # `errors` above (unexpected exceptions) so a target that's due every
     # tick but always fails a source auth check isn't silently invisible
@@ -53,7 +53,7 @@ def run_tick(
     """One scheduler pass: for every profile, fetch whatever's due right
     now, tracking completion in that profile's own state db. Each
     profile's processing is isolated in its own try/except — a bug or an
-    unexpected exception (anything outside run_sync's own narrowly-caught
+    unexpected exception (anything outside run_fetch's own narrowly-caught
     auth exceptions — see its docstring/orchestrate.py) must not stop
     every other profile's fetch this tick."""
     result = TickResult()
@@ -129,7 +129,7 @@ def _process_profile(
         lock_path = roots.state_db_path.parent / f".fetch_{profile.profile}.lock"
         try:
             with FileLock(lock_path, timeout=lock_timeout):
-                sync_result = run_sync(
+                fetch_result = run_fetch(
                     profile=profile,
                     global_config=global_config,
                     config_root=config_root,
@@ -143,14 +143,14 @@ def _process_profile(
             logger.warning("skipping %r this tick (locked): %s", profile.profile, e)
             return
 
-        if sync_result.source_errors:
-            result.source_errors[profile.profile] = sync_result.source_errors
+        if fetch_result.source_errors:
+            result.source_errors[profile.profile] = fetch_result.source_errors
 
         # A source's own auth/fetch failure (surfaced in source_errors, not
         # raised) must not be recorded as fetched — leave it due so the
         # next tick retries it, rather than silently marking a failed
         # fetch as done.
-        failed_sources = {error.split(":", 1)[0].strip() for error in sync_result.source_errors}
+        failed_sources = {error.split(":", 1)[0].strip() for error in fetch_result.source_errors}
         fetched_ids = []
         for target in due:
             target_source = target.source if target.target_type == "playlist" else "podcasts"
@@ -256,7 +256,7 @@ def _run_library_dedup(
         return f"scanned {len(tracks)} tracks, no cross-source duplicates found"
     if dry_run:
         # quarantine_duplicates has no read-only mode — same "don't call
-        # the mutating function" convention run_sync's own dry-run uses.
+        # the mutating function" convention run_fetch's own dry-run uses.
         return f"scanned {len(tracks)} tracks, {len(groups)} duplicate group(s) would be quarantined"
 
     dedup_result = quarantine_duplicates(

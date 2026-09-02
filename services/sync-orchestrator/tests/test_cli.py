@@ -166,7 +166,7 @@ def test_maybe_pre_fetch_invokes_subprocess_with_expected_args_when_due_soon(
     cmd = captured["cmd"]
     assert cmd[:4] == ["uv", "run", "--project", "services/music-stack-cli"]
     assert "music-stack" in cmd
-    assert "sync" in cmd
+    assert "fetch" in cmd
     assert "--profile" in cmd and str(path) in cmd
     assert "--global-config" in cmd and str(tmp_path / "global.yaml") in cmd
     assert "--source" in cmd and "apple_music" in cmd
@@ -321,7 +321,7 @@ def test_maybe_push_play_status_invokes_subprocess_when_something_pending(monkey
     cmd = captured["cmd"]
     assert cmd[:4] == ["uv", "run", "--project", "services/music-stack-cli"]
     assert "music-stack" in cmd
-    assert "sync" in cmd
+    assert "fetch" in cmd
     assert "--profile" in cmd and str(path) in cmd
     assert "--global-config" in cmd and str(tmp_path / "global.yaml") in cmd
     assert "--source" in cmd and "podcasts" in cmd
@@ -754,11 +754,11 @@ def test_cmd_auto_sync_fails_after_wait_seconds_exhausted_with_no_match(monkeypa
     assert run_sync_calls == []
 
 
-# --- _build_music_stack_sync_cmd -----------------------------------------------
+# --- _build_music_stack_fetch_cmd -----------------------------------------------
 
 
-def test_build_music_stack_sync_cmd_forwards_sources_playlists_shows():
-    cmd = cli_module._build_music_stack_sync_cmd(
+def test_build_music_stack_fetch_cmd_forwards_sources_playlists_shows():
+    cmd = cli_module._build_music_stack_fetch_cmd(
         _args(music_stack_project_dir="services/music-stack-cli"),
         Path("/config/profiles/john.yaml"),
         Path("/config"),
@@ -768,7 +768,7 @@ def test_build_music_stack_sync_cmd_forwards_sources_playlists_shows():
     )
 
     assert cmd[:4] == ["uv", "run", "--project", "services/music-stack-cli"]
-    assert cmd[4:6] == ["music-stack", "sync"]
+    assert cmd[4:6] == ["music-stack", "fetch"]
     assert "--profile" in cmd and "/config/profiles/john.yaml" in cmd
     assert "--global-config" in cmd and str(Path("/config/global.yaml")) in cmd
     # sorted() -- forwarded source order must not depend on caller order
@@ -778,8 +778,8 @@ def test_build_music_stack_sync_cmd_forwards_sources_playlists_shows():
     assert "--show" in cmd and "Linux Matters" in cmd
 
 
-def test_build_music_stack_sync_cmd_no_filters_means_no_flags():
-    cmd = cli_module._build_music_stack_sync_cmd(
+def test_build_music_stack_fetch_cmd_no_filters_means_no_flags():
+    cmd = cli_module._build_music_stack_fetch_cmd(
         _args(), Path("/config/profiles/john.yaml"), Path("/config")
     )
 
@@ -847,7 +847,7 @@ def test_cmd_full_sync_resolves_bare_profile_name_and_runs_device_sync(monkeypat
     assert captured["profile"].profile == "john"
     assert captured["profile_path"] == config_root / "profiles" / "john.yaml"
     # library/state roots defaulted next to config_root, same convention
-    # as `music-stack sync`'s own _cmd_sync.
+    # as `music-stack fetch`'s own _cmd_fetch.
     assert captured["args"].library_root == str(config_root.parent / "library")
     assert captured["args"].state_root == str(config_root.parent / "state")
 

@@ -8,7 +8,7 @@ iPod is connected. This is what lets `sync-orchestrator`'s udev-triggered
 whatever's already here, only doing a short opportunistic pre-fetch when a
 scheduled fetch is about to happen anyway.
 
-Reuses `music_stack_cli.orchestrate.run_sync` for the actual fetching —
+Reuses `music_stack_cli.orchestrate.run_fetch` for the actual fetching —
 this service only adds the "which targets are due, and when" layer on top
 (`common.schedule`, `common.state`'s `fetch_runs` table).
 
@@ -50,9 +50,9 @@ Two equally-supported ways to run it, pick whichever fits your setup:
 - `--dry-run` — print which targets are due without fetching anything or
   writing to `fetch_runs`. Useful to sanity-check resolved schedules
   before a real run.
-- `--lock-timeout` (default 1800) — passed through to `run_sync`'s
+- `--lock-timeout` (default 1800) — passed through to `run_fetch`'s
   per-source locks and to the per-profile fetch lock this service takes
-  (`.fetch_{profile}.lock`) to avoid racing a manual `music-stack sync`
+  (`.fetch_{profile}.lock`) to avoid racing a manual `music-stack fetch`
   run or another tick.
 
 ## Library maintenance

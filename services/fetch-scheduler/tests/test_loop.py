@@ -8,7 +8,7 @@ import pytest
 from common.state import StateDB
 from fetch_scheduler import loop as loop_module
 from fetch_scheduler.loop import run_tick
-from music_stack_cli.orchestrate import SyncAllResult
+from music_stack_cli.orchestrate import FetchAllResult
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
 
@@ -70,15 +70,15 @@ def _setup(tmp_path: Path, *, profiles: dict[str, str | None]) -> Path:
     return config_root
 
 
-def test_run_tick_calls_run_sync_with_due_targets(monkeypatch, tmp_path):
+def test_run_tick_calls_run_fetch_with_due_targets(monkeypatch, tmp_path):
     config_root = _setup(tmp_path, profiles={"john": "* * * * *"})  # always due (never fetched)
     captured = {}
 
-    def fake_run_sync(**kwargs):
+    def fake_run_fetch(**kwargs):
         captured.update(kwargs)
-        return SyncAllResult()
+        return FetchAllResult()
 
-    monkeypatch.setattr(loop_module, "run_sync", fake_run_sync)
+    monkeypatch.setattr(loop_module, "run_fetch", fake_run_fetch)
 
     result = run_tick(
         config_root=config_root,
@@ -95,7 +95,7 @@ def test_run_tick_calls_run_sync_with_due_targets(monkeypatch, tmp_path):
 
 def test_run_tick_records_fetch_completion_in_state_db(monkeypatch, tmp_path):
     config_root = _setup(tmp_path, profiles={"john": "* * * * *"})
-    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: FetchAllResult())
 
     run_tick(
         config_root=config_root,
@@ -112,12 +112,12 @@ def test_run_tick_records_fetch_completion_in_state_db(monkeypatch, tmp_path):
 def test_run_tick_does_not_record_target_whose_source_failed(monkeypatch, tmp_path):
     config_root = _setup(tmp_path, profiles={"john": "* * * * *"})
 
-    def fake_run_sync(**kwargs):
-        result = SyncAllResult()
+    def fake_run_fetch(**kwargs):
+        result = FetchAllResult()
         result.source_errors.append("apple_music: could not authenticate (expired cookies)")
         return result
 
-    monkeypatch.setattr(loop_module, "run_sync", fake_run_sync)
+    monkeypatch.setattr(loop_module, "run_fetch", fake_run_fetch)
 
     result = run_tick(
         config_root=config_root,
@@ -138,7 +138,7 @@ def test_run_tick_does_not_record_target_whose_source_failed(monkeypatch, tmp_pa
 def test_run_tick_skips_profile_with_nothing_due(monkeypatch, tmp_path):
     config_root = _setup(tmp_path, profiles={"john": None})  # no fetch schedule anywhere -> never due
     calls = []
-    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: calls.append(kwargs) or SyncAllResult())
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: calls.append(kwargs) or FetchAllResult())
 
     result = run_tick(
         config_root=config_root,
@@ -151,10 +151,10 @@ def test_run_tick_skips_profile_with_nothing_due(monkeypatch, tmp_path):
     assert result.fetched == {}
 
 
-def test_run_tick_dry_run_does_not_call_run_sync_or_write_state(monkeypatch, tmp_path):
+def test_run_tick_dry_run_does_not_call_run_fetch_or_write_state(monkeypatch, tmp_path):
     config_root = _setup(tmp_path, profiles={"john": "* * * * *"})
     calls = []
-    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: calls.append(kwargs) or SyncAllResult())
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: calls.append(kwargs) or FetchAllResult())
 
     result = run_tick(
         config_root=config_root,
@@ -250,7 +250,7 @@ def test_run_tick_dedup_fires_when_enabled_and_a_fetch_happens(monkeypatch, tmp_
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
     (tmp_path / "state" / "global.sqlite").touch()  # must be excluded from state_db_paths
 
-    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: FetchAllResult())
     monkeypatch.setattr(loop_module, "scan_library", lambda root: ["track1", "track2"])
     monkeypatch.setattr(loop_module, "find_duplicate_groups", lambda tracks, fuzzy_threshold: [["g1"]])
     captured = {}
@@ -287,7 +287,7 @@ def test_run_tick_artwork_normalize_fires_when_enabled_and_a_fetch_happens(monke
     config_root = _setup_maintenance(
         tmp_path, normalize_artwork_enabled=True, profiles={"john": "* * * * *"}
     )
-    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: FetchAllResult())
 
     class _FakeArtworkResult:
         scanned = 5
@@ -347,7 +347,7 @@ def test_run_tick_artwork_normalize_dry_run_does_not_write(monkeypatch, tmp_path
 
 def test_run_tick_maintenance_skipped_when_not_enabled(monkeypatch, tmp_path):
     config_root = _setup_maintenance(tmp_path, profiles={"john": "* * * * *"})  # all *_enabled default False
-    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: FetchAllResult())
     calls = []
     monkeypatch.setattr(loop_module, "scan_library", lambda root: calls.append(root) or [])
 
@@ -385,7 +385,7 @@ def test_run_tick_maintenance_task_exception_does_not_stop_others(monkeypatch, t
     config_root = _setup_maintenance(
         tmp_path, dedup_enabled=True, prune_enabled=True, profiles={"john": "* * * * *"}
     )
-    monkeypatch.setattr(loop_module, "run_sync", lambda **kwargs: SyncAllResult())
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: FetchAllResult())
 
     def _raise(*a, **k):
         raise RuntimeError("boom")
@@ -437,12 +437,12 @@ def test_run_tick_one_profile_exception_does_not_abort_the_rest(monkeypatch, tmp
         tmp_path, profiles={"alice": "* * * * *", "bob": "* * * * *"}
     )
 
-    def fake_run_sync(**kwargs):
+    def fake_run_fetch(**kwargs):
         if kwargs["profile"].profile == "alice":
             raise RuntimeError("boom")
-        return SyncAllResult()
+        return FetchAllResult()
 
-    monkeypatch.setattr(loop_module, "run_sync", fake_run_sync)
+    monkeypatch.setattr(loop_module, "run_fetch", fake_run_fetch)
 
     result = run_tick(
         config_root=config_root,
