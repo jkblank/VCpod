@@ -78,6 +78,7 @@ from iopenpod.sync.mapping import MappingManager
 from iopenpod.sync.transcoder import TranscodeOptions
 
 from sync_orchestrator.playstate import resolve_played_states
+from sync_orchestrator.podcast_artwork_backfill import build_podcast_artwork_backfill_items
 from sync_orchestrator.podcast_removal import build_podcast_removal_items
 from sync_orchestrator.selection import (
     build_media_folders,
@@ -841,7 +842,8 @@ def plan_sync(
 
     if not skip_podcasts:
         if state_db_path.is_file():
-            for feed in _load_podcast_feeds(str(state_db_path), library_root, profile):
+            feeds = _load_podcast_feeds(str(state_db_path), library_root, profile)
+            for feed in feeds:
                 episode_feed_pairs = [
                     (ep, feed) for ep in feed.episodes if ep.downloaded_path
                 ]
@@ -852,6 +854,19 @@ def plan_sync(
                     continue
                 plan.to_add.extend(podcast_plan.to_add)
                 plan.storage.bytes_to_add += podcast_plan.storage.bytes_to_add
+
+            # build_podcast_sync_plan above only ever proposes ADD_TO_IPOD
+            # for episodes not yet on the device -- an episode already
+            # synced (the overwhelming majority, on a real device) is
+            # filtered out and never revisited for artwork. This is the
+            # separate, targeted backfill for those. See
+            # podcast_artwork_backfill.py and notes.md.
+            artwork_items, artwork_pc_paths = build_podcast_artwork_backfill_items(
+                feeds, before_tracks
+            )
+            if artwork_items:
+                plan.to_update_artwork.extend(artwork_items)
+                plan.matched_pc_paths.update(artwork_pc_paths)
 
             # Deliberately keyed off known_episodes (the state db's played
             # flag), not _load_podcast_feeds' downloaded_path filter above —
