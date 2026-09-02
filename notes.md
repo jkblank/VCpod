@@ -3982,3 +3982,35 @@ playlist tracks "still sound funny" on playback (unclear yet whether
 this is a transcode artifact, a yt-dlp audio-format/bitrate choice, a
 loudness-normalization difference vs. Apple Music tracks, or something
 else) — flagged for a real investigation later, not touched this pass.
+
+## Same fast-follow: cron-free schedule builder, tab-switch race condition
+
+- **`fetch.schedule` no longer needs cron syntax**: new
+  `src/cronBuilder.ts` (`cronToSchedule`/`scheduleToCron`) + new
+  `<ScheduleEditor>` component, replacing the raw cron text input in
+  `Profiles.tsx`. Structured picker (Manual / Every day / Every N
+  hours / Weekly / Custom) generates the cron string underneath;
+  anything already saved that doesn't fit one of those shapes (spot-
+  checked against a genuinely complex real-world expression, e.g.
+  `*/15 9-17 * * 1-5`) round-trips through "Custom (cron)" untouched
+  rather than being silently mangled — verified the parse/generate
+  round-trip against every real cron string actually used across
+  `config/profiles/*.yaml` (`0 3 * * *`, `0 */6 * * *`, `30 2 * * 6`).
+  Purely derived from the `value` prop each render, no local component
+  state — scoped to the one place a cron field exists in the UI today
+  (profile-level `fetch.schedule`); reusable as-is once M13 makes
+  per-playlist/per-show `fetch_schedule` overrides editable too.
+
+- **Fixed a real bug found live, not just reported**: switching tabs on
+  the Sources screen before a slow request finished could let a stale
+  response land after a newer one and overwrite it — user reported
+  seeing Apple Music playlists show up under the YouTube Music tab.
+  Root cause: Apple Music's playlist listing is a slow real network
+  call (gamdl's async API); a user switching to YouTube Music before it
+  resolves would see the fast YouTube response, immediately followed by
+  the late Apple Music response landing and clobbering it, since
+  nothing tracked "is this response still for the currently-requested
+  tab." Fixed with a request-id ref in `Sources.tsx` — only the most
+  recently *requested* load's result (error or success) is ever
+  committed to state, any earlier in-flight request's resolution is
+  silently discarded once superseded.

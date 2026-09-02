@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, ApiError, type PlaylistEntry, type PlaylistSummary } from '../api'
 import CookieCaptureForm from '../components/CookieCaptureForm'
 import type { ProfileStore } from '../useProfileStore'
@@ -21,9 +21,17 @@ export default function Sources({ store }: { store: ProfileStore }) {
   const [urlInput, setUrlInput] = useState('')
   const [resolving, setResolving] = useState(false)
   const [resolveError, setResolveError] = useState<string | null>(null)
+  // Apple Music's playlist listing is a slow, real network call --
+  // switching to another tab before it resolves must not let its late
+  // response land after the faster tab's own response and overwrite it
+  // (confirmed live: this exact race showed Apple Music playlists on
+  // the YouTube Music tab). Only the most recently *requested* load's
+  // result is ever committed to state.
+  const requestIdRef = useRef(0)
 
   const loadPlaylists = async (source: SourceId) => {
     if (source === 'spotify') return
+    const requestId = ++requestIdRef.current
     setLoading(true)
     setLoadError(null)
     setPlaylists([])
@@ -32,11 +40,13 @@ export default function Sources({ store }: { store: ProfileStore }) {
         source === 'apple_music'
           ? await api.listAppleMusicPlaylists()
           : await api.listYtmusicPlaylists()
+      if (requestId !== requestIdRef.current) return // superseded by a newer tab switch
       setPlaylists(list)
     } catch (e) {
+      if (requestId !== requestIdRef.current) return
       setLoadError(e instanceof ApiError ? e.message : String(e))
     } finally {
-      setLoading(false)
+      if (requestId === requestIdRef.current) setLoading(false)
     }
   }
 

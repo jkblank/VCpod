@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api, ApiError, type ConnectedDevice, type Profile } from '../api'
+import ScheduleEditor from '../components/ScheduleEditor'
 import type { ProfileStore } from '../useProfileStore'
 
 export default function Profiles({ store }: { store: ProfileStore }) {
@@ -154,16 +155,10 @@ export default function Profiles({ store }: { store: ProfileStore }) {
             </label>
           </div>
 
-          <div className="field">
-            <label>Fetch schedule (cron, blank = manual only)</label>
-            <input
-              placeholder="0 3 * * *"
-              value={draft.fetch.schedule ?? ''}
-              onChange={(e) =>
-                setDraft({ ...draft, fetch: { schedule: e.target.value || null } })
-              }
-            />
-          </div>
+          <ScheduleEditor
+            value={draft.fetch.schedule}
+            onChange={(schedule) => setDraft({ ...draft, fetch: { schedule } })}
+          />
 
           <div className="row">
             <button className="btn" onClick={() => save()} disabled={saving}>
