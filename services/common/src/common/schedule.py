@@ -108,14 +108,14 @@ class ResolvedFetchScope:
     playlist_names: list[str] | None  # None = no playlist targets in scope
     show_names: list[str] | None  # None = no show targets, OR the "__all__"
     # sentinel (fetch every subscription) — both mean "don't pass a show
-    # filter downstream" (run_sync/`music-stack sync --show` treat "no
+    # filter downstream" (run_fetch/`music-stack fetch --show` treat "no
     # filter" as "use the profile's own podcasts.shows setting").
 
 
 def resolve_fetch_scope(targets: list[FetchTarget]) -> ResolvedFetchScope:
     """Turn a list of (already due-filtered) FetchTargets into the
-    sources/playlist_names/show_names shape both run_sync (in-process,
-    fetch-scheduler) and `music-stack sync` CLI flags (subprocess,
+    sources/playlist_names/show_names shape both run_fetch (in-process,
+    fetch-scheduler) and `music-stack fetch` CLI flags (subprocess,
     auto-sync's pre-fetch) need — a single shared implementation so this
     logic (and the empty-list-vs-None distinction it has to get right)
     isn't duplicated in both consumers."""

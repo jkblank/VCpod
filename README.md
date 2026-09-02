@@ -23,9 +23,11 @@ with Claude Code — hence the name.
 
 Everything is driven by plain YAML config files and supports multiple
 user/iPod profiles. See [`music-stack-planning.md`](music-stack-planning.md)
-for the full architecture and milestone plan, and [`notes.md`](notes.md) for
+for the full architecture and milestone plan, [`notes.md`](notes.md) for
 a running log of real bugs found (and fixed) in both this project and the
-upstream tools it depends on.
+upstream tools it depends on, and [`CHANGELOG.md`](CHANGELOG.md) for
+user-facing changes — check it before pulling an update, especially any
+marked **Breaking**.
 
 It can run entirely hands-off once set up: a scheduler keeps `library/`
 fresh on each playlist's/show's own cron schedule, and plugging in the
@@ -197,7 +199,7 @@ gitignored — only the example profiles are meant to be committed.
 ### 5. First fetch
 
 ```bash
-uv run music-stack sync --profile config/profiles/<you>.yaml
+uv run music-stack fetch --profile config/profiles/<you>.yaml
 ```
 
 Downloads every playlist across every enabled source, plus podcasts,
@@ -251,11 +253,11 @@ Three ways to run this, roughly in order of "how hands-off do you want
 it to be." All examples assume you're at the repo root with a real
 profile at `config/profiles/<you>.yaml` (see Setup above).
 
-**1. One-shot manual sync** — fetches every playlist across every
+**1. One-shot manual fetch** — fetches every playlist across every
 source, plus podcasts, for a profile in one call:
 
 ```bash
-uv run music-stack sync --profile config/profiles/<you>.yaml
+uv run music-stack fetch --profile config/profiles/<you>.yaml
 ```
 
 Full flag reference: [`services/music-stack-cli/README.md`](services/music-stack-cli/README.md).
@@ -307,7 +309,7 @@ Pocket Casts, running dedup on demand, plan-only device syncs, etc.):
 | [`fetcher-spotify`](services/fetcher-spotify/README.md) | Spotify playlist downloader (`zotify`) — shelved, blocked on a Premium requirement |
 | [`library-manager`](services/library-manager/README.md) | Cross-source dedup + quarantine cleanup |
 | [`podcast-manager`](services/podcast-manager/README.md) | Pocket Casts client, episode downloader, play-state push-back |
-| [`music-stack-cli`](services/music-stack-cli/README.md) | The unified `music-stack sync` command |
+| [`music-stack-cli`](services/music-stack-cli/README.md) | The unified `music-stack fetch` command |
 | [`fetch-scheduler`](services/fetch-scheduler/README.md) | Cron-scheduled fetching + automatic library/backup maintenance |
 | [`sync-orchestrator`](services/sync-orchestrator/README.md) | Device sync engine (bare metal) + `auto-sync`/udev automation + `full-sync` (interactive fetch+device in one command) |
 | [`audiobook-manager`](services/audiobook-manager/README.md) | Merges manually-acquired MP3 parts into a tagged, chaptered `.m4b` (ffmpeg + beets-audible) |

@@ -50,7 +50,7 @@ uv run fetcher-apple fetch \
 
 `fetch` looks up the named playlist in the given profile (must be an
 `apple_music` entry) and downloads only that one — call it once per
-playlist, or use `music-stack sync` (see `services/music-stack-cli`) to
+playlist, or use `music-stack fetch` (see `services/music-stack-cli`) to
 fetch an entire profile's playlists across every source in one call
 instead of invoking each fetcher directly.
 

@@ -463,10 +463,10 @@ def push_pending_play_status(
 
     This existed only as the standalone `podcast-manager push-play-status`
     CLI command until 2026-08-18 -- never wired into the normal
-    `music-stack sync --source podcasts` flow, so real on-device listening
+    `music-stack fetch --source podcasts` flow, so real on-device listening
     progress never actually reached Pocket Casts unless someone remembered
-    to run that command by hand. `run_sync` now calls this before syncing
-    episodes, so a routine podcast sync round-trips: push what the device
+    to run that command by hand. `run_fetch` now calls this before syncing
+    episodes, so a routine podcast fetch round-trips: push what the device
     already confirmed, then pull Pocket Casts' now-current state.
 
     Returns (pushed, failed) — failed as (episode, error message) pairs,

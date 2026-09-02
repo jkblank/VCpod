@@ -314,7 +314,7 @@ class ProfilePodcastsConfig(StrictModel):
     @property
     def show_names(self) -> Literal["all"] | list[str]:
         """Plain show identifiers, stripped of any fetch_schedule
-        override — for callers (e.g. run_sync/resolve_show_selection) that
+        override — for callers (e.g. run_fetch/resolve_show_selection) that
         only care about which shows are selected, not their schedules."""
         if self.shows == "all":
             return "all"

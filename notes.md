@@ -3744,3 +3744,37 @@ than a locally-cached hash — no mapping-file plumbing needed, and it's
 naturally idempotent: once a write succeeds, the next sync's device
 read-back reports nonzero artwork and the episode is never proposed
 again. 10 new tests in `test_podcast_artwork_backfill.py`.
+
+## 2026-09-02: `music-stack sync` renamed to `music-stack fetch` — BREAKING for anyone else using this repo
+
+Three different commands had "sync" in the name, but only two of them
+ever touch the device: `music-stack sync` only ever fetches from
+streaming sources into the local library, while `sync-orchestrator
+sync`/`full-sync` write to a connected iPod. Real, recurring confusion
+surfaced while reviewing `--library-root`/`--state-root` CLI ergonomics.
+User's call: rename `music-stack sync` → `music-stack fetch` (the term
+this codebase already uses everywhere else for this exact operation —
+`fetcher-apple`, `fetcher-ytmusic`, `fetch-scheduler`,
+`fetch_schedule`, `fetch_runs`). `sync-orchestrator sync`/`full-sync`/
+`auto-sync` are unchanged — both genuinely involve a device sync.
+
+**Full rename, not just the CLI string** — `orchestrate.py`'s
+`run_sync()`/`SyncAllResult` are now `run_fetch()`/`FetchAllResult`,
+through their one in-process caller (`fetch-scheduler`'s `loop.py`).
+Leaving the implementation still saying "sync" while the command it
+implements is called "fetch" would just relocate the ambiguity.
+`_build_music_stack_sync_cmd` in `sync-orchestrator/cli.py` (which
+shells out to it) is now `_build_music_stack_fetch_cmd`; its hardcoded
+`"music-stack", "sync"` argv element is now `"fetch"`.
+
+**This is a breaking change for anyone else pulling this repo** — a
+saved `music-stack sync ...` invocation (a script, a cron entry, muscle
+memory) will fail with an unrecognized-subcommand error after updating.
+No back-compat alias was added (personal project, no known other users
+as of this writing, and an alias would just reintroduce the confusion
+this rename exists to remove) — see `CHANGELOG.md` (new this same
+change) for the user-facing breaking-change note.
+
+`sync-orchestrator sync`/`full-sync`/`auto-sync` names, flags, and
+behavior are entirely untouched by this — only what they call
+internally to fetch changed.

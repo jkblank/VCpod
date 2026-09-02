@@ -22,7 +22,7 @@ from music_stack_cli import orchestrate as orchestrate_module
 from music_stack_cli.orchestrate import (
     resolve_config_path,
     resolve_roots,
-    run_sync,
+    run_fetch,
     select_playlists,
 )
 
@@ -125,12 +125,12 @@ def _profile_config() -> ProfileConfig:
     )
 
 
-def test_run_sync_prunes_stale_playlist_no_longer_in_profile(monkeypatch, tmp_path):
+def test_run_fetch_prunes_stale_playlist_no_longer_in_profile(monkeypatch, tmp_path):
     # Found live 2026-08-24: a playlist removed from a profile's own
     # playlists: list never got removed from the device, because nothing
     # in the fetch pipeline ever deleted its stale .m3u8 — sync-
     # orchestrator's device sync only ever sees whatever files physically
-    # exist under playlists_root/{profile}. run_sync (the fetch stage)
+    # exist under playlists_root/{profile}. run_fetch (the fetch stage)
     # must prune it, since it's the only thing that owns this folder.
     config_root = tmp_path / "config"
     (config_root / "secrets").mkdir(parents=True)
@@ -144,7 +144,7 @@ def test_run_sync_prunes_stale_playlist_no_longer_in_profile(monkeypatch, tmp_pa
 
     monkeypatch.setattr(orchestrate_module, "fetch_ytmusic_playlists", lambda entries, **kw: [])
 
-    result = run_sync(
+    result = run_fetch(
         profile=profile,
         global_config=global_config,
         config_root=config_root,
@@ -159,7 +159,7 @@ def test_run_sync_prunes_stale_playlist_no_longer_in_profile(monkeypatch, tmp_pa
     assert not (roots.playlists_root / "john" / "Every1.m3u8").exists()
 
 
-def test_run_sync_playlist_narrowing_does_not_prune_the_rest(monkeypatch, tmp_path):
+def test_run_fetch_playlist_narrowing_does_not_prune_the_rest(monkeypatch, tmp_path):
     # --playlist narrowing is a per-run scope choice, not an "I removed
     # this from my profile" signal -- must not prune a still-configured
     # playlist just because this particular run didn't fetch it.
@@ -178,7 +178,7 @@ def test_run_sync_playlist_narrowing_does_not_prune_the_rest(monkeypatch, tmp_pa
 
     monkeypatch.setattr(orchestrate_module, "fetch_ytmusic_playlists", lambda entries, **kw: [])
 
-    result = run_sync(
+    result = run_fetch(
         profile=profile,
         global_config=global_config,
         config_root=config_root,
@@ -192,7 +192,7 @@ def test_run_sync_playlist_narrowing_does_not_prune_the_rest(monkeypatch, tmp_pa
     assert (roots.playlists_root / "john" / "Chill.m3u8").is_file()
 
 
-def test_run_sync_ytmusic_omits_oauth_path_when_file_does_not_exist(monkeypatch, tmp_path):
+def test_run_fetch_ytmusic_omits_oauth_path_when_file_does_not_exist(monkeypatch, tmp_path):
     # Confirmed live: oauth is optional (get_playlist_tracks works fine
     # unauthenticated against public playlists), but resolve_config_path
     # always computes *a* path regardless of whether the file exists —
@@ -216,7 +216,7 @@ def test_run_sync_ytmusic_omits_oauth_path_when_file_does_not_exist(monkeypatch,
         orchestrate_module, "fetch_ytmusic_playlists", fake_fetch_ytmusic_playlists
     )
 
-    run_sync(
+    run_fetch(
         profile=profile,
         global_config=global_config,
         config_root=config_root,
@@ -229,7 +229,7 @@ def test_run_sync_ytmusic_omits_oauth_path_when_file_does_not_exist(monkeypatch,
     assert captured["oauth_path"] is None
 
 
-def test_run_sync_ytmusic_passes_oauth_path_when_file_exists(monkeypatch, tmp_path):
+def test_run_fetch_ytmusic_passes_oauth_path_when_file_exists(monkeypatch, tmp_path):
     config_root = tmp_path / "config"
     (config_root / "secrets").mkdir(parents=True)
     oauth_path_on_disk = config_root / "secrets" / "ytmusic_oauth.json"
@@ -249,7 +249,7 @@ def test_run_sync_ytmusic_passes_oauth_path_when_file_exists(monkeypatch, tmp_pa
         orchestrate_module, "fetch_ytmusic_playlists", fake_fetch_ytmusic_playlists
     )
 
-    run_sync(
+    run_fetch(
         profile=profile,
         global_config=global_config,
         config_root=config_root,
@@ -262,10 +262,10 @@ def test_run_sync_ytmusic_passes_oauth_path_when_file_exists(monkeypatch, tmp_pa
     assert captured["oauth_path"] == oauth_path_on_disk
 
 
-def test_run_sync_podcasts_uses_show_names_not_raw_shows_entries(monkeypatch, tmp_path):
+def test_run_fetch_podcasts_uses_show_names_not_raw_shows_entries(monkeypatch, tmp_path):
     # profile.podcasts.shows can now contain ShowOverride objects (see
     # common.models); resolve_show_selection only understands plain
-    # strings, so run_sync must filter through show_names, not shows.
+    # strings, so run_fetch must filter through show_names, not shows.
     config_root = tmp_path / "config"
     (config_root / "secrets").mkdir(parents=True)
     credentials_path = config_root / "secrets" / "pocketcasts.json"
@@ -304,7 +304,7 @@ def test_run_sync_podcasts_uses_show_names_not_raw_shows_entries(monkeypatch, tm
         orchestrate_module, "resolve_show_selection", fake_resolve_show_selection
     )
 
-    run_sync(
+    run_fetch(
         profile=profile,
         global_config=global_config,
         config_root=config_root,
@@ -317,7 +317,7 @@ def test_run_sync_podcasts_uses_show_names_not_raw_shows_entries(monkeypatch, tm
     assert captured["wanted"] == ["Daily News", "Weekly Deep Dive"]
 
 
-def test_run_sync_podcasts_pushes_play_status_before_pruning(monkeypatch, tmp_path):
+def test_run_fetch_podcasts_pushes_play_status_before_pruning(monkeypatch, tmp_path):
     # push_pending_play_status must run before prune_unsubscribed_shows so
     # a locally-confirmed play (device read-back or a manual override)
     # reaches Pocket Casts before this same run's subsequent state reads --
@@ -369,7 +369,7 @@ def test_run_sync_podcasts_pushes_play_status_before_pruning(monkeypatch, tmp_pa
     monkeypatch.setattr(orchestrate_module, "push_pending_play_status", fake_push)
     monkeypatch.setattr(orchestrate_module, "prune_unsubscribed_shows", fake_prune)
 
-    result = run_sync(
+    result = run_fetch(
         profile=profile,
         global_config=global_config,
         config_root=config_root,

@@ -78,7 +78,7 @@ def select_playlists(
 
 
 @dataclass
-class SyncAllResult:
+class FetchAllResult:
     apple_outcomes: list[ApplePlaylistSyncOutcome] = field(default_factory=list)
     ytmusic_outcomes: list[YtPlaylistSyncOutcome] = field(default_factory=list)
     podcast_outcomes: list[ShowSyncOutcome] = field(default_factory=list)
@@ -91,7 +91,7 @@ class SyncAllResult:
     source_errors: list[str] = field(default_factory=list)
 
 
-def run_sync(
+def run_fetch(
     *,
     profile: ProfileConfig,
     global_config: GlobalConfig,
@@ -102,8 +102,8 @@ def run_sync(
     show_selectors: list[str] | None,
     storefront: str = "us",
     lock_timeout: float = 1800,
-) -> SyncAllResult:
-    result = SyncAllResult()
+) -> FetchAllResult:
+    result = FetchAllResult()
 
     for source in sources:
         if source not in SUPPORTED_SOURCES:

@@ -12,7 +12,7 @@ state db rows.
 Authentication works, but real downloads are currently blocked on a
 **Spotify Premium requirement** for the API access this depends on —
 not a bug in this project, an external platform restriction outside its
-control. `music-stack sync`/`fetch-scheduler` both explicitly treat
+control. `music-stack fetch`/`fetch-scheduler` both explicitly treat
 `spotify` as an unsupported source (a clear "not supported by this
 command yet" message, not a crash) rather than silently no-op-ing or
 attempting a fetch that's known to fail. See `notes.md` for the

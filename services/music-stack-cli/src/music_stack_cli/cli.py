@@ -10,7 +10,7 @@ from music_stack_cli.orchestrate import (
     SUPPORTED_SOURCES,
     UNSUPPORTED_SOURCES,
     resolve_roots,
-    run_sync,
+    run_fetch,
 )
 
 
@@ -56,7 +56,7 @@ def _print_podcast_outcome(outcome) -> tuple[int, int, int]:
     return len(result.downloaded), len(result.already_present), len(result.failed)
 
 
-def _cmd_sync(args: argparse.Namespace) -> int:
+def _cmd_fetch(args: argparse.Namespace) -> int:
     try:
         global_config = load_global_config(args.global_config)
     except ConfigError as e:
@@ -80,7 +80,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 
     sources = set(args.source) if args.source else set(SUPPORTED_SOURCES)
 
-    result = run_sync(
+    result = run_fetch(
         profile=profile,
         global_config=global_config,
         config_root=config_root,
@@ -151,52 +151,52 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="music-stack")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    sync_parser = subparsers.add_parser(
-        "sync", help="Sync every configured playlist/show for a profile in one call"
+    fetch_parser = subparsers.add_parser(
+        "fetch", help="Fetch every configured playlist/show for a profile in one call"
     )
-    sync_parser.add_argument("--profile", required=True, help="Path to profile YAML")
-    sync_parser.add_argument(
+    fetch_parser.add_argument("--profile", required=True, help="Path to profile YAML")
+    fetch_parser.add_argument(
         "--global-config", default="config/global.yaml", help="Path to global.yaml"
     )
-    sync_parser.add_argument(
+    fetch_parser.add_argument(
         "--config-root",
         default=None,
         help="Real host root that global.yaml's /config/... paths resolve "
         "under. Defaults to --global-config's own parent directory.",
     )
-    sync_parser.add_argument(
+    fetch_parser.add_argument(
         "--library-root",
         default=None,
         help="Real host root containing music/, playlists/, podcasts/. "
         "Defaults to a 'library' directory next to --config-root.",
     )
-    sync_parser.add_argument(
+    fetch_parser.add_argument(
         "--state-root",
         default=None,
         help="Real host root for per-profile state dbs. Defaults to a "
         "'state' directory next to --config-root.",
     )
-    sync_parser.add_argument(
+    fetch_parser.add_argument(
         "--source",
         action="append",
         choices=(*SUPPORTED_SOURCES, *UNSUPPORTED_SOURCES),
-        help="Restrict sync to this source (repeatable). Defaults to "
+        help="Restrict fetch to this source (repeatable). Defaults to "
         f"all of: {', '.join(SUPPORTED_SOURCES)}.",
     )
-    sync_parser.add_argument(
+    fetch_parser.add_argument(
         "--playlist",
         action="append",
-        help="Restrict apple_music/ytmusic sync to this playlist name (repeatable).",
+        help="Restrict apple_music/ytmusic fetch to this playlist name (repeatable).",
     )
-    sync_parser.add_argument(
+    fetch_parser.add_argument(
         "--show",
         action="append",
-        help="Restrict podcast sync to this show, by UUID or title "
+        help="Restrict podcast fetch to this show, by UUID or title "
         "(case-insensitive, repeatable).",
     )
-    sync_parser.add_argument("--storefront", default="us")
-    sync_parser.add_argument("--lock-timeout", type=float, default=1800)
-    sync_parser.set_defaults(func=_cmd_sync)
+    fetch_parser.add_argument("--storefront", default="us")
+    fetch_parser.add_argument("--lock-timeout", type=float, default=1800)
+    fetch_parser.set_defaults(func=_cmd_fetch)
 
     args = parser.parse_args()
     sys.exit(args.func(args))
