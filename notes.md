@@ -3940,3 +3940,45 @@ out to be the *user's own* long-running backend from testing M11
 earlier, not a leftover of mine. Worth remembering: `pgrep -af
 web-gui-backend` before assuming a "Not Found"/wrong-behavior response
 is a code bug — it might just be an old process still holding the port.
+
+## Fast-follow to M12: dropdown for transcode_format, sidebar layout fix, YouTube add-by-URL
+
+User feedback after trying the M12 UI:
+
+- **`transcode_format` free-text field replaced with a dropdown**
+  (`alac`/`aac` only). Discovered in the process: `sync.py`'s
+  `_TRANSCODE_FORMAT_TO_PREFER_LOSSY = {"alac": False, "aac": True}` is
+  the actual, complete set of values that work at sync time — anything
+  else raises `SyncError`. The tracked example profile `bob.yaml` sets
+  `transcode_format: mp3`, which is **not** in that dict and would fail
+  if bob's profile were ever actually synced — a pre-existing
+  inconsistency in the example file, not something this pass touched
+  (it's documentation content, not a real profile).
+- **Sidebar layout fix**: `.nav` is now `position: sticky; height:
+  100vh` instead of stretching to match `.main`'s own height. Root
+  cause — `.shell` is a flex row with the default `align-items:
+  stretch`, so a long playlist list on the Sources screen made `.main`
+  (and therefore `.nav`, stretched to match) grow far taller than the
+  viewport, pushing the "editing: {profile}" indicator (anchored to the
+  bottom of `.nav` via `margin-top: auto`) off-screen below the fold —
+  exactly the profile-context-loss the user reported.
+- **YouTube "add by public URL"**: new `fetcher_ytmusic.api.
+  get_playlist_summary(playlist_id, oauth_path=None)` — confirmed live
+  against a real public playlist
+  (`PLQwVIlKxHM6qv-o99iX9R85og7IzF9YS_`, ytmusicapi's own docs example)
+  that `get_playlist()` really does work fully unauthenticated, same
+  fact `get_playlist_tracks` already relied on. New backend route `GET
+  /api/sources/ytmusic/resolve?url=...` accepts either a bare playlist
+  ID or a share link (`music.youtube.com/playlist?list=...` or
+  `youtube.com/playlist?list=...`) and extracts the id. This is the
+  "manual entry as fallback" mechanism `music-stack-planning.md`
+  already called for, now actually built — needed because
+  `list_playlists`/`get_library_playlists` can only ever see the
+  authenticated account's own library, never a playlist someone else
+  shared with you.
+
+**Known issue, not yet investigated**: user reports YouTube Music
+playlist tracks "still sound funny" on playback (unclear yet whether
+this is a transcode artifact, a yt-dlp audio-format/bitrate choice, a
+loudness-normalization difference vs. Apple Music tracks, or something
+else) — flagged for a real investigation later, not touched this pass.

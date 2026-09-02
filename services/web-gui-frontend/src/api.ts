@@ -143,6 +143,8 @@ export const api = {
 
   listAppleMusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/apple-music/playlists'),
   listYtmusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/ytmusic/playlists'),
+  resolveYtmusicPlaylist: (url: string) =>
+    request<PlaylistSummary>(`/api/sources/ytmusic/resolve?url=${encodeURIComponent(url)}`),
   putAppleMusicCookies: (cookiesTxt: string) =>
     request<{ status: string }>('/api/sources/apple-music/cookies', {
       method: 'PUT',

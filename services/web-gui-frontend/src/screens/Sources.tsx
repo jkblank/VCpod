@@ -18,6 +18,9 @@ export default function Sources({ store }: { store: ProfileStore }) {
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [showCookieForm, setShowCookieForm] = useState(false)
+  const [urlInput, setUrlInput] = useState('')
+  const [resolving, setResolving] = useState(false)
+  const [resolveError, setResolveError] = useState<string | null>(null)
 
   const loadPlaylists = async (source: SourceId) => {
     if (source === 'spotify') return
@@ -73,6 +76,23 @@ export default function Sources({ store }: { store: ProfileStore }) {
   }
 
   const selectedCount = draft.playlists.filter((p) => p.source === tab).length
+
+  const resolveByUrl = async () => {
+    setResolving(true)
+    setResolveError(null)
+    try {
+      const summary = await api.resolveYtmusicPlaylist(urlInput)
+      setPlaylists((prev) =>
+        prev.some((p) => p.source_id === summary.source_id) ? prev : [summary, ...prev],
+      )
+      if (!isSelected(summary.source_id)) toggle(summary)
+      setUrlInput('')
+    } catch (e) {
+      setResolveError(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setResolving(false)
+    }
+  }
 
   return (
     <>
@@ -134,6 +154,33 @@ export default function Sources({ store }: { store: ProfileStore }) {
                 await loadPlaylists(tab)
               }}
             />
+          )}
+
+          {tab === 'ytmusic' && (
+            <div className="card">
+              <h3>Add a public playlist by link</h3>
+              <p className="muted">
+                For playlists shared with you but not saved to your own account — paste a
+                youtube.com/music.youtube.com share link (or a bare playlist ID). Works for any
+                public playlist, no login needed.
+              </p>
+              {resolveError && <div className="error-banner">{resolveError}</div>}
+              <div className="row">
+                <input
+                  style={{ flex: 1 }}
+                  placeholder="https://music.youtube.com/playlist?list=..."
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                />
+                <button
+                  className="btn secondary"
+                  onClick={resolveByUrl}
+                  disabled={resolving || !urlInput.trim()}
+                >
+                  {resolving ? 'Resolving…' : 'Add'}
+                </button>
+              </div>
+            </div>
           )}
 
           {loading && <p className="muted">Loading playlists…</p>}

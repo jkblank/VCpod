@@ -64,6 +64,29 @@ def list_playlists(oauth_path: str, limit: int | None = None) -> list[PlaylistSu
     ]
 
 
+def get_playlist_summary(playlist_id: str, oauth_path: str | None = None) -> PlaylistSummary:
+    """Metadata for one playlist by id -- unlike list_playlists (which
+    can only ever see the authenticated account's own library),
+    get_playlist() works fully unauthenticated for a public playlist
+    (same confirmed-live fact get_playlist_tracks below already relies
+    on). This is what backs "add a playlist by its public share link"
+    for playlists that aren't saved to your own account -- see
+    music-stack-planning.md's "manual entry as fallback" design and
+    web_gui_backend/routers/sources.py's resolve-by-url route.
+
+    limit=1 (not the default 100, and not 0) -- only trackCount is
+    needed, not the actual track list, but 0 wasn't confirmed safe
+    against ytmusicapi's own handling and 1 costs nothing extra."""
+    yt = YTMusic(auth=oauth_path)
+    playlist = yt.get_playlist(playlist_id, limit=1)
+    return PlaylistSummary(
+        source_id=playlist.get("id", playlist_id),
+        name=playlist.get("title", ""),
+        track_count=playlist.get("trackCount", 0),
+        owner=(playlist.get("author") or {}).get("name"),
+    )
+
+
 def _artist_names(track: dict) -> str:
     return ", ".join(a["name"] for a in track.get("artists") or [] if a.get("name"))
 

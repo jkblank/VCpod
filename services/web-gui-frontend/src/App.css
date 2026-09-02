@@ -34,6 +34,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* Pinned to the viewport height, not stretched to match .main's own
+     height -- .shell is a flex row with default align-items: stretch,
+     so without this the nav grows as tall as a long playlist list makes
+     .main, pushing .nav-editing (anchored to the bottom via
+     margin-top: auto) off-screen below the fold. */
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .nav-title {

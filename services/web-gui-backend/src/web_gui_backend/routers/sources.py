@@ -16,13 +16,17 @@ import dataclasses
 import tempfile
 from http.cookiejar import LoadError, MozillaCookieJar
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 
 from common.config import ConfigError, load_global_config, resolve_config_path
 
 from fetcher_apple.api import list_playlists as list_apple_music_playlists
-from fetcher_ytmusic.api import list_playlists as list_ytmusic_playlists
+from fetcher_ytmusic.api import (
+    get_playlist_summary as get_ytmusic_playlist_summary,
+    list_playlists as list_ytmusic_playlists,
+)
 
 from web_gui_backend.atomic import write_text_atomic
 from web_gui_backend.errors import config_error_response
@@ -112,6 +116,46 @@ def ytmusic_playlists(request: Request) -> list[dict]:
             status_code=502, detail=f"could not list YouTube Music playlists: {e}"
         ) from e
     return [dataclasses.asdict(p) for p in playlists]
+
+
+def _parse_ytmusic_playlist_id(value: str) -> str:
+    """A pasted value is either a bare playlist id already, or a public
+    share link (music.youtube.com/playlist?list=... or the plain
+    youtube.com/playlist?list=... form -- both real, both seen live) --
+    extract the id either way. Playlists shared with you but never
+    saved to your own account library can't appear in list_playlists
+    (that call only ever sees the authenticated account's own
+    playlists) -- this is the fallback music-stack-planning.md already
+    calls for: "the GUI ... accepts a pasted URL, and each fetcher's
+    URL parser resolves it to a source_id.\""""
+    value = value.strip()
+    if not value:
+        raise ValueError("paste a playlist URL or ID")
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        list_id = parse_qs(parsed.query).get("list", [None])[0]
+        if not list_id:
+            raise ValueError("no ?list=... playlist id found in that URL")
+        return list_id
+    return value
+
+
+@router.get("/api/sources/ytmusic/resolve")
+def resolve_ytmusic_playlist(url: str) -> dict:
+    try:
+        playlist_id = _parse_ytmusic_playlist_id(url)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    try:
+        # oauth_path=None deliberately -- this is specifically for
+        # playlists NOT in your own account (those are already covered
+        # by the /playlists route above), so it must work the same way
+        # for a public playlist as it would for any other visitor: no
+        # session at all.
+        summary = get_ytmusic_playlist_summary(playlist_id, oauth_path=None)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"could not resolve playlist: {e}") from e
+    return dataclasses.asdict(summary)
 
 
 @router.put("/api/sources/apple-music/cookies")

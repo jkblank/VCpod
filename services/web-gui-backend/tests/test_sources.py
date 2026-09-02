@@ -124,6 +124,86 @@ def test_ytmusic_playlists_returns_listed_playlists(monkeypatch, client):
     assert resp.json() == [{"source_id": "PL1", "name": "Commute", "track_count": 8, "owner": None}]
 
 
+def test_resolve_ytmusic_playlist_accepts_bare_id(monkeypatch, client):
+    captured = {}
+
+    def _capture(playlist_id, oauth_path=None):
+        captured["playlist_id"] = playlist_id
+        captured["oauth_path"] = oauth_path
+        return _FakePlaylist("PLxyz", "New EDM This Week", 237, "sigmatics")
+
+    monkeypatch.setattr(routers.sources, "get_ytmusic_playlist_summary", _capture)
+
+    resp = client.get("/api/sources/ytmusic/resolve", params={"url": "PLxyz"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "source_id": "PLxyz", "name": "New EDM This Week", "track_count": 237, "owner": "sigmatics",
+    }
+    assert captured == {"playlist_id": "PLxyz", "oauth_path": None}
+
+
+def test_resolve_ytmusic_playlist_extracts_id_from_music_youtube_share_link(monkeypatch, client):
+    captured = {}
+
+    def _capture(playlist_id, oauth_path=None):
+        captured["playlist_id"] = playlist_id
+        return _FakePlaylist(playlist_id, "x", 1, None)
+
+    monkeypatch.setattr(routers.sources, "get_ytmusic_playlist_summary", _capture)
+
+    resp = client.get(
+        "/api/sources/ytmusic/resolve",
+        params={"url": "https://music.youtube.com/playlist?list=PLxyz123&si=abc"},
+    )
+
+    assert resp.status_code == 200
+    assert captured["playlist_id"] == "PLxyz123"
+
+
+def test_resolve_ytmusic_playlist_extracts_id_from_plain_youtube_share_link(monkeypatch, client):
+    captured = {}
+
+    def _capture(playlist_id, oauth_path=None):
+        captured["playlist_id"] = playlist_id
+        return _FakePlaylist(playlist_id, "x", 1, None)
+
+    monkeypatch.setattr(routers.sources, "get_ytmusic_playlist_summary", _capture)
+
+    resp = client.get(
+        "/api/sources/ytmusic/resolve",
+        params={"url": "https://www.youtube.com/playlist?list=PLxyz123"},
+    )
+
+    assert resp.status_code == 200
+    assert captured["playlist_id"] == "PLxyz123"
+
+
+def test_resolve_ytmusic_playlist_rejects_url_without_list_param(client):
+    resp = client.get(
+        "/api/sources/ytmusic/resolve", params={"url": "https://music.youtube.com/playlist"}
+    )
+
+    assert resp.status_code == 422
+    assert "list=" in resp.json()["detail"]
+
+
+def test_resolve_ytmusic_playlist_rejects_empty_input(client):
+    resp = client.get("/api/sources/ytmusic/resolve", params={"url": "   "})
+    assert resp.status_code == 422
+
+
+def test_resolve_ytmusic_playlist_returns_502_when_playlist_not_found(monkeypatch, client):
+    def _boom(playlist_id, oauth_path=None):
+        raise ValueError("playlist not found")
+
+    monkeypatch.setattr(routers.sources, "get_ytmusic_playlist_summary", _boom)
+
+    resp = client.get("/api/sources/ytmusic/resolve", params={"url": "PLdoesnotexist"})
+
+    assert resp.status_code == 502
+
+
 def test_put_apple_music_cookies_accepts_valid_file(client, config_root):
     resp = client.put(
         "/api/sources/apple-music/cookies", json={"cookies_txt": VALID_APPLE_COOKIES}

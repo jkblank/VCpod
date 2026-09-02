@@ -113,12 +113,15 @@ export default function Profiles({ store }: { store: ProfileStore }) {
           </div>
           <div className="field">
             <label>Transcode format</label>
-            <input
+            <select
               value={draft.sync.transcode_format}
               onChange={(e) =>
                 setDraft({ ...draft, sync: { ...draft.sync, transcode_format: e.target.value } })
               }
-            />
+            >
+              <option value="alac">ALAC (lossless)</option>
+              <option value="aac">AAC (lossy, smaller)</option>
+            </select>
           </div>
           <div className="field">
             <label>Write mode</label>
