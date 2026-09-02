@@ -3778,3 +3778,64 @@ change) for the user-facing breaking-change note.
 `sync-orchestrator sync`/`full-sync`/`auto-sync` names, flags, and
 behavior are entirely untouched by this — only what they call
 internally to fetch changed.
+
+## 2026-09-02: Web GUI (M11-M14) planning + first two foundation pieces
+
+Kicked off real design work on the web front-end, deferred since the
+project began. User wants it to go further than the original
+`music-stack-planning.md` §7 sketch (which said the GUI should only
+manage credential *paths/status*, never capture them) — actually
+capturing credentials (Pocket Casts email/password, Apple Music/YouTube
+cookies) through the browser, plus playlist/podcast selection, fetch
+scheduling, auto-sync setup, device serial input, full profile
+authoring. Decisions locked in for this build (see the session's plan
+file for the full reasoning): auto-sync setup generates the filled-in
+unit/rule files + exact `sudo` commands rather than executing them
+itself (no privilege-escalation surface on the web server); no login
+system, `127.0.0.1`/LAN-only access; credentials stay plaintext
+(today's posture, unchanged); Apple Music cookie capture ships as
+manual paste/upload of an already-exported `cookies.txt` (real
+cross-origin cookie reading from an iframe/popup is impossible — same-
+origin policy, not a solvable limitation — the only real automation
+path is a Playwright-driven separate browser instance, scoped as an
+explicit later piece, not part of the first build).
+
+User provided an existing Claude Design mockup,
+[`docs/VCpod Console.html`](VCpod%20Console.html) — a real, detailed
+prototype (Overview, Music sources picker, External library, Podcasts,
+Audiobooks, Sync, Activity, Profiles, Sources & credentials screens;
+diff-preview-before-write and confirm-before-device-write patterns
+throughout) that changed the frontend-stack call from Jinja2+htmx to a
+real React app, since the mockup is already structured as React-style
+components and porting it directly is far less work than re-deriving
+the same screens as server-rendered templates. The mockup deliberately
+doesn't cover credential capture or auto-sync setup (matching its own
+"never display credential contents" principle) — both stay net-new UX
+work on top of it.
+
+**First two pieces built and merged** (foundational, needed regardless
+of which M11-M14 screen comes next):
+
+1. `common/config.py`: `save_profile_config`/`save_global_config` —
+   only `load_*` existed before. Round-trips through the exact same
+   pydantic models every loader uses (`save` then `load` reproduces an
+   identical model — tested), enforces the same reserved-name
+   (`profile: global`) and duplicate-profile-name rules the loaders
+   already enforce at read time, so a bad write is caught here instead
+   of surfacing later as a confusing failure the next time anything
+   loads `config/`.
+2. `sync-orchestrator identify-device` (new CLI subcommand,
+   `device.py`'s new `iter_connected_devices()`): reports every
+   currently-connected iPod's serial/volume_label/model as one JSON
+   line on stdout — no existing command exposed this standalone (`sync`
+   only prints it *after* a `DeviceMatch` already resolved, which needs
+   the serial as input). Auto-mount progress goes to stderr
+   specifically so stdout stays pure JSON for a script to parse. This
+   is what will back the web UI's "connect your iPod and we'll fill in
+   device.match_value for you" flow (already sketched into the mockup's
+   Profiles screen as a live "Detected now: ..." line).
+
+Both fully unit-tested (`services/common`/`services/sync-orchestrator`
+suites), root workspace confirmed green. The actual FastAPI backend +
+React frontend scaffold (M11 proper) is still ahead — these two pieces
+are the load-bearing groundwork it needs.

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from common.models import DeviceMatch, ProfileConfig
@@ -184,6 +185,58 @@ def find_matching_device(match: DeviceMatch) -> DeviceInfo:
     raise DeviceNotFoundError(
         f"no connected, mounted iPod matches {match.match_by}={match.match_value!r}"
     )
+
+
+@dataclass
+class ConnectedDeviceInfo:
+    """The subset of a connected iPod's identity relevant to filling in a
+    profile's device.match_by/match_value -- deliberately its own small
+    dataclass rather than reusing iopenpod's DeviceInfo directly, since
+    DeviceInfo has no volume_label field (its mount_name/ipod_name are
+    different things than the raw FAT label read_volume_label() reads,
+    which is what device.match_value actually needs for match_by:
+    volume_label) and carries many other fields irrelevant here."""
+
+    path: str
+    volume_label: str
+    serial: str
+    firewire_guid: str
+    model_family: str
+    generation: str
+    model_number: str
+    capacity: str
+
+
+def iter_connected_devices() -> list[ConnectedDeviceInfo]:
+    """Every currently-mounted iPod, identified -- for surfacing a
+    connected device's serial/volume_label/model to a human (e.g. a
+    profile-setup UI's "detected now: ..." flow), unlike
+    find_matching_device, which matches against one specific profile's
+    DeviceMatch and raises if nothing matches. Returns an empty list,
+    never raises, when nothing's connected.
+
+    Does not auto-mount first -- call mount_candidate_devices() before
+    this if the caller can't rely on the device already being mounted
+    (same convention find_matching_device already follows)."""
+    devices: list[ConnectedDeviceInfo] = []
+    for block_device, mount_point, _fstype in iter_candidate_mounts():
+        if not is_ipod_mount(mount_point):
+            continue
+        info = DeviceInfo(path=mount_point)
+        enrich(info)
+        devices.append(
+            ConnectedDeviceInfo(
+                path=mount_point,
+                volume_label=read_volume_label(block_device),
+                serial=info.serial,
+                firewire_guid=info.firewire_guid,
+                model_family=info.model_family,
+                generation=info.generation,
+                model_number=info.model_number,
+                capacity=info.capacity,
+            )
+        )
+    return devices
 
 
 class AmbiguousDeviceMatchError(Exception):

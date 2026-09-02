@@ -484,3 +484,27 @@ If you sync a different iPod generation/PID, add another
 `ATTR{idProduct}=="..."` line to the `.rules` file (5th/5.5th gen share
 `0x1209`; other generations use different PIDs not yet catalogued by this
 project).
+
+## Discovering a connected device's identity: `identify-device`
+
+Every other command here takes a `device.match_by`/`match_value` and
+looks for a device *matching* it. `identify-device` is the opposite —
+no profile or config needed, it just reports what's currently connected,
+for the case where you don't yet know a new device's serial/volume
+label (e.g. filling in a new profile's `device:` block for the first
+time):
+
+```bash
+uv run sync-orchestrator identify-device
+```
+
+```json
+{"devices": [{"path": "/run/media/john/JOHNS IPOD", "volume_label": "JOHN'S IPOD", "serial": "AA11BB22", "firewire_guid": "", "model_family": "iPod Video", "generation": "5.5th Gen", "model_number": "MA450", "capacity": "80GB"}]}
+```
+
+Best-effort auto-mounts first, same as `sync`/`full-sync`/`auto-sync` —
+pass `--no-mount` to skip that and report only what's already mounted.
+Prints one JSON object on stdout and nothing else there (auto-mount
+progress goes to stderr instead) — meant for a script/another service to
+parse, not just human reading. Returns `{"devices": []}`, not an error,
+when nothing's connected.

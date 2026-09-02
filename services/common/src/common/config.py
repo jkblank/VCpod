@@ -86,6 +86,55 @@ def load_all_profiles(directory: Path | str) -> dict[str, ProfileConfig]:
     return profiles
 
 
+def _dump_yaml(model_data: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        # sort_keys=False -- preserves the model's own field declaration
+        # order (profile, device, fetch, playlists, podcasts, sync, ...),
+        # matching the hand-authored shape of alice.yaml/bob.yaml rather
+        # than an alphabetically-resorted one.
+        yaml.safe_dump(model_data, f, sort_keys=False)
+
+
+def save_profile_config(profile: ProfileConfig, path: Path | str) -> None:
+    """Writes profile to path as YAML, through the exact same schema
+    every loader reads -- load_profile_config(path) afterward always
+    reproduces an identical model. Enforces the same two business rules
+    load_profile_config/load_all_profiles enforce at read time, so an
+    invalid write is caught here rather than surfacing later as a
+    confusing failure the next time anything loads config/."""
+    path = Path(path)
+    if profile.profile == "global":
+        raise ConfigError(path, ["profile name 'global' is reserved, choose a different name"])
+
+    profiles_dir = path.parent
+    if profiles_dir.is_dir():
+        for existing_path in sorted(profiles_dir.glob("*.yaml")):
+            if existing_path == path:
+                continue  # overwriting this same profile in place is fine
+            try:
+                existing = load_profile_config(existing_path)
+            except ConfigError:
+                continue  # an already-broken sibling file isn't this write's problem
+            if existing.profile == profile.profile:
+                raise ConfigError(
+                    path,
+                    [
+                        f"duplicate profile name '{profile.profile}' "
+                        f"(already defined in {existing_path})"
+                    ],
+                )
+
+    _dump_yaml(profile.model_dump(mode="json", exclude_none=True), path)
+
+
+def save_global_config(config: GlobalConfig, path: Path | str) -> None:
+    """Writes config to path as YAML, through the exact same schema
+    load_global_config reads -- no business rules beyond the schema
+    itself apply to global.yaml, unlike profiles."""
+    _dump_yaml(config.model_dump(mode="json", exclude_none=True), Path(path))
+
+
 def resolve_profile_path(value: Path | str, config_root: Path | str) -> Path:
     """Resolve a CLI-supplied `--profile` value to a concrete YAML path.
 
