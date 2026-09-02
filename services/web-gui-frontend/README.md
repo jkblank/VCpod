@@ -7,10 +7,8 @@ JSON REST API. Not part of the root `uv` workspace (this is a plain
 Python side.
 
 Not yet packaged/documented as part of "Running it" in the root
-README — this is still an in-progress feature (M12, scoped as "M12a" —
-playlist/podcast picking + credential capture — see `notes.md`), not a
-finished one. See the root README's Status table for where M11-M14
-actually stand.
+README — this is still an in-progress feature. See the root README's
+Status table and `notes.md` for where M11-M14 actually stand.
 
 ## Setup
 
@@ -49,17 +47,21 @@ deploy would actually run; `npm run dev` never type-checks on its own.
   need more fields; unmodeled fields pass through untouched via each
   type's index signature rather than getting silently dropped on save.
 - `src/screens/` — one component per screen: `Overview`, `Profiles`,
-  `Sources` (Apple Music/YouTube Music playlist picker), `Podcasts`
-  (Pocket Casts subscription picker). External library, Audiobooks,
-  Sync, Activity, and the polished Sources & credentials status screen
-  are still just the mockup's UX/copy spec (`docs/VCpod Console.html`
-  at the repo root), not built here yet.
+  `Sources` (Apple Music/YouTube Music playlist picker, plus "add a
+  public playlist by link" for YouTube), `Podcasts` (Pocket Casts
+  subscription picker), `ExternalLibrary`/`Audiobooks` (browse a real
+  directory tree and tick what to sync). Sync, Activity, and the
+  polished Sources & credentials status screen are still just the
+  mockup's UX/copy spec (`docs/VCpod Console.html` at the repo root),
+  not built here yet.
 - `src/components/` — `CredentialWarning` (the big plaintext-storage
   warning every capture form shows), `CookieCaptureForm` (Apple
   Music/YouTube — paste or upload an already-exported `cookies.txt`;
   real cross-origin cookie *capture* isn't possible from a browser at
   all, see `notes.md`), `PocketCastsLoginForm` (validated against a
-  real login before saving).
+  real login before saving), `ScheduleEditor` (cron-free schedule
+  picker, backed by `cronBuilder.ts`), `DirectoryPicker` (breadcrumb
+  directory browser shared by `ExternalLibrary`/`Audiobooks`).
 - `src/useProfileStore.ts` — "which profile is currently being edited"
   lifted out of any one screen into a shared hook — `App.tsx` calls it
   once and passes the same store down to `Profiles`/`Sources`/

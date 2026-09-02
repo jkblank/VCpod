@@ -4014,3 +4014,46 @@ else) — flagged for a real investigation later, not touched this pass.
   recently *requested* load's result (error or success) is ever
   committed to state, any earlier in-flight request's resolution is
   silently discarded once superseded.
+
+## 2026-09-02: Web GUI M12b — External library + Audiobooks screens
+
+Closes out M12's deferred scope (same picker pattern as Sources/
+Podcasts, just browsing a real directory tree instead of calling a
+source API).
+
+**`web-gui-backend` gained a `--library-root`** (default: sibling
+`library/` next to `--config-root`, same convention every other CLI
+here already uses) — needed for the Audiobooks screen to know where
+`library/audiobooks` actually is; nothing tracked this before since
+M11/M12 never needed a real filesystem path beyond `config/`.
+
+**New `browse.py`**: a shared, security-scoped directory listing —
+every listing is confined to a given root (a subpath that would
+resolve outside it, e.g. a literal `..` segment, is rejected, not
+silently followed). This is the one place in the backend that reads an
+arbitrary, user-supplied filesystem location (`ExternalLibraryConfig.
+path` can be anywhere on disk the user points it at) rather than
+something only ever config_root/library_root-relative, so it gets its
+own explicit escape check — verified live against a real escape
+attempt (`../../../../etc` → correctly rejected, not followed).
+
+**Two new routes**: `GET /api/external-library/browse?root=...&subpath=...`
+(root is whatever real path the user typed in) and `GET
+/api/audiobooks/browse?subpath=...` (root is always `library_root/
+audiobooks`, resolved internally — the client never passes it). Both
+verified live against real data: the real `MusicLibrary` folder's
+artists, and the real `library/audiobooks`' four authors (Franz Kafka,
+George Orwell, Marcus Aurelius, Neil Postman).
+
+**Frontend**: shared `<DirectoryPicker>` component (breadcrumb + one
+level at a time, not a full expand-all tree — a personal library can
+be large) reused by both new `ExternalLibrary.tsx` and `Audiobooks.tsx`
+screens. Checking a folder selects its whole relative-path prefix
+(matching `ExternalLibraryConfig`/`AudiobooksConfig.selections`'
+exact string-prefix convention); checking/unchecking never tries to
+reconcile against an already-selected ancestor folder — kept simple
+and predictable rather than clever. Both screens gate the picker
+behind an explicit "enable this section" checkbox, since both fields
+are optional on `ProfileConfig` and mean something different when
+entirely unset vs. present-with-empty-selections (documented inline in
+each screen, matching each model's own doc comments in `models.py`).

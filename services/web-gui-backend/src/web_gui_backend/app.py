@@ -17,7 +17,15 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from web_gui_backend.routers import device, global_config, podcasts, profiles, sources
+from web_gui_backend.routers import (
+    audiobooks,
+    device,
+    external_library,
+    global_config,
+    podcasts,
+    profiles,
+    sources,
+)
 
 # Bound to localhost/LAN only per this build's locked-in access-control
 # decision (no login system -- see notes.md's 2026-09-02 entry) -- CORS
@@ -26,10 +34,18 @@ from web_gui_backend.routers import device, global_config, podcasts, profiles, s
 _DEV_FRONTEND_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
-def create_app(config_root: Path | str, sync_orchestrator_dir: Path | str | None = None) -> FastAPI:
+def create_app(
+    config_root: Path | str,
+    sync_orchestrator_dir: Path | str | None = None,
+    library_root: Path | str | None = None,
+) -> FastAPI:
+    config_root = Path(config_root)
     app = FastAPI(title="VCpod web-gui-backend")
-    app.state.config_root = Path(config_root)
+    app.state.config_root = config_root
     app.state.sync_orchestrator_dir = sync_orchestrator_dir
+    # Same default every other CLI here uses: a sibling 'library'
+    # directory next to config_root.
+    app.state.library_root = Path(library_root) if library_root else config_root.parent / "library"
 
     app.add_middleware(
         CORSMiddleware,
@@ -38,7 +54,15 @@ def create_app(config_root: Path | str, sync_orchestrator_dir: Path | str | None
         allow_headers=["*"],
     )
 
-    for router_module in (profiles, global_config, device, sources, podcasts):
+    for router_module in (
+        profiles,
+        global_config,
+        device,
+        sources,
+        podcasts,
+        external_library,
+        audiobooks,
+    ):
         app.include_router(router_module.router)
 
     return app

@@ -15,6 +15,13 @@ def main() -> None:
         help="Root containing global.yaml and profiles/*.yaml (default 'config').",
     )
     parser.add_argument(
+        "--library-root",
+        default=None,
+        help="Real host root containing music/, playlists/, podcasts/, "
+        "audiobooks/. Defaults to a 'library' directory next to "
+        "--config-root, same convention every other CLI here uses.",
+    )
+    parser.add_argument(
         "--sync-orchestrator-dir",
         default=None,
         help="Path to the sync-orchestrator project, used to invoke "
@@ -31,7 +38,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8420)
     args = parser.parse_args()
 
-    app = create_app(args.config_root, args.sync_orchestrator_dir)
+    app = create_app(args.config_root, args.sync_orchestrator_dir, args.library_root)
     uvicorn.run(app, host=args.host, port=args.port)
 
 

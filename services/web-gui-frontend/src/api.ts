@@ -36,11 +36,19 @@ export type PodcastsConfig = {
   [key: string]: unknown
 }
 
-// Profile carries a few more nested sections (external_library,
-// audiobooks, music) -- passed through untyped via the index signature,
-// since this pass doesn't edit them and must never drop them on a
-// round-trip (the backend's StrictModel would reject a write missing a
-// required field the UI doesn't otherwise touch).
+export type SelectionConfig = {
+  mode: 'include' | 'exclude'
+  selections: string[]
+}
+
+export type ExternalLibraryConfig = SelectionConfig & { path: string }
+export type AudiobooksConfig = SelectionConfig
+
+// Profile carries one more nested section (music, the general-library
+// scoping) -- passed through untyped via the index signature, since
+// this pass doesn't edit it and must never drop it on a round-trip
+// (the backend's StrictModel would reject a write missing a required
+// field the UI doesn't otherwise touch).
 export type Profile = {
   profile: string
   device: DeviceMatch
@@ -48,6 +56,8 @@ export type Profile = {
   fetch: FetchSettings
   playlists: PlaylistEntry[]
   podcasts: PodcastsConfig
+  external_library?: ExternalLibraryConfig | null
+  audiobooks?: AudiobooksConfig | null
   [key: string]: unknown
 }
 
@@ -96,6 +106,9 @@ export type SourcesStatus = {
   ytmusic: SourceStatus
   spotify: SourceStatus
 }
+
+export type DirEntry = { name: string; is_dir: boolean }
+export type BrowseResult = { subpath: string; entries: DirEntry[] }
 
 // The backend's ConfigError shape: {"path": "...", "errors": ["dotted.field — message", ...]}
 export class ApiError extends Error {
@@ -166,4 +179,11 @@ export const api = {
       `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts-credentials`,
       { method: 'PUT', body: JSON.stringify({ email, password }) },
     ),
+
+  browseExternalLibrary: (root: string, subpath: string) =>
+    request<BrowseResult>(
+      `/api/external-library/browse?root=${encodeURIComponent(root)}&subpath=${encodeURIComponent(subpath)}`,
+    ),
+  browseAudiobooks: (subpath: string) =>
+    request<BrowseResult>(`/api/audiobooks/browse?subpath=${encodeURIComponent(subpath)}`),
 }

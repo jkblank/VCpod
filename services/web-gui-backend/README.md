@@ -15,6 +15,9 @@ uv run web-gui-backend --config-root config
 
 - `--config-root` (default `config`) — same convention every other
   service's `--config-root` uses.
+- `--library-root` (default: sibling `library` next to `--config-root`,
+  same convention every other CLI here uses) — where `library/
+  audiobooks` actually is, for the Audiobooks browse route.
 - `--sync-orchestrator-dir` (default: sibling `services/sync-orchestrator`,
   derived from this package's own install location) — where to find
   `sync-orchestrator identify-device` to shell out to.
@@ -39,11 +42,14 @@ separate React SPA, not server-rendered.
 | GET | `/api/device/identify` | Shells out to `sync-orchestrator identify-device`, returns `{"devices": [...]}` |
 | GET | `/api/sources/apple-music/playlists` | Lists the Apple Music account's playlists (`fetcher_apple.api.list_playlists`) |
 | GET | `/api/sources/ytmusic/playlists` | Lists the YouTube Music account's playlists |
+| GET | `/api/sources/ytmusic/resolve?url=...` | Resolves a public playlist by share link or bare id — works unauthenticated, for playlists not saved to your own account |
 | PUT | `/api/sources/apple-music/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format + `media-user-token` present), written atomically |
 | PUT | `/api/sources/ytmusic/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format), written atomically |
 | GET | `/api/sources/status` | Per-source `{enabled, exists, updated_at}` — `updated_at` is the credential file's real mtime, not a guessed expiry |
 | GET | `/api/profiles/{name}/pocketcasts/subscriptions` | That profile's real Pocket Casts subscriptions (requires credentials already saved) |
 | PUT | `/api/profiles/{name}/pocketcasts-credentials` | Body `{"email", "password"}` — validated via a real Pocket Casts login *before* writing anything |
+| GET | `/api/external-library/browse?root=...&subpath=...` | Lists one directory under an arbitrary, user-supplied root (`ExternalLibraryConfig.path`) — the one route that reads a filesystem location this project doesn't otherwise manage, so every listing is confined to `root` (see `browse.py`) |
+| GET | `/api/audiobooks/browse?subpath=...` | Lists one directory under `library_root/audiobooks` (resolved internally, never client-supplied) |
 
 A validation failure (bad enum value, missing required field, a
 profile named the reserved `"global"`, a duplicate profile name across

@@ -271,6 +271,32 @@ body {
   font-size: 14px;
 }
 
+.breadcrumb {
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.crumb,
+.dir-name {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font-size: inherit;
+  text-align: left;
+}
+
+.crumb:hover,
+.dir-name:hover {
+  text-decoration: underline;
+}
+
+.picker-row .dir-name {
+  flex: 1;
+  color: var(--text);
+}
+
 .row {
   display: flex;
   gap: 12px;
