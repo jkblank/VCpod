@@ -74,6 +74,22 @@ def test_list_profiles_empty_directory(client):
     assert resp.json() == {}
 
 
+def test_list_profiles_errors_loudly_when_profiles_dir_missing(tmp_path):
+    # Regression: a config_root whose profiles/ subdirectory doesn't
+    # exist (e.g. --config-root resolved relative to the wrong cwd) must
+    # error the same way /api/global-config already does for a missing
+    # global.yaml -- not silently return {} as if there just happen to
+    # be zero profiles. Deliberately does NOT create tmp_path/profiles,
+    # unlike the `client` fixture.
+    app = create_app(config_root=tmp_path)
+    client = TestClient(app)
+
+    resp = client.get("/api/profiles")
+
+    assert resp.status_code == 422
+    assert "not found" in str(resp.json()["detail"]["errors"])
+
+
 def test_list_profiles_returns_seeded_profiles(client, config_root):
     save_profile_config(_profile("alice"), config_root / "profiles" / "alice.yaml")
     save_profile_config(_profile("bob"), config_root / "profiles" / "bob.yaml")

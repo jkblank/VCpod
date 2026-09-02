@@ -62,6 +62,26 @@ def create_app(config_root: Path | str, sync_orchestrator_dir: Path | str | None
 
     @app.get("/api/profiles")
     def list_profiles() -> dict:
+        # load_all_profiles silently returns {} for a directory that
+        # doesn't exist (Path.glob on a missing dir just yields nothing,
+        # no error) -- fine for the CLI loaders, which always run
+        # against a config_root a human just typed and can see is wrong,
+        # but here that would silently mask a bad --config-root as "zero
+        # profiles" instead of the loud, obvious failure a wrong path
+        # deserves. Confirmed live: this exact silent-empty response
+        # masked a --config-root resolved relative to the wrong cwd,
+        # while /api/global-config (which does check its target file's
+        # existence) correctly errored on the very same misconfiguration
+        # -- the inconsistency, not either check alone, was what made it
+        # confusing to diagnose.
+        if not profiles_dir.is_dir():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "path": str(profiles_dir),
+                    "errors": ["directory not found — check --config-root"],
+                },
+            )
         try:
             profiles = load_all_profiles(profiles_dir)
         except ConfigError as e:
