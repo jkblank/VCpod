@@ -25,7 +25,11 @@ def test_global_config_loads():
 
 def test_example_profiles_load():
     profiles = load_all_profiles(REPO_ROOT / "config" / "profiles")
-    assert set(profiles) == {"alice", "bob", "john", "john-copy"}
+    # Subset, not equality: config/profiles/ can (and on a real dev
+    # machine, does) hold real gitignored profiles beyond these four
+    # tracked examples -- this only needs to confirm the tracked ones
+    # still load correctly, not enumerate every profile on disk.
+    assert {"alice", "bob", "john", "john-copy"} <= set(profiles)
     assert profiles["alice"].device.match_by == "serial"
     assert profiles["bob"].device.match_by == "volume_label"
     assert profiles["john"].device.match_by == "serial"
