@@ -1,0 +1,216 @@
+:root {
+  --bg: #161826;
+  --panel: #1e2030;
+  --border: #2e3145;
+  --text: #e6e6f0;
+  --text-dim: #9a9bb0;
+  --accent: #9184d9;
+  --accent-dim: #4a3f7a;
+  --danger: #d98484;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.nav {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-title {
+  font-weight: 600;
+  padding: 8px 12px 16px;
+  letter-spacing: 0.02em;
+}
+
+.nav-item {
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.nav-item:hover {
+  background: var(--panel);
+}
+
+.nav-item.active {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.main {
+  flex: 1;
+  padding: 24px 32px;
+  max-width: 960px;
+}
+
+.page-header h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+
+.page-header p {
+  margin: 0 0 24px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.stat-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.stat {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  min-width: 140px;
+}
+
+.stat .value {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.stat .label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.profile-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.profile-chip {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.profile-chip.active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  max-width: 420px;
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.field input,
+.field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+button.btn {
+  background: var(--accent-dim);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+button.btn:hover {
+  background: var(--accent);
+}
+
+button.btn.secondary {
+  background: transparent;
+  border-color: var(--border);
+}
+
+button.btn.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: transparent;
+}
+
+button.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.error-banner {
+  background: #2a1215;
+  border: 1px solid #5c2b2e;
+  color: #ff8a80;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.detected-line {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.muted {
+  color: var(--text-dim);
+  font-size: 13px;
+}

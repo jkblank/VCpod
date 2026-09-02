@@ -48,7 +48,8 @@ service) — see "Running it" below.
 | M8 | Play-status round trip | Device-read-back path (`playstate.py`) fixed and live-verified 2026-08-02 — matched on the wrong path shape (full path vs. iopenpod's bare-filename mapping hint) and had never actually resolved a device play back to an episode; now matches by filename (see `notes.md`). Pocket-Casts-remote path (episodes marked played in the Pocket Casts app) was already working independently. Resume-position sync doesn't work via the simple write endpoint used (see `notes.md`); Pocket Casts' real app likely needs its protobuf-based sync protocol for that, not yet built |
 | M9 | Automation: scheduled fetch, udev-triggered device sync, multi-profile matching | Done, live-verified — [`services/fetch-scheduler/README.md`](services/fetch-scheduler/README.md) (fetch scheduling, plus automatic library dedup/cleanup and device backup retention) and [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md) (`auto-sync` + udev/systemd) |
 | M10 | Hardening: secrets review, auth-expiry/API-failure alerting, docs | Secrets handling reviewed (consistent gitignore convention across every credential type); alerting not built yet (`fetch-scheduler`'s per-tick errors are logged, nothing pages anyone); docs — this pass |
-| M11–M14 | Web GUI (backend, profiles/playlists, podcasts/sources, sync visibility) | Not started |
+| M11 | Web GUI backend + frontend scaffold | Done — [`services/web-gui-backend`](services/web-gui-backend/README.md) (FastAPI, reads/writes profiles + global config through the shared `common/config.py` loader, validation errors surface to the caller as `{path, errors}`) + [`services/web-gui-frontend`](services/web-gui-frontend/) (React/Vite; Overview + Profiles screens working end to end against a real backend, including live device-identify — see `notes.md`) |
+| M12–M14 | Web GUI: playlists/podcasts/sources, credential capture, auto-sync setup, sync visibility | Not started |
 | M15 | Audiobooks via Libby/OverDrive | Acquisition is manual (Libby's automated auth paths are confirmed dead upstream, see `notes.md`) — but the merge/tag/sync pipeline from manually-downloaded MP3 parts to a real device is done, see [`services/audiobook-manager/README.md`](services/audiobook-manager/README.md) |
 
 ## Known issues
@@ -313,6 +314,8 @@ Pocket Casts, running dedup on demand, plan-only device syncs, etc.):
 | [`fetch-scheduler`](services/fetch-scheduler/README.md) | Cron-scheduled fetching + automatic library/backup maintenance |
 | [`sync-orchestrator`](services/sync-orchestrator/README.md) | Device sync engine (bare metal) + `auto-sync`/udev automation + `full-sync` (interactive fetch+device in one command) |
 | [`audiobook-manager`](services/audiobook-manager/README.md) | Merges manually-acquired MP3 parts into a tagged, chaptered `.m4b` (ffmpeg + beets-audible) |
+| [`web-gui-backend`](services/web-gui-backend/README.md) | FastAPI service for the web GUI (M11) — reads/writes `config/` through the same loader every CLI tool uses |
+| [`web-gui-frontend`](services/web-gui-frontend/README.md) | React/Vite SPA for the web GUI — Overview + Profiles screens so far, M12-M14 not started |
 
 Device sync (`sync-orchestrator`) needs the iPod connected/mounted and
 must run on bare metal, not through Docker (see Architecture below) —

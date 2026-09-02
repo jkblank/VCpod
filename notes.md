@@ -3836,6 +3836,34 @@ of which M11-M14 screen comes next):
    Profiles screen as a live "Detected now: ..." line).
 
 Both fully unit-tested (`services/common`/`services/sync-orchestrator`
-suites), root workspace confirmed green. The actual FastAPI backend +
-React frontend scaffold (M11 proper) is still ahead — these two pieces
-are the load-bearing groundwork it needs.
+suites), root workspace confirmed green.
+
+**M11 itself, same day**: built the actual FastAPI backend
+(`services/web-gui-backend`, new root-workspace member — imports
+`common` in-process, shells out to `sync-orchestrator identify-device`
+same as sync-orchestrator itself shells out to `music-stack fetch`) and
+a React/Vite frontend (`services/web-gui-frontend`, plain `npm`
+project, not part of the `uv` workspace). Profile CRUD + global-config
+read/update + device-identify all working end to end against the real
+`config/` directory (verified live: `GET /api/profiles` returned the
+real `alice`/`john`/etc. profiles, `GET /api/device/identify` correctly
+returned `{"devices": []}` with nothing connected). Frontend has
+Overview + Profiles screens (the rest of the mockup's screens are
+still just spec, not built) — `npm run build` (tsc + vite) verified
+clean, and the dev server's `/api` proxy verified live against the real
+backend. **Not verified**: actual rendering in a browser — no browser
+automation tool was available this session, so component
+mount/interaction was never visually confirmed, only that the bundle
+compiles and the API layer round-trips correctly via curl.
+
+Exposed `common.config._format_validation_error` as public
+(`format_validation_error`) — the web backend needed to reuse the exact
+same pydantic-error-to-`ConfigError` formatting the loaders use, for a
+request body that hasn't been saved yet (no file path exists to attach
+the error to until the target path is chosen, so the route passes the
+would-be target path through).
+
+Environment note: this dev machine had `node` but no `npm`/`pnpm`/
+`yarn`/`corepack` at all — had to be installed by hand mid-session
+before the frontend scaffold could start. Worth having on hand before
+picking M12-M14 back up.

@@ -17,7 +17,7 @@ class ConfigError(Exception):
         super().__init__("\n".join(f"{path}: {e}" for e in errors))
 
 
-def _format_validation_error(path: Path, exc: ValidationError) -> ConfigError:
+def format_validation_error(path: Path, exc: ValidationError) -> ConfigError:
     messages = []
     for err in exc.errors():
         loc = ".".join(str(p) for p in err["loc"]) or "<root>"
@@ -44,7 +44,7 @@ def load_global_config(path: Path | str) -> GlobalConfig:
     try:
         return GlobalConfig.model_validate(data)
     except ValidationError as e:
-        raise _format_validation_error(path, e) from e
+        raise format_validation_error(path, e) from e
 
 
 def load_profile_config(path: Path | str) -> ProfileConfig:
@@ -53,7 +53,7 @@ def load_profile_config(path: Path | str) -> ProfileConfig:
     try:
         profile = ProfileConfig.model_validate(data)
     except ValidationError as e:
-        raise _format_validation_error(path, e) from e
+        raise format_validation_error(path, e) from e
     if profile.profile == "global":
         # state_root/global.sqlite is reserved for fetch-scheduler's
         # cross-profile maintenance tasks (dedup/cleanup/backup pruning —
