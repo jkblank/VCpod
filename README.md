@@ -82,20 +82,105 @@ service) — see "Running it" below.
 
 ## Setup
 
-Requires [`uv`](https://docs.astral.sh/uv/) — all Python tooling runs
-through it so nothing touches your system Python.
+A step-by-step path from a fresh clone to your first real device sync.
+Every source (Apple Music, YouTube Music, podcasts) is independently
+optional — skip whichever credential steps don't apply to you.
+
+### 0. Prerequisites
+
+- [`uv`](https://docs.astral.sh/uv/) — all Python tooling runs through
+  it, nothing touches your system Python.
+- `ffmpeg` — used by the fetchers (cover-art handling) and
+  `audiobook-manager`.
+- `chromaprint` (provides `fpcalc` on `PATH`) — used by
+  `sync-orchestrator` for audio fingerprinting during a device sync.
+- A real click-wheel iPod (6th/7th-gen iPod Classic or 5.5th-gen iPod
+  Video) if you intend to sync a device — everything up through fetching
+  works fine without one connected.
+- Only if you plan to use YouTube Music: [`deno`](https://deno.com/)
+  (needed by both `yt-dlp` and the PO-token companion service — see
+  step 3).
+
+Arch example: `sudo pacman -S uv ffmpeg chromaprint deno` (drop `deno`
+if you're skipping YouTube Music). Package names are equivalent on
+other distros/Homebrew.
+
+### 1. Install and verify
 
 ```bash
+git clone <this repo's URL>
+cd music-stack
 uv sync
-uv run pytest   # runs the root workspace's tests, should all pass
+uv run pytest   # root workspace tests, should all pass
 ```
 
-`services/fetcher-spotify` and `services/sync-orchestrator` are separate,
-standalone `uv` projects (see "Running it" below) — their tests
-run with their own `uv run pytest`, inside their own directories, not
-picked up by the command above.
+`services/fetcher-spotify` and `services/sync-orchestrator` are
+separate, standalone `uv` projects (see "Running it" below) — their
+tests run with their own `uv run pytest`, inside their own directories,
+not picked up by the command above.
 
-### Configuration
+### 2. Pick which sources you're using
+
+Edit `config/global.yaml`'s `sources.*.enabled` flags — turn off
+whichever of Apple Music / Spotify / YouTube Music you don't plan to
+use. **Spotify is currently blocked** on a Premium API requirement
+outside this project's control (see the Status table above); enabling
+it won't actually download anything today. Podcasts aren't gated here —
+each profile that wants them just sets its own Pocket Casts credentials
+(step 3) and `podcasts:` block (step 4).
+
+### 3. Get credentials for each source you're using
+
+All credential files are gitignored — only `config/global.yaml` and the
+example profiles are meant to be committed.
+
+**Apple Music**: export cookies from a real, logged-in
+`music.apple.com` browser session (a browser extension like "Get
+cookies.txt" works, Netscape format) and save them to
+`config/secrets/apple_music_cookies.txt` (the path `global.yaml`
+already points at). These expire every few weeks — a fetch that
+suddenly fails with `GamdlApiResponseError: Error fetching account
+info` almost always means it's time to re-export, not a code problem.
+See `services/fetcher-apple/README.md` for a distinct, non-cookie
+failure mode you might also hit.
+
+**YouTube Music**:
+1. Export YouTube cookies the same way (browser extension, Netscape
+   format) to `config/secrets/youtube_cookies.txt`.
+2. Optional — only needed to list your own private playlists (public
+   playlists resolve fine without it): `uv run ytmusicapi oauth`,
+   follow the prompts, save the result as
+   `config/secrets/ytmusic_oauth.json`.
+3. **Required for any real download**: set up and run the
+   `bgutil-ytdlp-pot-provider` companion service — YouTube's bot-check
+   blocks every real audio format without it. Full clone/build steps in
+   `services/fetcher-ytmusic/README.md`; it needs to stay running for
+   the whole time you're fetching.
+
+**Podcasts (Pocket Casts)**: create
+`config/secrets/pocketcasts/<you>.json`:
+```json
+{"email": "you@example.com", "password": "your-pocketcasts-password"}
+```
+
+**Spotify**: shelved — see step 2, nothing to configure until the
+upstream Premium API requirement is resolved.
+
+### 4. Create your profile
+
+```bash
+cp config/profiles/alice.yaml config/profiles/<you>.yaml
+```
+
+Edit it — `alice.yaml`/`bob.yaml` document every field inline as
+comments, so treat them as the reference. At minimum you'll set:
+- `device.match_by`/`match_value` — see step 6 for how to find these
+  once your iPod is connected.
+- `playlists:` — one entry per playlist you want fetched, per source.
+- `podcasts.pocketcasts.credentials_file` — pointing at the file from
+  step 3.
+- `sync:` — transcode format, whether to push played state back to
+  Pocket Casts, etc.
 
 ```
 config/
@@ -106,17 +191,65 @@ config/
 └── secrets/                        # real credentials — gitignored entirely
 ```
 
-Copy an example profile (`config/profiles/alice.yaml` or `bob.yaml`) to
-`config/profiles/<your-name>.yaml` and fill in your real device match info,
-playlists, and Pocket Casts credentials path. Real per-user profiles and
-everything under `config/secrets/` are gitignored — only the example
-profiles are meant to be committed.
+Real per-user profiles and everything under `config/secrets/` are
+gitignored — only the example profiles are meant to be committed.
+
+### 5. First fetch
+
+```bash
+uv run music-stack sync --profile config/profiles/<you>.yaml
+```
+
+Downloads every playlist across every enabled source, plus podcasts,
+into `library/`. Safe to re-run any time — already-downloaded
+tracks/episodes are skipped, not re-fetched.
+
+### 6. First device sync
+
+Connect your iPod. If you don't already know its `device.match_value`
+for step 4, the simplest option is `match_by: volume_label` — find it
+with:
+
+```bash
+lsblk -o NAME,LABEL,FSTYPE,MOUNTPOINT
+```
+
+(look for the `vfat`/`hfsplus` partition with your iPod's name). Fill
+that label into your profile's `device.match_value`, then plan-only
+first and review the plan — especially `to_remove` — before writing
+anything real:
+
+```bash
+cd services/sync-orchestrator
+uv sync
+uv run sync-orchestrator sync \
+    --profile ../../config/profiles/<you>.yaml \
+    --library-root ../../library \
+    --state-root ../../state
+# review the plan, then:
+uv run sync-orchestrator sync \
+    --profile ../../config/profiles/<you>.yaml \
+    --library-root ../../library \
+    --state-root ../../state \
+    --execute
+```
+
+Removals need an extra `--allow-removals` flag on top of `--execute` —
+see `services/sync-orchestrator/README.md` for the full flag reference,
+matching by serial instead of volume label, and the one-command
+`full-sync` (fetch + device sync together).
+
+### 7. Automate it (optional)
+
+Once the above works end to end by hand, see "Running it" below for
+scheduled unattended fetching and fully-automatic sync-on-connect —
+neither is required, both build on exactly the commands above.
 
 ### Running it
 
 Three ways to run this, roughly in order of "how hands-off do you want
 it to be." All examples assume you're at the repo root with a real
-profile at `config/profiles/<you>.yaml` (see Configuration above).
+profile at `config/profiles/<you>.yaml` (see Setup above).
 
 **1. One-shot manual sync** — fetches every playlist across every
 source, plus podcasts, for a profile in one call:

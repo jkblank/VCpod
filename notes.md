@@ -3659,9 +3659,25 @@ Also posted the investigation writeup as a comment on
 [TheRealSavi/iOpenPod#178](https://github.com/TheRealSavi/iOpenPod/issues/178)
 (a related but distinct 7th-gen issue).
 
-**Once #186 (or an equivalent fix) merges upstream and lands in a
-released iopenpod version** — remove the local workaround, in this
-order:
+**#186 closed, not merged (2026-09-02)**: maintainer declined with
+`32mb improves speed. over 500mb has been observed to cause issues on
+some ipod hardware.` — i.e. the 32MB chunk size is deliberate, not an
+oversight, and raising it unconditionally (what #186 did) is a real
+regression risk on other hardware, not just a style preference. This
+doesn't contradict what was verified here — the 6th Gen testbed
+specifically renders correctly *un-chunked* — it means the safe range is
+narrower/more device-specific than #186 assumed. User has asked the
+maintainer whether a generation-scoped approach (raise the limit only
+for iPod Classic 6th/7th gen, leave 32MB as the default elsewhere) would
+be preferred — awaiting a reply before doing any further upstream work.
+The local monkeypatch in `sync_orchestrator/sync.py` stays as-is either
+way (this project only ever targets the 6th/7th gen Classic family, so
+the "some ipod hardware" the maintainer means is out of scope for
+anything synced through this codebase) — nothing to change here yet.
+
+**Once #186 (or a narrower, generation-scoped equivalent) merges
+upstream and lands in a released iopenpod version** — remove the local
+workaround, in this order:
 1. Bump the pin in `services/sync-orchestrator/pyproject.toml`
    (`iopenpod==1.68.1` → the fixed version), then `uv sync` inside
    `services/sync-orchestrator/`.
