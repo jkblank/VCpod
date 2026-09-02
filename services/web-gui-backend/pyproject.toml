@@ -4,6 +4,9 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "common",
+    "fetcher-apple",
+    "fetcher-ytmusic",
+    "podcast-manager",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "python-multipart>=0.0.12",
@@ -14,6 +17,9 @@ web-gui-backend = "web_gui_backend.cli:main"
 
 [tool.uv.sources]
 common = { workspace = true }
+fetcher-apple = { workspace = true }
+fetcher-ytmusic = { workspace = true }
+podcast-manager = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

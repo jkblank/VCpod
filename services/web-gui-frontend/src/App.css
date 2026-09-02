@@ -62,6 +62,18 @@ body {
   color: var(--text);
 }
 
+.nav-editing {
+  margin-top: auto;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+}
+
+.nav-editing strong {
+  color: var(--text);
+}
+
 .main {
   flex: 1;
   padding: 24px 32px;
@@ -147,12 +159,106 @@ body {
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 6px;
   padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.field textarea {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.field input[type='file'] {
+  padding: 6px;
+}
+
+.card h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.warning-banner {
+  background: #2a2015;
+  border: 1px solid #5c4a2b;
+  color: #f0c987;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.warning-banner code {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.success-banner {
+  background: #16261c;
+  border: 1px solid #2b5c3c;
+  color: #8ff0b0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  border-bottom: 2px solid transparent;
+}
+
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.tab:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.picker-row .name {
+  flex: 1;
+}
+
+.picker-row .meta {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.no-profile-notice {
+  color: var(--text-dim);
   font-size: 14px;
 }
 

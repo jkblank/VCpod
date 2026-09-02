@@ -37,6 +37,13 @@ separate React SPA, not server-rendered.
 | GET | `/api/global-config` | `config/global.yaml` |
 | PUT | `/api/global-config` | Overwrites `config/global.yaml` |
 | GET | `/api/device/identify` | Shells out to `sync-orchestrator identify-device`, returns `{"devices": [...]}` |
+| GET | `/api/sources/apple-music/playlists` | Lists the Apple Music account's playlists (`fetcher_apple.api.list_playlists`) |
+| GET | `/api/sources/ytmusic/playlists` | Lists the YouTube Music account's playlists |
+| PUT | `/api/sources/apple-music/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format + `media-user-token` present), written atomically |
+| PUT | `/api/sources/ytmusic/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format), written atomically |
+| GET | `/api/sources/status` | Per-source `{enabled, exists, updated_at}` — `updated_at` is the credential file's real mtime, not a guessed expiry |
+| GET | `/api/profiles/{name}/pocketcasts/subscriptions` | That profile's real Pocket Casts subscriptions (requires credentials already saved) |
+| PUT | `/api/profiles/{name}/pocketcasts-credentials` | Body `{"email", "password"}` — validated via a real Pocket Casts login *before* writing anything |
 
 A validation failure (bad enum value, missing required field, a
 profile named the reserved `"global"`, a duplicate profile name across
@@ -46,16 +53,24 @@ the same `(path, errors)` shape `common.config.ConfigError` already
 carries everywhere else in this project, so a frontend can map each
 message onto a form field by splitting on `.`.
 
-A failed `identify-device` subprocess call (uv/sync-orchestrator not
-set up, etc.) returns **502** with a plain string detail, not a crash.
+A failed `identify-device`/playlist-listing/subscription-listing call
+(source not authenticated, network error, etc.) returns **502** with a
+plain string detail, not a crash — these all reach out to a real
+external system whose failure modes aren't enumerable up front.
+
+Cookie/credential writes never echo content back — a successful `PUT`
+just returns `{"status": "ok"}`. A bad cookie paste or a rejected
+Pocket Casts login never touches the real file/never gets written at
+all (validated first; cookie writes go through a temp-file-then-rename
+so a working file is never left corrupted mid-write, same pattern
+`podcast_manager/download.py::_download_enclosure` already uses).
 
 ## Architecture
 
-- **Root workspace member**, not standalone — imports `common` directly
-  (in-process) for config load/save. This will grow to import
-  `fetcher-apple`/`fetcher-ytmusic`/`podcast-manager`/`music-stack-cli`/
-  `fetch-scheduler`/`library-manager` too as M12-M14 add playlist/show
-  picking, but nothing beyond `common` is needed yet.
+- **Root workspace member**, not standalone — imports `common`,
+  `fetcher-apple`, `fetcher-ytmusic`, `podcast-manager` directly
+  (in-process). `music-stack-cli`/`fetch-scheduler`/`library-manager`
+  aren't needed yet (M13-M14 territory).
 - **`sync-orchestrator` stays a subprocess call** (`device.py`,
   `identify_connected_devices`), same reasoning
   `sync-orchestrator`'s own `_build_music_stack_fetch_cmd` already
@@ -65,17 +80,25 @@ set up, etc.) returns **502** with a plain string detail, not a crash.
 - **Config is the only source of truth** — no database, no cached
   copy. Every route reads/writes through `common.config`'s
   `load_*`/`save_*` functions, the same ones every CLI tool already
-  uses.
+  uses. Global-config credential paths (`/config/...`-container-style)
+  resolve through `common.config.resolve_config_path` — the same
+  resolver `music-stack-cli`'s own fetch pipeline uses.
+- **One router module per resource** (`routers/profiles.py`,
+  `global_config.py`, `device.py`, `sources.py`, `podcasts.py`) —
+  `app.py` is just the `create_app()` factory that wires
+  `config_root`/`sync_orchestrator_dir` into `app.state` and mounts
+  each router. Shared error-response helpers live in `errors.py`, the
+  shared atomic-write helper in `atomic.py`.
 
-## Security posture (deliberate, see `notes.md`'s 2026-09-02 entry)
+## Security posture (deliberate, see `notes.md`'s 2026-09-02 entries)
 
 - No login system — access control is "don't expose this beyond
   localhost/your LAN," not app-level auth. Appropriate for a
   single-user personal tool; revisit if that ever changes.
-- Credentials this service will eventually accept (Pocket Casts
-  email/password, Apple Music/YouTube cookies — not yet built, see
-  M12) stay plaintext under `config/secrets/`, same posture as every
-  CLI tool today. Not encrypted at rest.
+- Credentials (Pocket Casts email/password, Apple Music/YouTube
+  cookies) stay plaintext under `config/secrets/`, same posture as
+  every CLI tool today. Not encrypted at rest — a deliberate, separate,
+  not-yet-scheduled follow-up if it ever happens.
 - Nothing here executes privileged commands. Auto-sync setup (planned,
   M14) will generate the filled-in systemd unit/udev rule files and
   display the exact `sudo` commands for a human to run — never attempt
@@ -87,8 +110,12 @@ set up, etc.) returns **502** with a plain string detail, not a crash.
 uv run pytest services/web-gui-backend
 ```
 
-`tests/test_profiles.py` uses FastAPI's `TestClient` against a real
+Every test file uses FastAPI's `TestClient` against a real
 `create_app(config_root=tmp_path)` — no mocking of `common.config`,
-real YAML files written and read back. `tests/test_device.py` mocks
-`subprocess.run` only (never actually shells out to
-`sync-orchestrator` in tests).
+real YAML files written and read back. External-system calls (Apple
+Music/YouTube Music/Pocket Casts APIs, `sync-orchestrator`'s
+subprocess) are mocked at the module boundary
+(`monkeypatch.setattr(routers.sources, "list_apple_music_playlists",
+...)` etc.) — but cookie *validation* itself is exercised for real
+against small synthetic Netscape-format fixture strings, not mocked,
+since that's exactly the logic most worth catching a regression in.

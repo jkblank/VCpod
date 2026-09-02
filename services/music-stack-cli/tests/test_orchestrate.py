@@ -20,21 +20,10 @@ from common.models import (
 
 from music_stack_cli import orchestrate as orchestrate_module
 from music_stack_cli.orchestrate import (
-    resolve_config_path,
     resolve_roots,
     run_fetch,
     select_playlists,
 )
-
-
-def test_resolve_config_path_rewrites_config_container_prefix(tmp_path):
-    resolved = resolve_config_path("/config/secrets/apple_music_cookies.txt", tmp_path)
-    assert resolved == tmp_path / "secrets" / "apple_music_cookies.txt"
-
-
-def test_resolve_config_path_falls_back_to_literal_path_when_not_config_rooted(tmp_path):
-    resolved = resolve_config_path("/somewhere/else/creds.json", tmp_path)
-    assert resolved == Path("/somewhere/else/creds.json")
 
 
 def test_resolve_roots_splits_library_root_into_music_playlists_podcasts(tmp_path):

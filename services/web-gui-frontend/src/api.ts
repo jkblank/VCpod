@@ -20,17 +20,34 @@ export type FetchSettings = {
   schedule: string | null
 }
 
-// Profile/GlobalConfig carry several more nested sections (playlists,
-// podcasts, external_library, audiobooks, music, sources, ...) --
-// passed through as unknown here rather than typed, since M11 only
-// reads/writes the fields above and must never drop the rest of the
-// payload on a round-trip (the backend's StrictModel would reject a
-// write missing a required field the UI doesn't otherwise touch).
+export type PlaylistEntry = {
+  name: string
+  source: 'apple_music' | 'spotify' | 'ytmusic'
+  source_id: string
+  sync_mode: 'absolute' | 'additive'
+  fetch_schedule: string | null
+}
+
+export type PodcastsConfig = {
+  pocketcasts: { credentials_file: string }
+  sync_unplayed_only: boolean
+  max_episodes_per_show: number
+  shows: 'all' | (string | { name: string; fetch_schedule?: string | null })[]
+  [key: string]: unknown
+}
+
+// Profile carries a few more nested sections (external_library,
+// audiobooks, music) -- passed through untyped via the index signature,
+// since this pass doesn't edit them and must never drop them on a
+// round-trip (the backend's StrictModel would reject a write missing a
+// required field the UI doesn't otherwise touch).
 export type Profile = {
   profile: string
   device: DeviceMatch
   sync: SyncSettings
   fetch: FetchSettings
+  playlists: PlaylistEntry[]
+  podcasts: PodcastsConfig
   [key: string]: unknown
 }
 
@@ -53,6 +70,31 @@ export type ConnectedDevice = {
   generation: string
   model_number: string
   capacity: string
+}
+
+export type PlaylistSummary = {
+  source_id: string
+  name: string
+  track_count: number
+  owner: string | null
+}
+
+export type PodcastSubscription = {
+  uuid: string
+  title: string
+  author: string
+}
+
+export type SourceStatus = {
+  enabled: boolean
+  exists: boolean
+  updated_at: number | null
+}
+
+export type SourcesStatus = {
+  apple_music: SourceStatus
+  ytmusic: SourceStatus
+  spotify: SourceStatus
 }
 
 // The backend's ConfigError shape: {"path": "...", "errors": ["dotted.field — message", ...]}
@@ -95,5 +137,31 @@ export const api = {
   deleteProfile: (name: string) =>
     request<void>(`/api/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   getGlobalConfig: () => request<GlobalConfig>('/api/global-config'),
+  putGlobalConfig: (config: GlobalConfig) =>
+    request<GlobalConfig>('/api/global-config', { method: 'PUT', body: JSON.stringify(config) }),
   identifyDevice: () => request<{ devices: ConnectedDevice[] }>('/api/device/identify'),
+
+  listAppleMusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/apple-music/playlists'),
+  listYtmusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/ytmusic/playlists'),
+  putAppleMusicCookies: (cookiesTxt: string) =>
+    request<{ status: string }>('/api/sources/apple-music/cookies', {
+      method: 'PUT',
+      body: JSON.stringify({ cookies_txt: cookiesTxt }),
+    }),
+  putYtmusicCookies: (cookiesTxt: string) =>
+    request<{ status: string }>('/api/sources/ytmusic/cookies', {
+      method: 'PUT',
+      body: JSON.stringify({ cookies_txt: cookiesTxt }),
+    }),
+  getSourcesStatus: () => request<SourcesStatus>('/api/sources/status'),
+
+  getPocketcastsSubscriptions: (profileName: string) =>
+    request<PodcastSubscription[]>(
+      `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts/subscriptions`,
+    ),
+  putPocketcastsCredentials: (profileName: string, email: string, password: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts-credentials`,
+      { method: 'PUT', body: JSON.stringify({ email, password }) },
+    ),
 }

@@ -1,102 +1,22 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api, ApiError, type ConnectedDevice, type Profile } from '../api'
+import type { ProfileStore } from '../useProfileStore'
 
-function emptyProfile(name: string): Profile {
-  return {
-    profile: name,
-    device: { match_by: 'serial', match_value: '' },
-    sync: {
-      trigger: 'manual',
-      transcode_format: 'alac',
-      push_play_status_back: false,
-      mode: 'itunes',
-    },
-    fetch: { schedule: null },
-    playlists: [],
-    podcasts: {
-      pocketcasts: { credentials_file: `/config/secrets/pocketcasts/${name}.json` },
-      sync_unplayed_only: true,
-      max_episodes_per_show: 5,
-      shows: 'all',
-    },
-  }
-}
-
-export default function Profiles() {
-  const [profiles, setProfiles] = useState<Record<string, Profile>>({})
-  const [selected, setSelected] = useState<string | null>(null)
-  const [draft, setDraft] = useState<Profile | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [saveErrors, setSaveErrors] = useState<string[] | null>(null)
-  const [saving, setSaving] = useState(false)
+export default function Profiles({ store }: { store: ProfileStore }) {
+  const { profiles, selected, draft, setDraft, loadError, saveErrors, saving, select, startNew, save, remove } =
+    store
   const [detected, setDetected] = useState<ConnectedDevice[] | null>(null)
   const [detecting, setDetecting] = useState(false)
-
-  const load = () =>
-    api
-      .listProfiles()
-      .then((p) => {
-        setProfiles(p)
-        setLoadError(null)
-      })
-      .catch((e: unknown) => setLoadError(e instanceof ApiError ? e.message : String(e)))
-
-  useEffect(() => {
-    load()
-  }, [])
-
-  const select = (name: string) => {
-    setSelected(name)
-    setDraft(profiles[name] ?? null)
-    setSaveErrors(null)
-    setDetected(null)
-  }
-
-  const startNew = () => {
-    const name = window.prompt('New profile name (e.g. "sam"):')
-    if (!name) return
-    setSelected(name)
-    setDraft(emptyProfile(name))
-    setSaveErrors(null)
-    setDetected(null)
-  }
-
-  const save = async () => {
-    if (!draft) return
-    setSaving(true)
-    setSaveErrors(null)
-    try {
-      const saved = await api.putProfile(draft.profile, draft)
-      setProfiles((prev) => ({ ...prev, [saved.profile]: saved }))
-      setDraft(saved)
-    } catch (e) {
-      setSaveErrors(e instanceof ApiError ? e.errors : [String(e)])
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const remove = async (name: string) => {
-    if (!window.confirm(`Delete config/profiles/${name}.yaml? This cannot be undone here.`)) return
-    await api.deleteProfile(name)
-    setProfiles((prev) => {
-      const next = { ...prev }
-      delete next[name]
-      return next
-    })
-    if (selected === name) {
-      setSelected(null)
-      setDraft(null)
-    }
-  }
+  const [detectError, setDetectError] = useState<string | null>(null)
 
   const detect = async () => {
     setDetecting(true)
+    setDetectError(null)
     try {
       const { devices } = await api.identifyDevice()
       setDetected(devices)
     } catch (e) {
-      setSaveErrors([e instanceof ApiError ? e.message : String(e)])
+      setDetectError(e instanceof ApiError ? e.message : String(e))
     } finally {
       setDetecting(false)
     }
@@ -131,18 +51,15 @@ export default function Profiles() {
 
       {draft && (
         <div className="card">
-          {saveErrors && (
-            <div className="error-banner">{saveErrors.join('\n')}</div>
-          )}
+          {saveErrors && <div className="error-banner">{saveErrors.join('\n')}</div>}
+          {detectError && <div className="error-banner">{detectError}</div>}
 
           <div className="row">
             <button className="btn secondary" onClick={detect} disabled={detecting}>
               {detecting ? 'Detecting…' : 'Detect connected device'}
             </button>
           </div>
-          {detected && detected.length === 0 && (
-            <p className="detected-line">No device connected.</p>
-          )}
+          {detected && detected.length === 0 && <p className="detected-line">No device connected.</p>}
           {detected?.map((d) => (
             <p className="detected-line" key={d.path}>
               Detected: {d.volume_label || '(no label)'} · serial {d.serial || '(none)'} ·{' '}
@@ -203,9 +120,50 @@ export default function Profiles() {
               }
             />
           </div>
+          <div className="field">
+            <label>Write mode</label>
+            <select
+              value={draft.sync.mode}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  sync: { ...draft.sync, mode: e.target.value as Profile['sync']['mode'] },
+                })
+              }
+            >
+              <option value="itunes">iTunes (iTunesDB/ArtworkDB)</option>
+              <option value="rockbox">Rockbox (plain file mirror)</option>
+            </select>
+          </div>
+          <div className="row">
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+              <input
+                type="checkbox"
+                checked={draft.sync.push_play_status_back}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    sync: { ...draft.sync, push_play_status_back: e.target.checked },
+                  })
+                }
+              />
+              Push played state back to Pocket Casts after sync
+            </label>
+          </div>
+
+          <div className="field">
+            <label>Fetch schedule (cron, blank = manual only)</label>
+            <input
+              placeholder="0 3 * * *"
+              value={draft.fetch.schedule ?? ''}
+              onChange={(e) =>
+                setDraft({ ...draft, fetch: { schedule: e.target.value || null } })
+              }
+            />
+          </div>
 
           <div className="row">
-            <button className="btn" onClick={save} disabled={saving}>
+            <button className="btn" onClick={() => save()} disabled={saving}>
               {saving ? 'Saving…' : 'Save'}
             </button>
             <button className="btn danger" onClick={() => remove(draft.profile)}>

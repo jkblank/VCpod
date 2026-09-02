@@ -3867,3 +3867,76 @@ Environment note: this dev machine had `node` but no `npm`/`pnpm`/
 `yarn`/`corepack` at all — had to be installed by hand mid-session
 before the frontend scaffold could start. Worth having on hand before
 picking M12-M14 back up.
+
+## 2026-09-02: Web GUI M12 (scoped as M12a) — playlist/podcast picking + credential capture
+
+Built on top of M11 (stacked branch, PR against `feat/web-gui-m11-
+foundations` rather than `main`, since M11 wasn't merged yet). Scoped
+down from the full M12 roadmap: this pass covers Profiles field
+expansion, the Music sources picker, a basic Podcasts picker, and the
+actual credential capture forms — the things explicitly asked for.
+External library/Audiobooks screens are pushed to a fast-follow "M12b"
+(same picker pattern, lower priority, not explicitly requested).
+
+**`resolve_config_path` moved from `music_stack_cli.orchestrate` to
+`common.config`** (mechanical, no behavior change, 2 tests moved with
+it) — the web backend needed the exact same `/config/...`-container-
+path-to-real-host-path resolution `global.yaml`'s credential paths
+already use, and duplicating it would drift. `orchestrate.py`'s 4 call
+sites now import it from `common` instead.
+
+**`web-gui-backend` split into routers** (`routers/profiles.py`,
+`global_config.py`, `device.py`, and two new ones below) — outgrew a
+single `app.py` file. Gained `fetcher-apple`/`fetcher-ytmusic`/
+`podcast-manager` as real dependencies (previously only `common`).
+
+**New: `routers/sources.py`** — `GET /api/sources/{apple-music,ytmusic}
+/playlists` (wraps `list_playlists`, resolves the cookies/oauth path via
+`resolve_config_path`), `PUT /api/sources/{apple-music,ytmusic}/cookies`
+(manual paste/upload of an already-exported `cookies.txt` — real
+cross-origin cookie reading from a browser is impossible, same-origin
+policy; an automated Playwright-driven capture stays a separate, later
+piece, unchanged from the M11 planning decision), `GET
+/api/sources/status`. Cookie validation reuses the exact parser gamdl
+itself uses (`http.cookiejar.MozillaCookieJar`) against a temp file
+first — a bad paste never touches the real file (same temp-then-rename
+pattern `podcast_manager/download.py::_download_enclosure` already
+uses) — and checks for the specific `media-user-token` cookie on
+`.music.apple.com` gamdl's own `create_from_netscape_cookies` requires,
+so a wrong/incomplete paste is caught here instead of surfacing later
+as a confusing fetch failure.
+
+**New: `routers/podcasts.py`** — `GET /api/profiles/{name}/pocketcasts/
+subscriptions`, `PUT /api/profiles/{name}/pocketcasts-credentials`
+(validates via a real `login()` call *before* writing anything — a bad
+password is rejected immediately, never silently saved).
+
+**Frontend**: lifted "which profile is being edited" out of
+`Profiles.tsx` into a shared `useProfileStore()` hook (`App.tsx` calls
+it once, passes the same store instance down to `Profiles`/`Sources`/
+`Podcasts` as a prop) — the picker screens need to mutate the exact
+same draft profile Profiles.tsx edits, not a separate copy. New
+`Sources.tsx` (tabbed playlist picker, Spotify tab visibly disabled)
+and `Podcasts.tsx` (subscription picker, falls back to the credential
+form when nothing's saved yet for that profile) screens. New shared
+`CredentialWarning`/`CookieCaptureForm`/`PocketCastsLoginForm`
+components — the actual "BIG and appropriate warnings" the user asked
+for, shown prominently above every credential input, not a tooltip:
+*"This is stored in plain text on this server's disk, unencrypted... at
+`config/secrets/...`. Anyone with filesystem access to this machine can
+read it back out... never expose this web UI to the open internet."*
+
+**Verified live against real data**, not just synthetic fixtures: real
+Apple Music playlists (`ALT CTRL`, `Antidote`, ...) and real Pocket
+Casts subscriptions for the real `john` profile (`Let's Learn
+Everything!`, `Linux Matters`, ...) both listed correctly through the
+new endpoints against the actual `config/secrets/` files already on
+this machine. `bob` (a tracked example profile with no real Pocket
+Casts credentials) correctly got the "not saved yet" 502, not a crash.
+
+Hit the exact same stale-process-squatting-the-port confusion as M11's
+own wrap-up while testing this — except this time the squatter turned
+out to be the *user's own* long-running backend from testing M11
+earlier, not a leftover of mine. Worth remembering: `pgrep -af
+web-gui-backend` before assuming a "Not Found"/wrong-behavior response
+is a code bug — it might just be an old process still holding the port.

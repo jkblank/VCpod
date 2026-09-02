@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 from pydantic import ValidationError
@@ -133,6 +133,25 @@ def save_global_config(config: GlobalConfig, path: Path | str) -> None:
     load_global_config reads -- no business rules beyond the schema
     itself apply to global.yaml, unlike profiles."""
     _dump_yaml(config.model_dump(mode="json", exclude_none=True), Path(path))
+
+
+def resolve_config_path(container_path: str, config_root: Path) -> Path:
+    """global.yaml / profile YAML credential paths are always written as
+    /config/... container paths, per the ./config:/config:ro mount in
+    docker-compose.yml. Re-root them under config_root so the same YAML
+    values work unmodified when run bare-metal. Falls back to the literal
+    path if it isn't /config-rooted (e.g. someone already wrote a real host
+    path there).
+
+    Moved here from music_stack_cli.orchestrate (its original home) once
+    web-gui-backend needed the exact same resolution for global-config
+    source credential paths -- a second real caller, not just
+    music-stack-cli's own fetch pipeline."""
+    posix_path = PurePosixPath(container_path)
+    try:
+        return config_root / posix_path.relative_to("/config")
+    except ValueError:
+        return Path(container_path)
 
 
 def resolve_profile_path(value: Path | str, config_root: Path | str) -> Path:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import httpx
 
+from common.config import resolve_config_path
 from common.models import GlobalConfig, PlaylistEntry, ProfileConfig
 from common.playlist import prune_removed_playlists
 from common.state import EpisodeRecord
@@ -29,20 +30,6 @@ from podcast_manager.download import (
 
 SUPPORTED_SOURCES = ("apple_music", "ytmusic", "podcasts")
 UNSUPPORTED_SOURCES = ("spotify",)
-
-
-def resolve_config_path(container_path: str, config_root: Path) -> Path:
-    """global.yaml / profile YAML credential paths are always written as
-    /config/... container paths, per the ./config:/config:ro mount in
-    docker-compose.yml. Re-root them under config_root so the same YAML
-    values work unmodified when run bare-metal. Falls back to the literal
-    path if it isn't /config-rooted (e.g. someone already wrote a real host
-    path there)."""
-    posix_path = PurePosixPath(container_path)
-    try:
-        return config_root / posix_path.relative_to("/config")
-    except ValueError:
-        return Path(container_path)
 
 
 @dataclass

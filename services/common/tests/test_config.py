@@ -7,6 +7,7 @@ from common.config import (
     load_all_profiles,
     load_global_config,
     load_profile_config,
+    resolve_config_path,
     resolve_profile_path,
     save_global_config,
     save_profile_config,
@@ -200,3 +201,13 @@ def test_save_global_config_round_trips(tmp_path):
     reloaded = load_global_config(path)
 
     assert reloaded == original
+
+
+def test_resolve_config_path_rewrites_config_container_prefix(tmp_path):
+    resolved = resolve_config_path("/config/secrets/apple_music_cookies.txt", tmp_path)
+    assert resolved == tmp_path / "secrets" / "apple_music_cookies.txt"
+
+
+def test_resolve_config_path_falls_back_to_literal_path_when_not_config_rooted(tmp_path):
+    resolved = resolve_config_path("/somewhere/else/creds.json", tmp_path)
+    assert resolved == Path("/somewhere/else/creds.json")
