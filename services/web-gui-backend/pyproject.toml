@@ -7,6 +7,7 @@ dependencies = [
     "fetcher-apple",
     "fetcher-ytmusic",
     "podcast-manager",
+    "audiobook-manager",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "python-multipart>=0.0.12",
@@ -20,6 +21,7 @@ common = { workspace = true }
 fetcher-apple = { workspace = true }
 fetcher-ytmusic = { workspace = true }
 podcast-manager = { workspace = true }
+audiobook-manager = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

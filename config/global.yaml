@@ -38,3 +38,10 @@ backups:
   prune_enabled: true
   default_keep_last: 3
   default_max_age_days: 14
+
+# Where raw, not-yet-processed audiobook source folders land (Libby
+# DevTools-captured MP3 parts, one subfolder per book) -- optional,
+# empty until you actually have a drop zone to point `audiobook-manager
+# discover` at. See services/audiobook-manager/README.md.
+audiobook_manager:
+  discover_root: ""

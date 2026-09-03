@@ -110,12 +110,26 @@ class BackupMaintenanceConfig(StrictModel):
     default_max_age_days: int = Field(default=14, gt=0)
 
 
+class AudiobookManagerConfig(StrictModel):
+    # Where raw, not-yet-processed audiobook source folders land (e.g.
+    # Libby DevTools-captured MP3 parts, one subfolder per book — see
+    # services/audiobook-manager/README.md's manual-acquisition
+    # workflow). Global, not per-profile: library/audiobooks itself is
+    # one shared pool synced from (same reasoning as library/music), so
+    # "where do raw captures sit before processing" isn't a per-profile
+    # question either. A real host path, used directly like
+    # ExternalLibraryConfig.path -- never /config/...-container-style.
+    # Optional: empty means discover has nowhere configured to scan yet.
+    discover_root: str = ""
+
+
 class GlobalConfig(StrictModel):
     paths: Paths
     sources: SourcesConfig
     podcasts: PodcastsGlobalConfig
     library_manager: LibraryManagerConfig = Field(default_factory=LibraryManagerConfig)
     backups: BackupMaintenanceConfig = Field(default_factory=BackupMaintenanceConfig)
+    audiobook_manager: AudiobookManagerConfig = Field(default_factory=AudiobookManagerConfig)
 
 
 class DeviceMatch(StrictModel):

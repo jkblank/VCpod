@@ -70,8 +70,13 @@ def test_example_profiles_load():
     assert profiles["bob"].fetch.schedule is None
     assert profiles["alice"].audiobooks is None
     assert profiles["bob"].audiobooks is None
-    assert profiles["john"].audiobooks.mode == "include"
-    assert profiles["john"].audiobooks.selections == []
+    assert profiles["john"].audiobooks.mode == "exclude"
+    assert profiles["john"].audiobooks.selections == [
+        "Franz Kafka",
+        "George Orwell",
+        "Marcus Aurelius",
+        "Neil Postman",
+    ]
 
 
 def test_missing_file_raises():

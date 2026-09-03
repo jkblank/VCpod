@@ -355,3 +355,23 @@ button.btn:disabled {
   color: var(--text-dim);
   font-size: 13px;
 }
+
+.discover-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.discover-table th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 500;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.discover-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}

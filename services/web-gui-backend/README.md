@@ -18,6 +18,10 @@ uv run web-gui-backend --config-root config
 - `--library-root` (default: sibling `library` next to `--config-root`,
   same convention every other CLI here uses) — where `library/
   audiobooks` actually is, for the Audiobooks browse route.
+- `--state-root` (default: sibling `state` next to `--config-root`,
+  same convention) — where `audiobook-manager`'s beets db and discover
+  state (`state/audiobooks/discovered_state.json`) live, for the
+  audiobook-discover routes below.
 - `--sync-orchestrator-dir` (default: sibling `services/sync-orchestrator`,
   derived from this package's own install location) — where to find
   `sync-orchestrator identify-device` to shell out to.
@@ -92,6 +96,8 @@ separate React SPA, not server-rendered.
 | PUT | `/api/profiles/{name}/pocketcasts-credentials` | Body `{"email", "password"}` — validated via a real Pocket Casts login *before* writing anything |
 | GET | `/api/external-library/browse?root=...&subpath=...` | Lists one directory under an arbitrary, user-supplied root (`ExternalLibraryConfig.path`) — the one route that reads a filesystem location this project doesn't otherwise manage, so every listing is confined to `root` (see `browse.py`) |
 | GET | `/api/audiobooks/browse?subpath=...` | Lists one directory under `library_root/audiobooks` (resolved internally, never client-supplied) |
+| GET | `/api/audiobooks/discover` | Scans `global.yaml`'s `audiobook_manager.discover_root` for raw, not-yet-processed parts-dirs (`audiobook_manager.discover.discover_audiobooks`), flagging which ones a previous import already handled. `{"root": "", "books": []}` when `discover_root` isn't set yet — not an error |
+| POST | `/api/audiobooks/discover/import` | Body `{"name"}` — runs the real merge+tag pipeline (`audiobook_manager.pipeline.run_import_audiobook`, the same code `audiobook-manager import-audiobook` uses) against `{discover_root}/{name}`. 502 on a real failure (no ffmpeg, beets crashing); 422 if beets-audible couldn't confidently match the book (not a failure — the merged file is left in place for a manual `metadata.yml` retry, see `services/audiobook-manager/README.md`); `{"status": "ok", "imported_paths": [...]}` on success |
 
 A validation failure (bad enum value, missing required field, a
 profile named the reserved `"global"`, a duplicate profile name across
@@ -116,9 +122,13 @@ so a working file is never left corrupted mid-write, same pattern
 ## Architecture
 
 - **Root workspace member**, not standalone — imports `common`,
-  `fetcher-apple`, `fetcher-ytmusic`, `podcast-manager` directly
-  (in-process). `music-stack-cli`/`fetch-scheduler`/`library-manager`
-  aren't needed yet (M13-M14 territory).
+  `fetcher-apple`, `fetcher-ytmusic`, `podcast-manager`,
+  `audiobook-manager` directly (in-process); `audiobook-manager` being a
+  root-workspace member itself (unlike `sync-orchestrator`/
+  `fetcher-spotify`) is exactly why this is safe — beets-audible is
+  already installed in this venv, not a new isolated dependency tree.
+  `music-stack-cli`/`fetch-scheduler`/`library-manager` aren't needed
+  yet (M14 territory).
 - **`sync-orchestrator` stays a subprocess call** (`device.py`,
   `identify_connected_devices`), same reasoning
   `sync-orchestrator`'s own `_build_music_stack_fetch_cmd` already

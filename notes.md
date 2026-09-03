@@ -4281,3 +4281,94 @@ later: `web-gui-backend` now optionally serves the frontend's built
   200; hit `/api/profiles` — still 200, confirming API routes really do
   take priority over the catch-all static mount rather than the mount
   silently swallowing `/api/*` too.
+
+## 2026-09-04: audiobook-manager discover + john's audiobooks reset
+
+User request: "since our audiobooks were manually merged, I think we
+should have a way to 'discover' audiobooks in an external library."
+Clarified over a few turns: remove all 5 currently-synced audiobooks
+from john's iPod, and discover+process two new ones once they're
+available — but those two are still on the user's server, not this
+machine ("pending webgui development being completed and then I'll
+deploy the whole system there"), so this pass builds the feature
+without real data to test it against.
+
+- **New `AudiobookManagerConfig.discover_root`** in `common.models`/
+  `config/global.yaml` — global (not per-profile), same reasoning as
+  `LibraryManagerConfig`: `library/audiobooks` is one shared pool, so
+  "where do raw captures land before processing" isn't a per-profile
+  question either. Real host path, used directly like
+  `ExternalLibraryConfig.path` (never `/config/...`-container-style).
+  Left empty on this machine — no real value to set yet.
+- **New `audiobook_manager.discover` module**: `discover_audiobooks(root,
+  state_root)` lists every immediate subdirectory of `root` containing
+  audio files (one folder per book, matching the manual Libby-capture
+  convention), cross-referenced against `record_import()`'s state
+  (`state/audiobooks/discovered_state.json`, written by every
+  successful import) so repeat scans distinguish "new" from "already
+  processed" — not by fuzzy-matching folder names against
+  `library/audiobooks`, which would break the moment beets renames
+  something during tagging. Deliberately has no beets import anywhere
+  in this module (unlike `beets_import.py`, whose own beets import is
+  lazy/inside a function body) — a caller that only wants to *list*
+  candidates should never pay for beets' dependency tree just by
+  importing this module.
+- **Extracted `audiobook_manager.pipeline.run_import_audiobook`** from
+  `cli.py`'s `_cmd_import_audiobook` — the merge+stage+tag+record
+  orchestration is now one function both the CLI and web-gui-backend's
+  new import route call, so the two can't drift (same reasoning
+  `resolve_config_path` was moved to `common` for). `cli.py`'s own
+  `_cmd_import_audiobook` is now a thin wrapper around it; behavior
+  unchanged, existing tests updated to monkeypatch `pipeline` instead
+  of `cli` where they were faking `merge_parts_to_m4b`/`import_audiobook`.
+- **New `audiobook-manager discover --root ... --state-root ...` CLI
+  command**, and **new web-gui-backend routes** `GET
+  /api/audiobooks/discover` / `POST /api/audiobooks/discover/import` —
+  `web-gui-backend` now depends on `audiobook-manager` directly
+  (in-process import, not a subprocess like `sync-orchestrator`)
+  because `audiobook-manager` is *already* a root-workspace member
+  (unlike `sync-orchestrator`/`fetcher-spotify`, which are standalone
+  `uv` projects specifically to isolate a conflicting dependency tree)
+  — beets-audible is already installed in this exact venv, so this
+  doesn't introduce any new isolation concern. `web-gui-backend` gained
+  a `--state-root` flag (same sibling-of-`--config-root` convention as
+  `--library-root`) since it had never needed to know where `state/`
+  was before this.
+- **New `AudiobookDiscovery.tsx`** component, wired into the top of the
+  Audiobooks screen, above (not gated behind) the per-profile curation
+  section — global settings/state, not tied to whichever profile is
+  selected. Editable drop-zone path (writes `global.yaml` via the
+  already-existing `PUT /api/global-config`), a table of discovered
+  books with status, and a "Process into library" button per new book
+  that runs the real pipeline and (slowly — real ffmpeg + real
+  Audible/Audnex network lookups) reports back success/failure inline.
+- **Verified live** against synthetic fixtures (real files, real
+  filesystem scan, real subprocess calls — just not real audiobook
+  content, since none exists on this machine yet): a throwaway backend
+  instance correctly discovered two fake candidate folders under a
+  scratch drop-zone; the import route's `ffprobe` call genuinely ran
+  against the (deliberately empty/invalid) fixture MP3s and correctly
+  surfaced ffmpeg's real "Invalid data found when processing input"
+  error as a 502 — confirms the whole pipeline is really wired, not
+  just internally mocked. End-to-end success against a real book was
+  NOT verified (no real audiobook parts exist here yet).
+- **Removed all 5 currently-synced audiobooks from john's profile**:
+  `config/profiles/john.yaml`'s `audiobooks:` block changed from
+  `mode: include, selections: []` (sync everything, the default) to
+  `mode: exclude, selections: [Franz Kafka, George Orwell, Marcus
+  Aurelius, Neil Postman]` — every author currently in
+  `library/audiobooks`. Verified via a real call to
+  `sync_orchestrator.selection.resolve_audiobooks_folder` against the
+  real profile + real `library/audiobooks`: resolves to an empty
+  staging dir, confirming zero audiobooks would sync. Not yet applied
+  to a real device — john's iPod wasn't connected this session
+  (`identify-device` returned `{"devices": []}`); takes effect on the
+  next real connect/sync (`sync: trigger: on_connect` is already set on
+  this profile, and auto-sync always runs with `--allow-removals`, so
+  no extra step needed once the device is plugged in). **Caveat left
+  for the user**: this exclude list is by author name — if either of
+  the two new books turns out to be by one of these same four authors,
+  it would also get excluded once processed; the list will need
+  updating in that case. Updated `services/common/tests/test_config.py`'s
+  `test_example_profiles_load` to match john.yaml's new real content
+  (it asserts against the actual tracked file).

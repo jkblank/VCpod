@@ -1651,6 +1651,7 @@ name = "web-gui-backend"
 version = "0.1.0"
 source = { editable = "services/web-gui-backend" }
 dependencies = [
+    { name = "audiobook-manager" },
     { name = "common" },
     { name = "fastapi" },
     { name = "fetcher-apple" },
@@ -1662,6 +1663,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "audiobook-manager", editable = "services/audiobook-manager" },
     { name = "common", editable = "services/common" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fetcher-apple", editable = "services/fetcher-apple" },

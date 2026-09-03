@@ -295,7 +295,12 @@ uv run audiobook-manager import-audiobook \
     --library-root library/audiobooks --state-root state
 ```
 
-Full details: [`services/audiobook-manager/README.md`](services/audiobook-manager/README.md).
+`audiobook-manager discover --root <drop-zone> --state-root state` scans
+a folder of raw, not-yet-processed parts folders and flags which ones
+still need the `import-audiobook` step above — the web GUI's Audiobooks
+screen wraps the same thing (a "Discover new audiobooks" card that can
+kick off processing without leaving the browser). Full details:
+[`services/audiobook-manager/README.md`](services/audiobook-manager/README.md).
 
 ---
 

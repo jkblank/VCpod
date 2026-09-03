@@ -31,6 +31,13 @@ def main() -> None:
         "the sibling services/sync-orchestrator directory.",
     )
     parser.add_argument(
+        "--state-root",
+        default=None,
+        help="Real host root containing state/*.sqlite, audiobooks/ beets "
+        "db + discover state. Defaults to a 'state' directory next to "
+        "--config-root, same convention every other CLI here uses.",
+    )
+    parser.add_argument(
         "--frontend-dist",
         default=None,
         help="Path to the frontend's built static assets (`npm run build`'s "
@@ -67,6 +74,8 @@ def main() -> None:
             os.environ["WEB_GUI_SYNC_ORCHESTRATOR_DIR"] = str(args.sync_orchestrator_dir)
         if args.library_root:
             os.environ["WEB_GUI_LIBRARY_ROOT"] = str(args.library_root)
+        if args.state_root:
+            os.environ["WEB_GUI_STATE_ROOT"] = str(args.state_root)
         os.environ["WEB_GUI_FRONTEND_DIST"] = str(frontend_dist)
         uvicorn.run(
             "web_gui_backend.app:create_app_from_env",
@@ -78,7 +87,11 @@ def main() -> None:
         )
     else:
         app = create_app(
-            args.config_root, args.sync_orchestrator_dir, args.library_root, frontend_dist
+            args.config_root,
+            args.sync_orchestrator_dir,
+            args.library_root,
+            frontend_dist,
+            args.state_root,
         )
         uvicorn.run(app, host=args.host, port=args.port)
 

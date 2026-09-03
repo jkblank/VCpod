@@ -60,7 +60,11 @@ process".
   subscription picker + every `ProfilePodcastsConfig` setting —
   episode filter, fill_modes, fetch schedule, ...),
   `ExternalLibrary`/`Audiobooks` (browse a real directory tree and tick
-  what to sync), `Credentials` ("Sources & credentials" in the nav —
+  what to sync; `Audiobooks` also has a "Discover new audiobooks" card,
+  global rather than per-profile, that scans a configurable drop-zone
+  folder for raw parts-dirs and can kick off the merge+tag pipeline
+  against one without leaving the browser), `Credentials` ("Sources &
+  credentials" in the nav —
   per-source enable toggles + credential status, wiring the capture
   forms into a permanent home, including the YouTube Music OAuth
   device-code sign-in flow). Sync and Activity are still just the
@@ -76,7 +80,8 @@ process".
   verification URL + user code and polls until the backend confirms
   sign-in), `ScheduleEditor` (cron-free schedule picker, backed by
   `cronBuilder.ts`), `DirectoryPicker` (breadcrumb directory browser
-  shared by `ExternalLibrary`/`Audiobooks`).
+  shared by `ExternalLibrary`/`Audiobooks`), `AudiobookDiscovery` (the
+  discover-and-process card described above).
 - `src/useProfileStore.ts` — "which profile is currently being edited"
   lifted out of any one screen into a shared hook — `App.tsx` calls it
   once and passes the same store down to `Profiles`/`Sources`/

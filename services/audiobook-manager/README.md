@@ -55,6 +55,37 @@ file into `library/audiobooks/{Author}/{Album}/{Title}.m4b` (plus
 `cover.png`/`desc.txt`/`reader.txt` sidecars) and the empty staging
 folder is removed.
 
+## Discovering what still needs processing
+
+If you drop several captured "Author - Title" folders into one drop-zone
+directory over time, `discover` scans it and tells you which ones have
+already been merged+tagged and which still need `import-audiobook`:
+
+```bash
+uv run audiobook-manager discover \
+    --root path/to/drop-zone \
+    --state-root state
+```
+
+```
+Franz Kafka - The Trial	12 file(s)	already imported
+George Orwell - Animal Farm	9 file(s)	NEW -- needs processing
+```
+
+"Already imported" is tracked in `state/audiobooks/discovered_state.json`
+(written automatically by every successful `import-audiobook`/`tag` run,
+keyed by the parts-dir's own folder name — see `discover.py`), not
+guessed from folder-name matching against `library/audiobooks` — a book
+beets renamed during tagging still shows up correctly on the next scan.
+A drop-zone folder with no audio files in it, or `--root` not existing
+yet, is treated as "nothing to report," not an error.
+
+The web GUI's Audiobooks screen wraps this same scan (plus a "Process
+into library" button per new book, which runs the same merge+tag
+pipeline `import-audiobook` does) behind `config/global.yaml`'s
+`audiobook_manager.discover_root` setting — see
+[`services/web-gui-backend/README.md`](../web-gui-backend/README.md).
+
 ## Known gap: beets-audible can't confidently match every book
 
 `beet import -q` (quiet, non-interactive) never prompts — if it can't

@@ -76,6 +76,7 @@ export type GlobalConfig = {
       oauth_client_file: string
     }
   }
+  audiobook_manager: { discover_root: string }
   [key: string]: unknown
 }
 
@@ -133,6 +134,16 @@ export type SourcesStatus = {
 
 export type DirEntry = { name: string; is_dir: boolean }
 export type BrowseResult = { subpath: string; entries: DirEntry[] }
+
+export type DiscoveredBook = {
+  name: string
+  path: string
+  audio_file_count: number
+  already_imported: boolean
+  imported_at: number | null
+  library_paths: string[]
+}
+export type DiscoverResult = { root: string; books: DiscoveredBook[] }
 
 // The backend's ConfigError shape: {"path": "...", "errors": ["dotted.field — message", ...]}
 export class ApiError extends Error {
@@ -227,4 +238,11 @@ export const api = {
     ),
   browseAudiobooks: (subpath: string) =>
     request<BrowseResult>(`/api/audiobooks/browse?subpath=${encodeURIComponent(subpath)}`),
+
+  discoverAudiobooks: () => request<DiscoverResult>('/api/audiobooks/discover'),
+  importDiscoveredAudiobook: (name: string) =>
+    request<{ status: string; imported_paths: string[] }>('/api/audiobooks/discover/import', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
 }

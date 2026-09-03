@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from web_gui_backend.routers import (
     audiobooks,
+    audiobooks_discover,
     device,
     external_library,
     global_config,
@@ -54,14 +55,16 @@ def create_app(
     sync_orchestrator_dir: Path | str | None = None,
     library_root: Path | str | None = None,
     frontend_dist: Path | str | None = None,
+    state_root: Path | str | None = None,
 ) -> FastAPI:
     config_root = Path(config_root)
     app = FastAPI(title="VCpod web-gui-backend")
     app.state.config_root = config_root
     app.state.sync_orchestrator_dir = sync_orchestrator_dir
-    # Same default every other CLI here uses: a sibling 'library'
+    # Same default every other CLI here uses: a sibling 'library'/'state'
     # directory next to config_root.
     app.state.library_root = Path(library_root) if library_root else config_root.parent / "library"
+    app.state.state_root = Path(state_root) if state_root else config_root.parent / "state"
 
     app.add_middleware(
         CORSMiddleware,
@@ -78,6 +81,7 @@ def create_app(
         podcasts,
         external_library,
         audiobooks,
+        audiobooks_discover,
     ):
         app.include_router(router_module.router)
 
@@ -111,4 +115,5 @@ def create_app_from_env() -> FastAPI:
         sync_orchestrator_dir=os.environ.get("WEB_GUI_SYNC_ORCHESTRATOR_DIR") or None,
         library_root=os.environ.get("WEB_GUI_LIBRARY_ROOT") or None,
         frontend_dist=os.environ.get("WEB_GUI_FRONTEND_DIST") or None,
+        state_root=os.environ.get("WEB_GUI_STATE_ROOT") or None,
     )
