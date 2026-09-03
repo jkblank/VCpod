@@ -140,25 +140,46 @@ export default function Podcasts({ store }: { store: ProfileStore }) {
               ? 'Currently syncing all subscribed shows. Tick specific shows to switch to a curated list.'
               : `${selectedUuids.size} of ${subscriptions.length} shows selected. Fill mode only applies to selected shows.`}
           </p>
-          {subscriptions.map((s) => {
-            const selected = isAll || selectedUuids.has(s.uuid)
-            return (
-              <div className="picker-row" key={s.uuid}>
-                <input type="checkbox" checked={selected} onChange={() => toggle(s.uuid)} />
-                <span className="name">{s.title}</span>
-                <span className="meta">{s.author}</span>
-                {selected && !isAll && (
-                  <select
-                    value={podcasts.fill_modes[s.uuid] ?? 'newest'}
-                    onChange={(e) => setFillMode(s.uuid, e.target.value as 'newest' | 'next')}
-                  >
-                    <option value="newest">Newest first</option>
-                    <option value="next">Oldest unheard first</option>
-                  </select>
-                )}
-              </div>
-            )
-          })}
+          <table className="table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Show</th>
+                <th>Author</th>
+                <th>Fill mode</th>
+              </tr>
+            </thead>
+            <tbody>
+              {subscriptions.map((s) => {
+                const selected = isAll || selectedUuids.has(s.uuid)
+                return (
+                  <tr key={s.uuid} onClick={() => toggle(s.uuid)} style={{ cursor: 'pointer' }}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggle(s.uuid)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </td>
+                    <td>{s.title}</td>
+                    <td>{s.author}</td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      {selected && !isAll && (
+                        <select
+                          value={podcasts.fill_modes[s.uuid] ?? 'newest'}
+                          onChange={(e) => setFillMode(s.uuid, e.target.value as 'newest' | 'next')}
+                        >
+                          <option value="newest">Newest first</option>
+                          <option value="next">Oldest unheard first</option>
+                        </select>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
           <div className="row" style={{ marginTop: '16px' }}>
             <button className="btn" onClick={() => save()} disabled={saving}>
               {saving ? 'Saving…' : 'Save'}

@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  api,
   ApiError,
   streamSyncExecute,
   streamSyncPlan,
-  type ConnectedDevice,
   type SyncPlanSummary,
   type SyncResultSummary,
 } from '../api'
 import AutoSyncSetupCard from '../components/AutoSyncSetupCard'
+import Dialog from '../components/Dialog'
 import {
   DeviceConnectedIcon,
   IdleIcon,
@@ -18,6 +17,7 @@ import {
   ToRemoveIcon,
   UnreachableIcon,
 } from '../icons'
+import { useConnectedDevices } from '../useConnectedDevices'
 import type { ProfileStore } from '../useProfileStore'
 
 function formatBytes(bytes: number): string {
@@ -38,8 +38,7 @@ type RunningAction = 'plan' | 'execute' | 'dangerous' | null
 
 export default function Sync({ store }: { store: ProfileStore }) {
   const { draft } = store
-  const [devices, setDevices] = useState<ConnectedDevice[] | null>(null)
-  const [deviceError, setDeviceError] = useState<string | null>(null)
+  const { devices, error: deviceError } = useConnectedDevices()
   const [runningAction, setRunningAction] = useState<RunningAction>(null)
   const [log, setLog] = useState<string[]>([])
   const [plan, setPlan] = useState<SyncPlanSummary | null>(null)
@@ -47,14 +46,8 @@ export default function Sync({ store }: { store: ProfileStore }) {
   const [error, setError] = useState<string | null>(null)
   const [allowRemovals, setAllowRemovals] = useState(false)
   const [dangerousMode, setDangerousMode] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const logRef = useRef<HTMLPreElement | null>(null)
-
-  useEffect(() => {
-    api
-      .identifyDevice()
-      .then((r) => setDevices(r.devices))
-      .catch((e) => setDeviceError(e instanceof ApiError ? e.message : String(e)))
-  }, [])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -222,7 +215,7 @@ export default function Sync({ store }: { store: ProfileStore }) {
             </button>
             <button
               className="btn"
-              onClick={execute}
+              onClick={() => setConfirmOpen(true)}
               disabled={running || !plan || (hasRemovals && !allowRemovals)}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
             >
@@ -244,6 +237,27 @@ export default function Sync({ store }: { store: ProfileStore }) {
       {plan && (
         <div className="card">
           <h3>Plan</h3>
+          <div className="stat-row" style={{ marginBottom: '12px' }}>
+            <div className="stat">
+              <div className="value">{plan.to_add_count}</div>
+              <div className="label">to add</div>
+            </div>
+            <div className="stat">
+              <div className="value">{plan.to_remove_count}</div>
+              <div className="label">to remove</div>
+            </div>
+            <div className="stat">
+              <div className="value">{plan.before_track_count - plan.to_remove_count}</div>
+              <div className="label">unchanged</div>
+            </div>
+            <div className="stat">
+              <div className="value">
+                {plan.storage.net_change >= 0 ? '+' : ''}
+                {formatBytes(plan.storage.net_change)}
+              </div>
+              <div className="label">net storage change</div>
+            </div>
+          </div>
           <p style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
             <ToAddIcon size={16} /> to add: {plan.to_add_count}
             <span style={{ marginLeft: '8px' }} />
@@ -320,6 +334,41 @@ export default function Sync({ store }: { store: ProfileStore }) {
             {result.ejected ? 'Device ejected — safe to disconnect.' : ''}
           </span>
         </div>
+      )}
+
+      {confirmOpen && plan && (
+        <Dialog
+          title="Confirm sync"
+          onClose={() => setConfirmOpen(false)}
+          actions={
+            <>
+              <button className="btn secondary" onClick={() => setConfirmOpen(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  setConfirmOpen(false)
+                  void execute()
+                }}
+              >
+                Execute sync
+              </button>
+            </>
+          }
+        >
+          <p>
+            Writes to the device for <strong>{draft.profile}</strong>: {plan.to_add_count} to add,{' '}
+            {plan.to_remove_count} to remove
+            {allowRemovals ? '' : ' (removals not allowed this run)'}.
+          </p>
+          {hasRemovals && allowRemovals && (
+            <p style={{ color: 'var(--danger)' }}>
+              Removals are allowed for this run — anything no longer in scope is deleted from the
+              device.
+            </p>
+          )}
+        </Dialog>
       )}
 
       <AutoSyncSetupCard />

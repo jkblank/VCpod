@@ -189,6 +189,39 @@ export type AutoSyncSetup = {
   status: { systemd_installed: boolean; udev_rule_installed: boolean }
 }
 
+export type ActivityEntry = {
+  started_at: string
+  service: string
+  profile: string
+  description: string
+  duration_seconds: number
+  result: 'ok' | 'error'
+}
+
+export type Alert = {
+  kind: string
+  profile: string | null
+  severity: 'missing' | 'stale' | 'unreachable'
+  message: string
+}
+
+export type OverviewDeviceCard = {
+  profile: string
+  connected_device: ConnectedDevice & { used_bytes: number; free_bytes: number } | null
+  track_count: number
+  episode_count: number
+  unplayed_episode_count: number
+  last_sync: string | null
+  next_fetch: string | null
+}
+
+export type Overview = {
+  devices: OverviewDeviceCard[]
+  alerts: Alert[]
+  library: { track_count: number }
+  recent_activity: ActivityEntry[]
+}
+
 export type DiscoveredBook = {
   name: string
   path: string
@@ -394,6 +427,10 @@ export const api = {
     }),
 
   getAutoSyncSetup: () => request<AutoSyncSetup>('/api/auto-sync/setup'),
+
+  getOverview: () => request<Overview>('/api/overview'),
+  getActivity: (limit = 50) => request<{ entries: ActivityEntry[] }>(`/api/activity?limit=${limit}`),
+  getAlerts: () => request<{ alerts: Alert[] }>('/api/alerts'),
 }
 
 export type SyncPlanBody = { profile: string; skip_backup?: boolean; skip_podcasts?: boolean }

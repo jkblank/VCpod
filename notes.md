@@ -4632,3 +4632,89 @@ accent arc from twelve o'clock, and an 8.5px hub.
   project has made without one. Worth a look next time a browser's
   available, especially the animated states (syncing spin, throbbers)
   and the small-size stroke/hub bucketing.
+
+## 2026-09-03: Web GUI aligned with the "VCpod Console" design — real Overview/Activity, not just a re-skin
+
+Follow-up to the icon set import above: the actual web GUI had
+drifted visually from the "VCpod Console" Claude Design mockup
+(plainer sidebar, no card/table/tag/dialog component language), and
+two of its screens (Overview, Activity) only existed as either a bare
+stat row or not at all — the mockup shows a real dashboard and a
+job-history feed. Asked the user how to scope this given that closing
+that specific gap needs new backend work, not just CSS: they chose
+"do it all now, including new backend work" — so this pass built the
+real data those screens needed rather than faking it or skipping them.
+Same principle used everywhere else in this project (e.g.
+`/api/sources/status`'s real mtime, never a guessed expiry): every
+number/state either screen shows now is either already-plumbed state
+or a live read, never one of the mockup's own fictional numbers.
+
+New backend, in order (each independently tested/committed):
+- `sync_orchestrator.device.ConnectedDeviceInfo` gains real
+  `used_bytes`/`free_bytes` (`shutil.disk_usage` on the resolved mount
+  path) — additive, `identify-device`'s existing JSON consumers
+  unaffected.
+- New `common.activity`: one shared `state/activity.sqlite` log
+  (`record_activity`/`list_activity`/`prune_activity`, `PRAGMA
+  busy_timeout` set since fetch-scheduler and sync-orchestrator can
+  both write around the same real moment) plus a per-profile
+  `state/{profile}_last_sync.json` marker — nothing before this
+  recorded "when did this profile's device last actually get synced"
+  anywhere queryable at all.
+- `sync-orchestrator`'s `_run_sync`/`_run_rockbox_sync` record an
+  activity entry + the last-sync marker after every real `--execute`
+  (interactive and auto-sync), success or failure.
+- `fetch-scheduler`'s `cli.py` (the tick caller, not `run_tick` itself)
+  records one activity entry per profile that actually fetched
+  something or hit a source error that tick — profiles with nothing
+  due are skipped on purpose, to avoid flooding the log with no-op
+  entries every tick (a deliberate divergence from the mockup's
+  illustrative "nothing due" row). New `activity_prune` maintenance
+  task alongside the existing dedup/cleanup/backup-prune ones, gated
+  by new `GlobalConfig.activity.prune_enabled`/`keep_last_days`.
+- `common.state.StateDB` gains `count_tracks()`/`count_episodes()`;
+  `common.schedule` gains `next_profile_fetch_time()` — both reused by
+  the Overview route below.
+- New web-gui-backend routes: `GET /api/activity` (the log, newest
+  first); `GET /api/alerts` (missing/stale credential files — reusing
+  the exact status logic `sources.py`/`profile_sources.py`/
+  `podcasts.py` already expose, not a re-derivation that could drift —
+  plus PO-token companion-service reachability via a real short-timeout
+  TCP connect; Spotify deliberately excluded, shelved, not real
+  signal); `GET /api/overview` (per-profile device cards, the alerts
+  above, whole-library track count, recent activity).
+
+Frontend: added the remaining Nocturne tokens/component classes
+(`--radius/--space/--shadow`, `.card-kicker/-title/-body`, `.tag*`,
+`.seg`/`.seg-opt`, `.table`, `.dialog*`, `.btn.ghost`) and a shared
+`Dialog` component; rebuilt `Overview.tsx` into a real dashboard
+(alert banners, per-profile device cards, recent activity, library
+stats) and added a new `Activity.tsx` screen, both against the routes
+above; restructured `App.tsx`'s sidebar (profile picker, grouped nav
+with real badge counts, a status footer built on a new shared
+`useConnectedDevices()` hook so the sidebar and Sync screen poll once,
+not twice) and gave every screen's header a breadcrumb + "View YAML"
+(client-side pretty-print of `store.draft`, not a new endpoint) /
+"Sync now" quick actions; restyled `Sources.tsx`/`Podcasts.tsx`'s
+playlist/show lists into real `.table`s, `Credentials.tsx`'s source
+cards with status `.tag`s, `Sync.tsx` with 4 stat cards + an
+execute-confirm `Dialog`, and reworked `Profiles.tsx` into a two-pane
+layout with `.seg` segmented controls and a real before/after
+review-diff `Dialog` (computed client-side against the last-loaded
+profile already sitting in `store.profiles`). `ExternalLibrary.tsx`/
+`Audiobooks.tsx` were deliberately left alone — they're recursive
+directory-tree browsers (`DirectoryPicker`), not flat lists, and don't
+fit the `.table` treatment without a bigger redesign than this pass
+warranted.
+
+- **Verified**: full workspace `pytest` (528 passed) after every
+  backend increment; `npm run build` type-checks and bundles clean
+  after every frontend increment; live-exercised `/api/overview`,
+  `/api/alerts`, `/api/activity` against this real machine's real
+  config/state (6 real profiles) — confirmed real numbers throughout
+  (e.g. john: 1813 tracks/125 episodes, a real 46-day-stale Apple
+  Music cookie file correctly flagged, a real unreachable PO-token
+  provider correctly flagged) — and served the built frontend through
+  the one-process backend with real 200s. **Not verified**: actual
+  visual rendering in a browser, same caveat as the icon set entry
+  above — no browser automation tool available this session.

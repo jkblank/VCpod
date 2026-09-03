@@ -98,6 +98,9 @@ export default function Credentials({ store }: { store: ProfileStore }) {
             />
             {status.apple_music.exists ? <SyncedIcon size={16} /> : <NeedsAttentionIcon size={16} />}
             <strong>Apple Music</strong>
+            <span className={`tag ${status.apple_music.exists ? 'tag-accent' : 'tag-neutral'}`}>
+              {status.apple_music.exists ? 'connected' : 'not set up'}
+            </span>
           </label>
           <button className="btn secondary" onClick={() => setOpenForm('apple_music')}>
             {status.apple_music.exists ? 'Re-export cookies' : 'Set up cookies'}
@@ -174,6 +177,9 @@ export default function Credentials({ store }: { store: ProfileStore }) {
             />
             {status.ytmusic.cookies.exists ? <SyncedIcon size={16} /> : <NeedsAttentionIcon size={16} />}
             <strong>YouTube Music</strong>
+            <span className={`tag ${status.ytmusic.cookies.exists ? 'tag-accent' : 'tag-neutral'}`}>
+              {status.ytmusic.cookies.exists ? 'connected' : 'not set up'}
+            </span>
           </label>
           <button className="btn secondary" onClick={() => setOpenForm('ytmusic-cookies')}>
             {status.ytmusic.cookies.exists ? 'Re-export cookies' : 'Set up cookies'}
@@ -301,6 +307,7 @@ export default function Credentials({ store }: { store: ProfileStore }) {
               onChange={(e) => toggleEnabled('spotify', e.target.checked)}
             />
             <strong>Spotify</strong>
+            <span className="tag tag-outline">shelved</span>
           </label>
         </div>
         <p className="muted">

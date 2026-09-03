@@ -59,7 +59,14 @@ process".
   frames manually (native `EventSource` is GET-only, can't carry a
   JSON body, so a POST that streams Server-Sent Events needs this
   instead — the standard workaround, not a new dependency).
-- `src/screens/` — one component per screen: `Overview`, `Profiles`,
+- `src/screens/` — one component per screen: `Overview` (polled real
+  dashboard against `/api/overview` — alert banners, one card per
+  profile with connected-device identity + used/free bytes when
+  connected, real track/episode counts, last real sync, next scheduled
+  fetch — plus recent activity and whole-library stats; nothing here is
+  the mockup's own fictional numbers), `Activity` (the full job-history
+  feed from `/api/activity`, real entries written by fetch-scheduler
+  and sync-orchestrator — not built until this pass), `Profiles`,
   `Sources` (Apple Music/YouTube Music playlist picker, plus "add a
   public playlist by link" for YouTube), `Podcasts` (Pocket Casts
   subscription picker + every `ProfilePodcastsConfig` setting —
@@ -84,9 +91,9 @@ process".
   anything — then `/api/sync/execute` to actually write it; a
   "Dangerous mode" toggle skips straight to executing with removals
   allowed, no plan review, for when you already know what you want;
-  also hosts the auto-sync setup card). Activity is still just the
-  mockup's UX/copy spec (`docs/VCpod Console.html` at the repo root),
-  not built here yet.
+  4 stat cards (to add/to remove/unchanged/net storage change) and an
+  execute-confirm dialog on top of the plan review; also hosts the
+  auto-sync setup card).
 - `src/components/` — `CredentialWarning` (the big plaintext-storage
   warning every capture form shows), `CookieCaptureForm` (Apple
   Music/YouTube — paste or upload an already-exported `cookies.txt`;
@@ -105,7 +112,20 @@ process".
   `AudiobookDiscovery` (the discover-and-process card described
   above), `AutoSyncSetupCard` (generated systemd unit/udev rule +
   install commands, read-only — no "install for me" button, this
-  backend never runs privileged commands itself).
+  backend never runs privileged commands itself), `Dialog` (shared
+  modal shell — backdrop + `.dialog` card — every confirm/review flow
+  renders through instead of rolling its own: `App.tsx`'s View YAML,
+  `Sync.tsx`'s execute-confirm, `Profiles.tsx`'s save review-diff).
+- `src/useConnectedDevices.ts` — the "what's plugged in right now" poll
+  (`/api/device/identify`), shared by `App.tsx`'s sidebar status footer
+  and `Sync.tsx` so the two read one call instead of each running their
+  own.
+- `src/yamlish.ts` — a client-side JSON → YAML-ish pretty-printer for
+  the View YAML dialog. Display-only convenience (the frontend already
+  has the full profile object via `store.draft`), not a real
+  serializer and not a new endpoint — the actual file write is still
+  `common.config.save_profile_config`, server-side, the only real
+  writer.
 - `src/icons/` — the VCpod icon set, ported 1:1 from the "VCpod Icons"
   Claude Design project (Nocturne design system, imported via the
   `claude_design` MCP/`/design-login`): a shared clickwheel-ring motif

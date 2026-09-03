@@ -207,19 +207,35 @@ export default function Sources({ store }: { store: ProfileStore }) {
           {!loading && !loadError && playlists.length === 0 && (
             <p className="muted">No playlists found.</p>
           )}
-          {playlists.map((p) => (
-            <label className="picker-row" key={p.source_id}>
-              <input
-                type="checkbox"
-                checked={isSelected(p.source_id)}
-                onChange={() => toggle(p)}
-              />
-              <span className="name">{p.name}</span>
-              <span className="meta">
-                {p.track_count} tracks{p.owner ? ` · ${p.owner}` : ''}
-              </span>
-            </label>
-          ))}
+          {playlists.length > 0 && (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Name</th>
+                  <th>Tracks</th>
+                  <th>Owner</th>
+                </tr>
+              </thead>
+              <tbody>
+                {playlists.map((p) => (
+                  <tr key={p.source_id} onClick={() => toggle(p)} style={{ cursor: 'pointer' }}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={isSelected(p.source_id)}
+                        onChange={() => toggle(p)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </td>
+                    <td>{p.name}</td>
+                    <td>{p.track_count}</td>
+                    <td>{p.owner ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
 
           <div className="row" style={{ marginTop: '16px' }}>
             <button className="btn" onClick={() => save()} disabled={saving}>
