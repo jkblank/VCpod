@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError, type DiscoveredBook, type GlobalConfig } from '../api'
 import { formatRelativeTime } from '../format'
+import { Spinner, SyncedIcon, ToAddIcon } from '../icons'
 
 // Global, not tied to any one profile -- library/audiobooks is one
 // shared pool synced from (same reasoning as library/music), so "where
@@ -129,7 +130,8 @@ export default function AudiobookDiscovery() {
               <tr key={book.name}>
                 <td>{book.name}</td>
                 <td>{book.audio_file_count}</td>
-                <td>
+                <td style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {book.already_imported ? <SyncedIcon size={16} /> : <ToAddIcon size={16} />}
                   {book.already_imported
                     ? `Already imported (${formatRelativeTime(book.imported_at)})`
                     : 'New — needs processing'}
@@ -140,7 +142,9 @@ export default function AudiobookDiscovery() {
                       className="btn"
                       onClick={() => processBook(book.name)}
                       disabled={importing !== null}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
                     >
+                      {importing === book.name && <Spinner size={14} />}
                       {importing === book.name ? 'Processing…' : 'Process into library'}
                     </button>
                   )}

@@ -8,6 +8,44 @@
   --accent-dim: #4a3f7a;
   --danger: #d98484;
   color-scheme: dark;
+
+  /* Icon set tokens (imported from the "VCpod Icons" Claude Design
+     project, Nocturne design system) -- --color-accent is the exact
+     same hex --accent above already used (this app's palette was
+     originally matched to Nocturne by hand), kept as its own alias so
+     the icon SVGs below can be pasted in verbatim from the design
+     source without renaming every var() reference. Only the ramps the
+     icon set actually uses are brought in (no accent-2/section tokens
+     -- those are deck-only, never referenced by an icon). */
+  --color-accent: var(--accent);
+  --color-accent-100: #f5f4ff;
+  --color-accent-200: #e7e5fe;
+  --color-accent-300: #d2cefd;
+  --color-accent-400: #b5abfc;
+  --color-accent-500: #968ae0;
+  --color-accent-600: #796cbf;
+  --color-accent-700: #5d5294;
+  --color-accent-800: #423a6a;
+  --color-accent-900: #2b2741;
+  --color-neutral-300: #cfd3e5;
+  --color-neutral-400: #b2b6ca;
+  --color-neutral-500: #9397ab;
+  --color-neutral-600: #75798c;
+  --color-neutral-700: #595d6c;
+  --color-neutral-800: #3f424d;
+}
+
+/* Icon set animations (same source). vc-spin drives the Quadrant
+   throbber and the "syncing" state icon's rotating arc; vc-spin-rev +
+   vc-breathe drive the Counter-rotating throbber; vc-dash drives the
+   Drawing throbber's indeterminate dash sweep. */
+@keyframes vc-spin { to { transform: rotate(360deg); } }
+@keyframes vc-spin-rev { to { transform: rotate(-360deg); } }
+@keyframes vc-breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@keyframes vc-dash {
+  0% { stroke-dasharray: 20 125; stroke-dashoffset: 0; }
+  50% { stroke-dasharray: 96 125; stroke-dashoffset: -28; }
+  100% { stroke-dasharray: 20 125; stroke-dashoffset: -125; }
 }
 
 * {
@@ -46,12 +84,18 @@ body {
 }
 
 .nav-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 600;
   padding: 8px 12px 16px;
   letter-spacing: 0.02em;
 }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   text-align: left;
   background: none;
   border: none;
@@ -69,6 +113,15 @@ body {
 .nav-item.active {
   background: var(--accent-dim);
   color: var(--text);
+}
+
+.nav-item-icon {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.nav-item.active .nav-item-icon {
+  opacity: 1;
 }
 
 .nav-editing {

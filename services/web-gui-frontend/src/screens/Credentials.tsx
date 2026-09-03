@@ -11,6 +11,7 @@ import ImportOrRevertSource from '../components/ImportOrRevertSource'
 import PocketCastsLoginForm from '../components/PocketCastsLoginForm'
 import YtmusicOauthForm from '../components/YtmusicOauthForm'
 import { formatRelativeTime } from '../format'
+import { NeedsAttentionIcon, SyncedIcon } from '../icons'
 import type { ProfileStore } from '../useProfileStore'
 
 type OpenForm =
@@ -95,6 +96,7 @@ export default function Credentials({ store }: { store: ProfileStore }) {
               checked={globalConfig.sources.apple_music.enabled}
               onChange={(e) => toggleEnabled('apple_music', e.target.checked)}
             />
+            {status.apple_music.exists ? <SyncedIcon size={16} /> : <NeedsAttentionIcon size={16} />}
             <strong>Apple Music</strong>
           </label>
           <button className="btn secondary" onClick={() => setOpenForm('apple_music')}>
@@ -170,6 +172,7 @@ export default function Credentials({ store }: { store: ProfileStore }) {
               checked={globalConfig.sources.ytmusic.enabled}
               onChange={(e) => toggleEnabled('ytmusic', e.target.checked)}
             />
+            {status.ytmusic.cookies.exists ? <SyncedIcon size={16} /> : <NeedsAttentionIcon size={16} />}
             <strong>YouTube Music</strong>
           </label>
           <button className="btn secondary" onClick={() => setOpenForm('ytmusic-cookies')}>

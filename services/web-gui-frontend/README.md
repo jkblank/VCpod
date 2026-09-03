@@ -106,6 +106,33 @@ process".
   above), `AutoSyncSetupCard` (generated systemd unit/udev rule +
   install commands, read-only — no "install for me" button, this
   backend never runs privileged commands itself).
+- `src/icons/` — the VCpod icon set, ported 1:1 from the "VCpod Icons"
+  Claude Design project (Nocturne design system, imported via the
+  `claude_design` MCP/`/design-login`): a shared clickwheel-ring motif
+  (52-unit viewBox, 2px round-cap strokes) that every icon builds from.
+  `Mark` is the bare logo (nav branding); `StateIcons.tsx` has the 12
+  "keep the ring, replace the hub" states (`SyncedIcon`, `SyncingIcon`,
+  `QueuedIcon`, `PausedIcon`, `NeedsAttentionIcon`, `UnreachableIcon`,
+  `DeviceConnectedIcon`, `IdleIcon`, `ScheduledIcon`, `ToAddIcon`,
+  `ToRemoveIcon`, `ProfileIcon`); `SourceIcons.tsx` has the 6 "hub
+  becomes the object" icons (`StreamingPlaylistIcon`, `VideoSourceIcon`,
+  `PodcastIcon`, `AudiobookIcon`, `ExternalLibraryIcon`,
+  `CredentialsIcon`); `Spinner.tsx` has the three throbber variants
+  (`Spinner` — Quadrant, the spec's own default for button/table waits;
+  `DrawingSpinner`; `CounterRotatingSpinner`), which bucket their
+  stroke width/hub visibility by `size` the same way the design's own
+  three reference sizes do; `ProgressRing.tsx` is the determinate ring
+  (`stroke-dashoffset = 100 - progress`, `pathLength=100` so the math
+  stays exact regardless of radius). Colors reference the design's own
+  `--color-accent-*`/`--color-neutral-*` CSS custom properties, added
+  to `App.css`'s `:root` (`--color-accent` itself is just an alias for
+  this app's existing `--accent` — the two hex values were already
+  identical, this app's palette having been hand-matched to the same
+  Nocturne system earlier). Wired into `App.tsx`'s nav (logo + one icon
+  per screen), `Sync.tsx` (device status, button spinners, plan
+  add/remove counts, the result banner), `AudiobookDiscovery.tsx`
+  (processing spinner + per-book status), and `Credentials.tsx`
+  (Apple Music/YouTube Music card status).
 - `src/useProfileStore.ts` — "which profile is currently being edited"
   lifted out of any one screen into a shared hook — `App.tsx` calls it
   once and passes the same store down to `Profiles`/`Sources`/

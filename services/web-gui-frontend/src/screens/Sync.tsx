@@ -9,6 +9,15 @@ import {
   type SyncResultSummary,
 } from '../api'
 import AutoSyncSetupCard from '../components/AutoSyncSetupCard'
+import {
+  DeviceConnectedIcon,
+  IdleIcon,
+  Spinner,
+  SyncedIcon,
+  ToAddIcon,
+  ToRemoveIcon,
+  UnreachableIcon,
+} from '../icons'
 import type { ProfileStore } from '../useProfileStore'
 
 function formatBytes(bytes: number): string {
@@ -145,18 +154,27 @@ export default function Sync({ store }: { store: ProfileStore }) {
   return (
     <>
       <div className="card">
-        <p>
-          Device for <strong>{draft.profile}</strong> ({draft.device.match_by}=
-          {draft.device.match_value}):{' '}
+        <p style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {deviceError ? (
-            <span className="muted">could not check ({deviceError})</span>
+            <UnreachableIcon size={18} />
           ) : connected ? (
-            <strong>
-              connected — {connected.model_family} {connected.generation} ({connected.capacity})
-            </strong>
+            <DeviceConnectedIcon size={18} />
           ) : (
-            <span className="muted">not connected</span>
+            <IdleIcon size={18} />
           )}
+          <span>
+            Device for <strong>{draft.profile}</strong> ({draft.device.match_by}=
+            {draft.device.match_value}):{' '}
+            {deviceError ? (
+              <span className="muted">could not check ({deviceError})</span>
+            ) : connected ? (
+              <strong>
+                connected — {connected.model_family} {connected.generation} ({connected.capacity})
+              </strong>
+            ) : (
+              <span className="muted">not connected</span>
+            )}
+          </span>
         </p>
 
         <div className="row">
@@ -181,20 +199,34 @@ export default function Sync({ store }: { store: ProfileStore }) {
               real sync <strong>with removals allowed</strong> — anything no longer in scope gets
               deleted from the device right away, with no chance to review first.
             </div>
-            <button className="btn danger" onClick={dangerousSync} disabled={running}>
+            <button
+              className="btn danger"
+              onClick={dangerousSync}
+              disabled={running}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+            >
+              {runningAction === 'dangerous' && <Spinner size={14} />}
               {runningAction === 'dangerous' ? 'Syncing…' : 'Sync now (dangerous)'}
             </button>
           </>
         ) : (
           <div className="row">
-            <button className="btn" onClick={computePlan} disabled={running}>
+            <button
+              className="btn"
+              onClick={computePlan}
+              disabled={running}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+            >
+              {runningAction === 'plan' && <Spinner size={14} />}
               {runningAction === 'plan' ? 'Computing…' : 'Compute plan'}
             </button>
             <button
               className="btn"
               onClick={execute}
               disabled={running || !plan || (hasRemovals && !allowRemovals)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
             >
+              {runningAction === 'execute' && <Spinner size={14} />}
               {runningAction === 'execute' ? 'Syncing…' : 'Execute sync'}
             </button>
           </div>
@@ -212,8 +244,10 @@ export default function Sync({ store }: { store: ProfileStore }) {
       {plan && (
         <div className="card">
           <h3>Plan</h3>
-          <p>
-            to add: {plan.to_add_count} · to remove: {plan.to_remove_count} · metadata updates:{' '}
+          <p style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+            <ToAddIcon size={16} /> to add: {plan.to_add_count}
+            <span style={{ marginLeft: '8px' }} />
+            <ToRemoveIcon size={16} /> to remove: {plan.to_remove_count} · metadata updates:{' '}
             {plan.to_update_metadata_count} · file updates: {plan.to_update_file_count} · artwork
             updates: {plan.to_update_artwork_count}
           </p>
@@ -277,11 +311,14 @@ export default function Sync({ store }: { store: ProfileStore }) {
       )}
 
       {result && (
-        <div className="success-banner">
-          {result.summary} — {result.tracks_added} track(s) written,{' '}
-          {result.after_track_count} now on device (was {result.before_track_count}).{' '}
-          {result.snapshot_id && `Backup snapshot ${result.snapshot_id} available for rollback. `}
-          {result.ejected ? 'Device ejected — safe to disconnect.' : ''}
+        <div className="success-banner" style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+          <SyncedIcon size={18} className="success-banner-icon" />
+          <span>
+            {result.summary} — {result.tracks_added} track(s) written,{' '}
+            {result.after_track_count} now on device (was {result.before_track_count}).{' '}
+            {result.snapshot_id && `Backup snapshot ${result.snapshot_id} available for rollback. `}
+            {result.ejected ? 'Device ejected — safe to disconnect.' : ''}
+          </span>
         </div>
       )}
 

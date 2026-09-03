@@ -4587,3 +4587,48 @@ profile" means pointing at the exact same file (not a byte copy).
   back to `"global"` with the `sources:` block removed from the
   written YAML entirely. Never touched any of the user's real named
   profiles' files during verification.
+
+## 2026-09-04: VCpod icon set imported from Claude Design
+
+Imported the "VCpod Icons" Claude Design project (`claude_design`
+MCP, authorized via `/design-login`) — a clickwheel-ring icon system
+(Nocturne design system) covering 12 sync-state icons, 6 source
+icons, 3 throbber variants, and a determinate progress ring, all
+built from one shared shape: a 52-unit viewBox, 46px ring, a 90°
+accent arc from twelve o'clock, and an 8.5px hub.
+
+- New `services/web-gui-frontend/src/icons/` — every icon ported 1:1
+  from the design source (`Mark`, `StateIcons.tsx`'s 12,
+  `SourceIcons.tsx`'s 6, `Spinner.tsx`'s 3 throbber variants,
+  `ProgressRing.tsx`). Colors reference `--color-accent-*`/
+  `--color-neutral-*` custom properties added to `App.css`'s `:root` —
+  confirmed this app's existing `--accent`/`--bg` were already the
+  exact same hex values as the design's `--color-accent`/`--color-bg`
+  (the app's palette was hand-matched to this same Nocturne system
+  earlier in the project), so `--color-accent` is just an alias for
+  the app's own `--accent` rather than a second source of truth.
+  `vc-spin`/`vc-spin-rev`/`vc-breathe`/`vc-dash` keyframes added
+  alongside.
+- Wired in, not just built: `App.tsx`'s nav gets the real logo mark
+  plus one icon per screen; `Sync.tsx` gets device-status icons
+  (connected/idle/unreachable), spinners on the compute/execute/
+  dangerous-sync buttons, add/remove icons next to the plan counts,
+  and a synced-checkmark on the result banner; `AudiobookDiscovery.tsx`
+  gets a spinner on "Process into library" and a synced/to-add icon
+  per row; `Credentials.tsx` gets a synced/needs-attention icon next
+  to the Apple Music and YouTube Music card labels.
+- The throbber's own three reference sizes (44/24/16px) drop stroke
+  width and lose the inner hub below 32px ("small sizes: at 20px and
+  under, strokes go to 3-5px and the hub drops out," per the design's
+  own annotation) — ported as a size-bucketing function in
+  `Spinner.tsx` rather than continuous interpolation, to stay a
+  faithful copy of the three drawn examples rather than inventing an
+  in-between look the design never specified.
+- **Verified**: `npm run build` type-checks and bundles clean; served
+  the built app through the one-process backend and confirmed the HTML
+  shell + JS + CSS all load with real 200s. **Not verified**: actual
+  visual rendering in a browser — no browser automation tool available
+  this session, same caveat as every other frontend change this
+  project has made without one. Worth a look next time a browser's
+  available, especially the animated states (syncing spin, throbbers)
+  and the small-size stroke/hub bucketing.
