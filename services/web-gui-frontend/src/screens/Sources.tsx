@@ -30,16 +30,21 @@ export default function Sources({ store }: { store: ProfileStore }) {
   const requestIdRef = useRef(0)
 
   const loadPlaylists = async (source: SourceId) => {
-    if (source === 'spotify') return
+    if (source === 'spotify' || !draft) return
     const requestId = ++requestIdRef.current
     setLoading(true)
     setLoadError(null)
     setPlaylists([])
     try {
+      // Profile-scoped: resolves this profile's own override credentials
+      // if it has any, falling back to the shared global login otherwise
+      // -- so a profile with its own separate account sees its own
+      // playlists here, not necessarily the household's. See
+      // routers/profile_sources.py.
       const list =
         source === 'apple_music'
-          ? await api.listAppleMusicPlaylists()
-          : await api.listYtmusicPlaylists()
+          ? await api.listProfileAppleMusicPlaylists(draft.profile)
+          : await api.listProfileYtmusicPlaylists(draft.profile)
       if (requestId !== requestIdRef.current) return // superseded by a newer tab switch
       setPlaylists(list)
     } catch (e) {
@@ -54,7 +59,7 @@ export default function Sources({ store }: { store: ProfileStore }) {
     setShowCookieForm(false)
     void loadPlaylists(tab)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab])
+  }, [tab, draft?.profile])
 
   if (!draft) {
     return (
@@ -146,9 +151,14 @@ export default function Sources({ store }: { store: ProfileStore }) {
           {showCookieForm && tab === 'apple_music' && (
             <CookieCaptureForm
               sourceName="Apple Music"
-              path="config/secrets/apple_music_cookies.txt"
+              path={`config/secrets/${draft.profile}/apple_music_cookies.txt`}
               onSubmit={async (text) => {
-                await api.putAppleMusicCookies(text)
+                // Always writes this profile's own override, never the
+                // shared global file -- re-exporting fresh cookies for a
+                // specific profile from here is an explicit "just for
+                // this profile" action, same principle as the
+                // Credentials screen's "set up separate credentials".
+                await api.putProfileAppleMusicCookies(draft.profile, text)
                 setShowCookieForm(false)
                 await loadPlaylists(tab)
               }}
@@ -157,9 +167,9 @@ export default function Sources({ store }: { store: ProfileStore }) {
           {showCookieForm && tab === 'ytmusic' && (
             <CookieCaptureForm
               sourceName="YouTube Music"
-              path="config/secrets/youtube_cookies.txt"
+              path={`config/secrets/${draft.profile}/youtube_cookies.txt`}
               onSubmit={async (text) => {
-                await api.putYtmusicCookies(text)
+                await api.putProfileYtmusicCookies(draft.profile, text)
                 setShowCookieForm(false)
                 await loadPlaylists(tab)
               }}

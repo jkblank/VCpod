@@ -6,7 +6,13 @@ from pathlib import Path
 
 import httpx
 
-from common.config import resolve_config_path
+from common.config import (
+    resolve_apple_music_cookies,
+    resolve_config_path,
+    resolve_ytmusic_cookies,
+    resolve_ytmusic_oauth,
+    resolve_ytmusic_oauth_client,
+)
 from common.models import GlobalConfig, PlaylistEntry, ProfileConfig
 from common.playlist import prune_removed_playlists
 from common.state import EpisodeRecord
@@ -50,16 +56,11 @@ def resolve_roots(library_root: Path, state_root: Path, profile_name: str) -> Ro
     )
 
 
-def _load_ytmusic_oauth_client(
-    oauth_client_file: str, config_root: Path
-) -> tuple[str | None, str | None]:
-    """oauth_client_file is optional (empty string if never set up via
-    the web GUI) -- absent or unreadable just means ytmusic_oauth.json,
+def _load_ytmusic_oauth_client(path: Path) -> tuple[str | None, str | None]:
+    """path is already resolved (see resolve_ytmusic_oauth_client) and
+    may not exist -- absent or unreadable just means ytmusic_oauth.json,
     if present, works until it expires instead of auto-refreshing. See
     common.models.YtMusicSource.oauth_client_file and notes.md."""
-    if not oauth_client_file:
-        return None, None
-    path = resolve_config_path(oauth_client_file, config_root)
     if not path.is_file():
         return None, None
     try:
@@ -150,9 +151,7 @@ def run_fetch(
 
         apple_entries = [p for p in selected if p.source == "apple_music"]
         if apple_entries:
-            cookies_path = resolve_config_path(
-                global_config.sources.apple_music.cookies_file, config_root
-            )
+            cookies_path = resolve_apple_music_cookies(profile, global_config, config_root)
             try:
                 result.apple_outcomes = fetch_apple_playlists(
                     apple_entries,
@@ -169,9 +168,7 @@ def run_fetch(
 
         ytmusic_entries = [p for p in selected if p.source == "ytmusic"]
         if ytmusic_entries:
-            cookies_path = resolve_config_path(
-                global_config.sources.ytmusic.cookies_file, config_root
-            )
+            cookies_path = resolve_ytmusic_cookies(profile, global_config, config_root)
             # oauth is genuinely optional (get_playlist_tracks works fine
             # unauthenticated against public playlists — see
             # fetcher_ytmusic/api.py) — only pass a path that actually
@@ -180,12 +177,10 @@ def run_fetch(
             # YTMusicUserError instead of just skipping auth. Confirmed
             # live: this crashed a real sync when no oauth file had ever
             # been exported.
-            candidate_oauth_path = resolve_config_path(
-                global_config.sources.ytmusic.oauth_file, config_root
-            )
+            candidate_oauth_path = resolve_ytmusic_oauth(profile, global_config, config_root)
             oauth_path = candidate_oauth_path if candidate_oauth_path.is_file() else None
             oauth_client_id, oauth_client_secret = _load_ytmusic_oauth_client(
-                global_config.sources.ytmusic.oauth_client_file, config_root
+                resolve_ytmusic_oauth_client(profile, global_config, config_root)
             )
             try:
                 result.ytmusic_outcomes = fetch_ytmusic_playlists(

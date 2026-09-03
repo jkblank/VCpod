@@ -72,7 +72,12 @@ process".
   credentials" in the nav —
   per-source enable toggles + credential status, wiring the capture
   forms into a permanent home, including the YouTube Music OAuth
-  device-code sign-in flow), `Sync` (compute a real sync plan against
+  device-code sign-in flow; each of Apple Music/YouTube Music also has
+  a "For {profile}" sub-section — never auto-populated, only ever
+  entered via "Set up separate credentials" or "Import from…" another
+  profile, which points at that profile's exact file rather than
+  copying it, plus "Revert to shared login" once overridden — see
+  `common.models.ProfileSourcesConfig`), `Sync` (compute a real sync plan against
   a connected device via `/api/sync/plan`'s SSE stream, review it —
   sample track/playlist lists, storage delta, an explicit "I've
   reviewed the removals" checkbox whenever the plan proposes removing
@@ -90,13 +95,17 @@ process".
   real login before saving), `YtmusicOauthForm` (Google OAuth client
   capture, then the RFC 8628 device-code flow — shows the real
   verification URL + user code and polls until the backend confirms
-  sign-in), `ScheduleEditor` (cron-free schedule picker, backed by
-  `cronBuilder.ts`), `DirectoryPicker` (breadcrumb directory browser
-  shared by `ExternalLibrary`/`Audiobooks`), `AudiobookDiscovery` (the
-  discover-and-process card described above), `AutoSyncSetupCard`
-  (generated systemd unit/udev rule + install commands, read-only —
-  no "install for me" button, this backend never runs privileged
-  commands itself).
+  sign-in; the client/flow calls are injected as props, not hardcoded,
+  so the same component drives both the global and each per-profile
+  flow), `ImportOrRevertSource` (the "Import from…" dropdown /
+  "Revert to shared login" button shared by Apple Music's and YouTube
+  Music's per-profile sections), `ScheduleEditor` (cron-free schedule
+  picker, backed by `cronBuilder.ts`), `DirectoryPicker` (breadcrumb
+  directory browser shared by `ExternalLibrary`/`Audiobooks`),
+  `AudiobookDiscovery` (the discover-and-process card described
+  above), `AutoSyncSetupCard` (generated systemd unit/udev rule +
+  install commands, read-only — no "install for me" button, this
+  backend never runs privileged commands itself).
 - `src/useProfileStore.ts` — "which profile is currently being edited"
   lifted out of any one screen into a shared hook — `App.tsx` calls it
   once and passes the same store down to `Profiles`/`Sources`/

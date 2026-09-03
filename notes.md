@@ -4498,3 +4498,92 @@ from the plan during implementation.
   rendering/interaction itself (no browser automation tool available
   this session, per this project's usual caveat — only build/curl/SSE-
   wire-format-level verification).
+
+## 2026-09-04: Per-profile source credential overrides
+
+User report: created a new profile (Tobie) via the web GUI and it
+showed up already "connected" to Apple Music. Root cause wasn't a
+leak — Apple Music/YouTube Music/Spotify credentials have *always*
+been entirely in `global.yaml` (`SourcesConfig`), with no per-profile
+field at all, unlike Pocket Casts (already per-profile). There was
+only ever one shared copy; every profile always implicitly used it,
+nothing to leak. Confirmed with the user before building: keep the
+global default as the unchanged behavior for anyone who doesn't opt
+in, add an *optional* per-profile override, and "import from another
+profile" means pointing at the exact same file (not a byte copy).
+
+- **`common.models`**: new `ProfileAppleMusicOverride`/
+  `ProfileYtMusicOverride` (each ytmusic field — cookies_file/
+  oauth_file/oauth_client_file — independently optional, since a
+  profile might override just one)/`ProfileSpotifySource`, bundled
+  into `ProfileSourcesConfig`, added as `ProfileConfig.sources: 
+  ProfileSourcesConfig | None = None`. Absent by default — existing
+  profiles round-trip completely unchanged, same `exclude_none`
+  convention `external_library`/`audiobooks`/`music` already use.
+  Never populated automatically by any code path — only by an
+  explicit web GUI action (or a hand-edit).
+- **`common.config`**: five new resolver functions
+  (`resolve_apple_music_cookies`/`resolve_ytmusic_cookies`/
+  `resolve_ytmusic_oauth`/`resolve_ytmusic_oauth_client`/
+  `resolve_spotify_credentials`) — the one place the override-or-
+  global fallback is actually decided, so `music-stack-cli`'s fetch
+  pipeline and `web-gui-backend`'s new routes can't drift apart on
+  this logic. `music_stack_cli.orchestrate.run_fetch`'s 4 credential-
+  resolution call sites now go through these instead of reading
+  `global_config.sources...` directly — mechanical swap, verified via
+  new tests that a profile *without* `sources:` still resolves
+  exactly as before (existing tests, unmodified, still pass) and a
+  profile *with* an override actually uses it (new tests).
+- **New `web-gui-backend/routers/profile_sources.py`**: `GET
+  /api/profiles/{name}/sources/status`, profile-scoped playlist-
+  listing routes (`Sources.tsx` now calls these instead of the global
+  ones, so a profile with its own account sees its own playlists),
+  `PUT .../cookies` / `.../oauth-client` (write to a new per-profile
+  file `config/secrets/{name}/...` and set the override — the shared
+  global file is never touched), profile-scoped OAuth device-code
+  `start`/`poll` (the OAuth *client* can stay global/shared — which
+  account you sign into during the flow is independent of which
+  client app is asking — but a successful poll always writes *this*
+  profile's own token, never global's), `POST .../{source}/import`
+  (points this profile at the literal same file another profile
+  already references — resolves the source profile's *effective*
+  path, override or global, as a raw `/config/...`-container string,
+  not the already-resolved host `Path` the `resolve_*` functions
+  return, since that string is what actually needs to round-trip
+  correctly through `resolve_config_path` for every future reader),
+  `DELETE .../{source}` (clears the override for that source,
+  reverting to global; drops the whole `sources:` block once nothing
+  is overridden any more, matching every other optional profile
+  section's "absent means default" convention). Spotify deliberately
+  left out of this router — it has no capture UI in the global
+  `sources.py` either (shelved), so there's no override UI to offer
+  yet even though the schema already supports one for later.
+- **Frontend**: `YtmusicOauthForm` refactored to take its three API
+  calls (`saveClient`/`startFlow`/`pollFlow`) as injected props
+  instead of hardcoding the global `api.*` functions — same component
+  now drives both the global card and each per-profile section, no
+  duplicated device-code-polling state machine. New shared
+  `ImportOrRevertSource` component (the dropdown/button pair). Each of
+  Apple Music's and YouTube Music's cards in `Credentials.tsx` gained
+  a "For {profile}" sub-section, shown only when a profile is
+  selected: real status ("using the shared login" / "using its own,
+  updated N ago"), a capture form writing to the new per-profile
+  route, and the import/revert control. `Sources.tsx`'s playlist
+  listing and its own inline "cookies expired, re-export" fallback
+  form both switched to the profile-scoped routes too — the fallback
+  form now always creates/updates *this profile's* override rather
+  than silently editing the shared global file, matching the whole
+  feature's "never silent" principle.
+- **Verified live** against this real machine's actual profiles
+  (alice/bob/john/Tobie/nienie): confirmed the exact reported bug —
+  `GET /api/profiles/Tobie/sources/status` showed `apple_music:
+  {using: "global", exists: true}`, i.e. Tobie really was silently
+  riding on john's real cookies file, now at least *visible* and
+  *explicit* rather than assumed. Exercised the full write path
+  against a disposable throwaway profile (`_smoketest`, deleted after):
+  import from john correctly pointed it at the exact same real
+  `/config/secrets/apple_music_cookies.txt` string (not a copy),
+  status flipped to `"override"`, and DELETE correctly reverted it
+  back to `"global"` with the `sources:` block removed from the
+  written YAML entirely. Never touched any of the user's real named
+  profiles' files during verification.

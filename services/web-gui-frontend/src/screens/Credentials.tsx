@@ -1,22 +1,40 @@
 import { useEffect, useState } from 'react'
-import { api, ApiError, type GlobalConfig, type SourcesStatus } from '../api'
+import {
+  api,
+  ApiError,
+  type GlobalConfig,
+  type ProfileSourcesStatus,
+  type SourcesStatus,
+} from '../api'
 import CookieCaptureForm from '../components/CookieCaptureForm'
+import ImportOrRevertSource from '../components/ImportOrRevertSource'
 import PocketCastsLoginForm from '../components/PocketCastsLoginForm'
 import YtmusicOauthForm from '../components/YtmusicOauthForm'
 import { formatRelativeTime } from '../format'
 import type { ProfileStore } from '../useProfileStore'
 
-type OpenForm = 'apple_music' | 'ytmusic-cookies' | 'ytmusic-oauth' | 'pocketcasts' | null
+type OpenForm =
+  | 'apple_music'
+  | 'ytmusic-cookies'
+  | 'ytmusic-oauth'
+  | 'pocketcasts'
+  | 'profile-apple-music'
+  | 'profile-ytmusic-cookies'
+  | 'profile-ytmusic-oauth'
+  | null
 
 export default function Credentials({ store }: { store: ProfileStore }) {
-  const { draft } = store
+  const { draft, profiles } = store
   const [status, setStatus] = useState<SourcesStatus | null>(null)
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>(null)
+  const [profileStatus, setProfileStatus] = useState<ProfileSourcesStatus | null>(null)
   const [pcStatus, setPcStatus] = useState<{ exists: boolean; updated_at: number | null } | null>(
     null,
   )
   const [error, setError] = useState<string | null>(null)
   const [openForm, setOpenForm] = useState<OpenForm>(null)
+
+  const otherProfiles = Object.keys(profiles).filter((name) => name !== draft?.profile)
 
   const reload = async () => {
     setError(null)
@@ -33,8 +51,14 @@ export default function Credentials({ store }: { store: ProfileStore }) {
       } catch {
         setPcStatus(null)
       }
+      try {
+        setProfileStatus(await api.getProfileSourcesStatus(draft.profile))
+      } catch {
+        setProfileStatus(null)
+      }
     } else {
       setPcStatus(null)
+      setProfileStatus(null)
     }
   }
 
@@ -94,6 +118,48 @@ export default function Credentials({ store }: { store: ProfileStore }) {
             }}
           />
         )}
+
+        {draft && profileStatus && (
+          <div className="field" style={{ marginTop: '12px' }}>
+            <label>For {draft.profile}</label>
+            <p className="muted">
+              {profileStatus.apple_music.using === 'override'
+                ? `Using its own login, updated ${formatRelativeTime(profileStatus.apple_music.updated_at)}.`
+                : "Using the shared login above."}
+            </p>
+            <div className="row">
+              <button
+                className="btn secondary"
+                onClick={() => setOpenForm('profile-apple-music')}
+              >
+                Set up separate credentials
+              </button>
+            </div>
+            {openForm === 'profile-apple-music' && (
+              <CookieCaptureForm
+                sourceName="Apple Music"
+                path={`config/secrets/${draft.profile}/apple_music_cookies.txt`}
+                onSubmit={async (text) => {
+                  await api.putProfileAppleMusicCookies(draft.profile, text)
+                  setOpenForm(null)
+                  await reload()
+                }}
+              />
+            )}
+            <ImportOrRevertSource
+              using={profileStatus.apple_music.using}
+              otherProfiles={otherProfiles}
+              onImport={async (from) => {
+                await api.importProfileSource(draft.profile, 'apple_music', from)
+                await reload()
+              }}
+              onRevert={async () => {
+                await api.deleteProfileSourceOverride(draft.profile, 'apple_music')
+                await reload()
+              }}
+            />
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -145,7 +211,81 @@ export default function Credentials({ store }: { store: ProfileStore }) {
               setOpenForm(null)
               await reload()
             }}
+            saveClient={(id, secret) => api.putYtmusicOauthClient(id, secret)}
+            startFlow={() => api.startYtmusicOauth()}
+            pollFlow={(code) => api.pollYtmusicOauth(code)}
           />
+        )}
+
+        {draft && profileStatus && (
+          <div className="field" style={{ marginTop: '12px' }}>
+            <label>For {draft.profile}</label>
+            <p className="muted">
+              Cookies:{' '}
+              {profileStatus.ytmusic.cookies.using === 'override'
+                ? `its own, updated ${formatRelativeTime(profileStatus.ytmusic.cookies.updated_at)}`
+                : 'shared login above'}
+              . OAuth:{' '}
+              {profileStatus.ytmusic.oauth.using === 'override'
+                ? `its own, updated ${formatRelativeTime(profileStatus.ytmusic.oauth.updated_at)}`
+                : profileStatus.ytmusic.oauth.exists
+                  ? 'shared login above'
+                  : 'not set up'}
+              .
+            </p>
+            <div className="row">
+              <button
+                className="btn secondary"
+                onClick={() => setOpenForm('profile-ytmusic-cookies')}
+              >
+                Set up separate cookies
+              </button>
+              <button className="btn secondary" onClick={() => setOpenForm('profile-ytmusic-oauth')}>
+                Sign in as {draft.profile}
+              </button>
+            </div>
+            {openForm === 'profile-ytmusic-cookies' && (
+              <CookieCaptureForm
+                sourceName="YouTube Music"
+                path={`config/secrets/${draft.profile}/youtube_cookies.txt`}
+                onSubmit={async (text) => {
+                  await api.putProfileYtmusicCookies(draft.profile, text)
+                  setOpenForm(null)
+                  await reload()
+                }}
+              />
+            )}
+            {openForm === 'profile-ytmusic-oauth' && (
+              <YtmusicOauthForm
+                clientPath={`config/secrets/${draft.profile}/ytmusic_oauth_client.json`}
+                oauthPath={`config/secrets/${draft.profile}/ytmusic_oauth.json`}
+                clientAlreadySaved={profileStatus.ytmusic.oauth_client.exists}
+                onClientSaved={reload}
+                onTokenSaved={async () => {
+                  setOpenForm(null)
+                  await reload()
+                }}
+                saveClient={(id, secret) =>
+                  api.putProfileYtmusicOauthClient(draft.profile, id, secret)
+                }
+                startFlow={() => api.startProfileYtmusicOauth(draft.profile)}
+                pollFlow={(code) => api.pollProfileYtmusicOauth(draft.profile, code)}
+              />
+            )}
+            <ImportOrRevertSource
+              using={profileStatus.ytmusic.cookies.using}
+              otherProfiles={otherProfiles}
+              revertLabel="Revert to shared login (cookies + OAuth)"
+              onImport={async (from) => {
+                await api.importProfileSource(draft.profile, 'ytmusic', from)
+                await reload()
+              }}
+              onRevert={async () => {
+                await api.deleteProfileSourceOverride(draft.profile, 'ytmusic')
+                await reload()
+              }}
+            />
+          </div>
         )}
       </div>
 

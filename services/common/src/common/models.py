@@ -67,6 +67,39 @@ class SourcesConfig(StrictModel):
     ytmusic: YtMusicSource
 
 
+class ProfileAppleMusicOverride(StrictModel):
+    cookies_file: str
+
+
+class ProfileYtMusicOverride(StrictModel):
+    # Each independently optional -- a profile might override just
+    # cookies_file (its own YouTube account for downloads) while still
+    # relying on the household's shared oauth_file, or vice versa.
+    cookies_file: str | None = None
+    oauth_file: str | None = None
+    oauth_client_file: str | None = None
+
+
+class ProfileSpotifySource(StrictModel):
+    credentials_file: str
+
+
+class ProfileSourcesConfig(StrictModel):
+    # Per-profile override of global.yaml's shared sources -- every
+    # field here is optional; an unset source (or unset field within
+    # ytmusic) means "use the household's shared global.yaml
+    # credential," today's only behavior before this existed. Never
+    # assumed/populated automatically -- a profile only gets an entry
+    # here via an explicit "set up separate credentials" or "import
+    # from another profile" action in the web GUI (or a hand-edited
+    # profile YAML). See common.config's resolve_apple_music_cookies/
+    # resolve_ytmusic_*/resolve_spotify_credentials, the one place this
+    # override-or-global fallback is actually resolved.
+    apple_music: ProfileAppleMusicOverride | None = None
+    ytmusic: ProfileYtMusicOverride | None = None
+    spotify: ProfileSpotifySource | None = None
+
+
 class PocketCastsGlobalConfig(StrictModel):
     poll_interval_minutes: int = Field(gt=0)
 
@@ -410,3 +443,4 @@ class ProfileConfig(StrictModel):
     music: MusicLibraryConfig | None = None
     fetch: FetchSettings = Field(default_factory=FetchSettings)
     backups: ProfileBackupRetention | None = None
+    sources: ProfileSourcesConfig | None = None

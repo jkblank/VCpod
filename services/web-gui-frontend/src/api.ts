@@ -132,6 +132,21 @@ export type SourcesStatus = {
   spotify: SourceStatus
 }
 
+// Per-profile override layer on top of the global defaults above --
+// "using" tells you whether this profile has its own credentials or is
+// still on the shared household login (never assumed automatically,
+// only via an explicit action). See routers/profile_sources.py.
+export type ProfileCredentialStatus = CredentialFileStatus & { using: 'global' | 'override' }
+
+export type ProfileSourcesStatus = {
+  apple_music: ProfileCredentialStatus
+  ytmusic: {
+    cookies: ProfileCredentialStatus
+    oauth: ProfileCredentialStatus
+    oauth_client: ProfileCredentialStatus
+  }
+}
+
 export type DirEntry = { name: string; is_dir: boolean }
 export type BrowseResult = { subpath: string; entries: DirEntry[] }
 
@@ -300,6 +315,55 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ device_code: deviceCode }),
     }),
+
+  // Per-profile override layer -- see ProfileSourcesStatus's own comment.
+  getProfileSourcesStatus: (profileName: string) =>
+    request<ProfileSourcesStatus>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/status`,
+    ),
+  listProfileAppleMusicPlaylists: (profileName: string) =>
+    request<PlaylistSummary[]>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/apple-music/playlists`,
+    ),
+  listProfileYtmusicPlaylists: (profileName: string) =>
+    request<PlaylistSummary[]>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/playlists`,
+    ),
+  putProfileAppleMusicCookies: (profileName: string, cookiesTxt: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/apple-music/cookies`,
+      { method: 'PUT', body: JSON.stringify({ cookies_txt: cookiesTxt }) },
+    ),
+  putProfileYtmusicCookies: (profileName: string, cookiesTxt: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/cookies`,
+      { method: 'PUT', body: JSON.stringify({ cookies_txt: cookiesTxt }) },
+    ),
+  putProfileYtmusicOauthClient: (profileName: string, clientId: string, clientSecret: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/oauth-client`,
+      { method: 'PUT', body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }) },
+    ),
+  startProfileYtmusicOauth: (profileName: string) =>
+    request<OAuthDeviceCode>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/oauth/start`,
+      { method: 'POST' },
+    ),
+  pollProfileYtmusicOauth: (profileName: string, deviceCode: string) =>
+    request<{ status: 'ok' | 'pending' }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/oauth/poll`,
+      { method: 'POST', body: JSON.stringify({ device_code: deviceCode }) },
+    ),
+  importProfileSource: (profileName: string, source: 'apple_music' | 'ytmusic', fromProfile: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/${source}/import`,
+      { method: 'POST', body: JSON.stringify({ from_profile: fromProfile }) },
+    ),
+  deleteProfileSourceOverride: (profileName: string, source: 'apple_music' | 'ytmusic') =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/${source}`,
+      { method: 'DELETE' },
+    ),
 
   getPocketcastsStatus: (profileName: string) =>
     request<CredentialFileStatus>(

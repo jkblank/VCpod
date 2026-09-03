@@ -8,9 +8,12 @@ from common.models import (
     PlaylistEntry,
     PocketCastsGlobalConfig,
     PodcastsGlobalConfig,
+    ProfileAppleMusicOverride,
     ProfileConfig,
     ProfilePocketCastsConfig,
     ProfilePodcastsConfig,
+    ProfileSourcesConfig,
+    ProfileYtMusicOverride,
     ShowOverride,
     SourcesConfig,
     SpotifySource,
@@ -249,6 +252,118 @@ def test_run_fetch_ytmusic_passes_oauth_path_when_file_exists(monkeypatch, tmp_p
     )
 
     assert captured["oauth_path"] == oauth_path_on_disk
+
+
+# --- Per-profile source credential overrides --------------------------------
+
+
+def test_run_fetch_apple_music_uses_global_cookies_when_no_profile_override(monkeypatch, tmp_path):
+    config_root = tmp_path / "config"
+    (config_root / "secrets").mkdir(parents=True)
+    global_config = _global_config(tmp_path, oauth_file="/config/secrets/ytmusic_oauth.json")
+    profile = _profile_config().model_copy(
+        update={"playlists": [_entry("Chill", "apple_music")]}
+    )
+    roots = resolve_roots(tmp_path / "library", tmp_path / "state", "john")
+
+    captured = {}
+
+    def fake_fetch_apple_playlists(entries, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(orchestrate_module, "fetch_apple_playlists", fake_fetch_apple_playlists)
+
+    run_fetch(
+        profile=profile,
+        global_config=global_config,
+        config_root=config_root,
+        roots=roots,
+        sources={"apple_music"},
+        playlist_names=None,
+        show_selectors=None,
+    )
+
+    assert captured["cookies_path"] == config_root / "secrets" / "apple.txt"
+
+
+def test_run_fetch_apple_music_uses_profile_override_cookies_when_set(monkeypatch, tmp_path):
+    config_root = tmp_path / "config"
+    (config_root / "secrets").mkdir(parents=True)
+    global_config = _global_config(tmp_path, oauth_file="/config/secrets/ytmusic_oauth.json")
+    profile = _profile_config().model_copy(
+        update={
+            "playlists": [_entry("Chill", "apple_music")],
+            "sources": ProfileSourcesConfig(
+                apple_music=ProfileAppleMusicOverride(
+                    cookies_file="/config/secrets/john/apple_music_cookies.txt"
+                )
+            ),
+        }
+    )
+    roots = resolve_roots(tmp_path / "library", tmp_path / "state", "john")
+
+    captured = {}
+
+    def fake_fetch_apple_playlists(entries, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(orchestrate_module, "fetch_apple_playlists", fake_fetch_apple_playlists)
+
+    run_fetch(
+        profile=profile,
+        global_config=global_config,
+        config_root=config_root,
+        roots=roots,
+        sources={"apple_music"},
+        playlist_names=None,
+        show_selectors=None,
+    )
+
+    assert captured["cookies_path"] == config_root / "secrets" / "john" / "apple_music_cookies.txt"
+
+
+def test_run_fetch_ytmusic_uses_profile_override_oauth_client_when_set(monkeypatch, tmp_path):
+    config_root = tmp_path / "config"
+    (config_root / "secrets" / "john").mkdir(parents=True)
+    client_path = config_root / "secrets" / "john" / "ytmusic_oauth_client.json"
+    client_path.write_text('{"client_id": "override-id", "client_secret": "override-secret"}')
+
+    global_config = _global_config(tmp_path, oauth_file="/config/secrets/ytmusic_oauth.json")
+    profile = _profile_config().model_copy(
+        update={
+            "sources": ProfileSourcesConfig(
+                ytmusic=ProfileYtMusicOverride(
+                    oauth_client_file="/config/secrets/john/ytmusic_oauth_client.json"
+                )
+            )
+        }
+    )
+    roots = resolve_roots(tmp_path / "library", tmp_path / "state", "john")
+
+    captured = {}
+
+    def fake_fetch_ytmusic_playlists(entries, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        orchestrate_module, "fetch_ytmusic_playlists", fake_fetch_ytmusic_playlists
+    )
+
+    run_fetch(
+        profile=profile,
+        global_config=global_config,
+        config_root=config_root,
+        roots=roots,
+        sources={"ytmusic"},
+        playlist_names=None,
+        show_selectors=None,
+    )
+
+    assert captured["oauth_client_id"] == "override-id"
+    assert captured["oauth_client_secret"] == "override-secret"
 
 
 def test_run_fetch_podcasts_uses_show_names_not_raw_shows_entries(monkeypatch, tmp_path):

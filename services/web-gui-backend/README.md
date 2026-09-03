@@ -91,6 +91,12 @@ separate React SPA, not server-rendered.
 | PUT | `/api/sources/ytmusic/oauth-client` | Body `{"client_id", "client_secret"}` — the user's own Google OAuth client (ytmusicapi has no shared/default one), written atomically. Prerequisite for the device-code flow below, and also read back on every playlist-listing call so a captured token can auto-refresh instead of breaking on expiry |
 | POST | `/api/sources/ytmusic/oauth/start` | Starts the RFC 8628 device-code flow — returns `{device_code, user_code, verification_url, expires_in, interval}`. 422 if no OAuth client saved yet |
 | POST | `/api/sources/ytmusic/oauth/poll` | Body `{"device_code"}` — `{"status": "pending"}` while the user hasn't finished the browser step yet (poll again after `interval` seconds), `{"status": "ok"}` and `oauth_file` written atomically on success, 502 on a real failure (expired code, denied, bad client) |
+| GET | `/api/profiles/{name}/sources/status` | Per-profile override layer on top of the rows above (`routers/profile_sources.py`) — for `apple_music` and each of ytmusic's `cookies`/`oauth`/`oauth_client`: `{"using": "global"\|"override", "exists", "updated_at"}`. `exists`/`updated_at` describe whichever file is actually in effect. Never populated automatically — see `common.models.ProfileSourcesConfig`'s docstring |
+| GET | `/api/profiles/{name}/sources/apple-music/playlists` (and `ytmusic/playlists`) | Same as the global routes above, but resolved override-or-global for this profile first — a profile with its own account sees its own playlists |
+| PUT | `/api/profiles/{name}/sources/apple-music/cookies` (and `ytmusic/cookies`, `ytmusic/oauth-client`) | Same validation as the global routes, but writes to a new per-profile file (`config/secrets/{name}/...`) and sets that profile's override field — the shared global file is never touched |
+| POST | `/api/profiles/{name}/sources/ytmusic/oauth/start` \| `/poll` | Per-profile device-code flow. The OAuth *client* still falls back to the shared global one if this profile has none of its own (which account you sign into is independent of which client app is asking) — but a successful poll always writes this profile's *own* `oauth_file`, never global's |
+| POST | `/api/profiles/{name}/sources/{apple_music\|ytmusic}/import` | Body `{"from_profile"}` — points this profile's override at the *exact same file* the named profile currently uses (its own override if it has one, else the shared global path) — a pointer, not a byte copy; editing/re-exporting later affects both |
+| DELETE | `/api/profiles/{name}/sources/{apple_music\|ytmusic}` | Clears the override, reverting to the shared global login. Doesn't delete the underlying file |
 | GET | `/api/profiles/{name}/pocketcasts-status` | `{exists, updated_at}` for that profile's saved Pocket Casts credentials |
 | GET | `/api/profiles/{name}/pocketcasts/subscriptions` | That profile's real Pocket Casts subscriptions (requires credentials already saved) |
 | PUT | `/api/profiles/{name}/pocketcasts-credentials` | Body `{"email", "password"}` — validated via a real Pocket Casts login *before* writing anything |
@@ -152,11 +158,18 @@ so a working file is never left corrupted mid-write, same pattern
   resolve through `common.config.resolve_config_path` — the same
   resolver `music-stack-cli`'s own fetch pipeline uses.
 - **One router module per resource** (`routers/profiles.py`,
-  `global_config.py`, `device.py`, `sources.py`, `podcasts.py`) —
-  `app.py` is just the `create_app()` factory that wires
-  `config_root`/`sync_orchestrator_dir` into `app.state` and mounts
-  each router. Shared error-response helpers live in `errors.py`, the
-  shared atomic-write helper in `atomic.py`.
+  `global_config.py`, `device.py`, `sources.py`, `profile_sources.py`,
+  `podcasts.py`) — `app.py` is just the `create_app()` factory that
+  wires `config_root`/`sync_orchestrator_dir` into `app.state` and
+  mounts each router. Shared error-response helpers live in
+  `errors.py`, the shared atomic-write helper in `atomic.py`.
+  `sources.py` and `profile_sources.py` are deliberately separate
+  files even though they both concern the same three sources — the
+  former edits/lists the shared global default, the latter is the
+  per-profile override layer on top, and both call the same
+  `common.config.resolve_apple_music_cookies`/`resolve_ytmusic_*`
+  functions so the override-or-global fallback logic can't drift
+  between the GUI and `music-stack-cli`'s own fetch pipeline.
 
 ## Security posture (deliberate, see `notes.md`'s 2026-09-02 entries)
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, ApiError, type OAuthDeviceCode } from '../api'
+import { ApiError, type OAuthDeviceCode } from '../api'
 import CredentialWarning from './CredentialWarning'
 
 type Props = {
@@ -8,6 +8,12 @@ type Props = {
   clientAlreadySaved: boolean
   onClientSaved: () => Promise<void>
   onTokenSaved: () => Promise<void>
+  // Injected rather than calling api.* directly -- this form backs both
+  // the global (household-shared) OAuth client/flow and, per-profile,
+  // each profile's own -- same UI, different endpoint underneath.
+  saveClient: (clientId: string, clientSecret: string) => Promise<unknown>
+  startFlow: () => Promise<OAuthDeviceCode>
+  pollFlow: (deviceCode: string) => Promise<{ status: 'ok' | 'pending' }>
 }
 
 // Two steps, since ytmusicapi has no default/shared OAuth client of its
@@ -20,6 +26,9 @@ export default function YtmusicOauthForm({
   clientAlreadySaved,
   onClientSaved,
   onTokenSaved,
+  saveClient: saveClientApi,
+  startFlow: startFlowApi,
+  pollFlow: pollFlowApi,
 }: Props) {
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
@@ -44,7 +53,7 @@ export default function YtmusicOauthForm({
     setSavingClient(true)
     setClientError(null)
     try {
-      await api.putYtmusicOauthClient(clientId.trim(), clientSecret.trim())
+      await saveClientApi(clientId.trim(), clientSecret.trim())
       setClientSecret('')
       await onClientSaved()
     } catch (e) {
@@ -70,11 +79,11 @@ export default function YtmusicOauthForm({
     setFlowError(null)
     setDone(false)
     try {
-      const started = await api.startYtmusicOauth()
+      const started = await startFlowApi()
       setCode(started)
       pollTimer.current = setInterval(async () => {
         try {
-          const result = await api.pollYtmusicOauth(started.device_code)
+          const result = await pollFlowApi(started.device_code)
           if (result.status === 'ok') {
             stopPolling()
             setDone(true)

@@ -154,6 +154,74 @@ def resolve_config_path(container_path: str, config_root: Path) -> Path:
         return Path(container_path)
 
 
+# --- Per-profile source credential overrides --------------------------------
+#
+# apple_music/ytmusic/spotify credentials are global.yaml's shared,
+# household-wide default (SourcesConfig) -- a profile only diverges from
+# that when it explicitly opts in via ProfileConfig.sources (see
+# models.py's ProfileSourcesConfig docstring: never populated
+# automatically, only via an explicit "set up separate credentials" or
+# "import from another profile" action). These five functions are the
+# one place that override-or-global fallback is actually resolved --
+# both music_stack_cli.orchestrate's fetch pipeline and
+# web_gui_backend's profile_sources router call them, so the two can't
+# drift apart.
+
+
+def resolve_apple_music_cookies(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.apple_music if profile.sources else None
+    container_path = override.cookies_file if override else global_config.sources.apple_music.cookies_file
+    return resolve_config_path(container_path, config_root)
+
+
+def resolve_ytmusic_cookies(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.ytmusic if profile.sources else None
+    container_path = (
+        override.cookies_file
+        if override and override.cookies_file
+        else global_config.sources.ytmusic.cookies_file
+    )
+    return resolve_config_path(container_path, config_root)
+
+
+def resolve_ytmusic_oauth(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.ytmusic if profile.sources else None
+    container_path = (
+        override.oauth_file
+        if override and override.oauth_file
+        else global_config.sources.ytmusic.oauth_file
+    )
+    return resolve_config_path(container_path, config_root)
+
+
+def resolve_ytmusic_oauth_client(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.ytmusic if profile.sources else None
+    container_path = (
+        override.oauth_client_file
+        if override and override.oauth_client_file
+        else global_config.sources.ytmusic.oauth_client_file
+    )
+    return resolve_config_path(container_path, config_root)
+
+
+def resolve_spotify_credentials(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.spotify if profile.sources else None
+    container_path = (
+        override.credentials_file if override else global_config.sources.spotify.credentials_file
+    )
+    return resolve_config_path(container_path, config_root)
+
+
 def resolve_profile_path(value: Path | str, config_root: Path | str) -> Path:
     """Resolve a CLI-supplied `--profile` value to a concrete YAML path.
 
