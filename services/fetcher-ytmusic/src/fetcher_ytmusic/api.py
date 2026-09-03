@@ -3,7 +3,19 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ytmusicapi import YTMusic
+from ytmusicapi import OAuthCredentials, YTMusic
+
+
+def _oauth_credentials(client_id: str | None, client_secret: str | None) -> OAuthCredentials | None:
+    # Without this, YTMusic(auth=oauth_path) can list/read fine on a
+    # still-fresh token but raises YTMusicUserError the moment that
+    # token needs refreshing -- ytmusicapi has no default/shared OAuth
+    # client of its own, so the *same* client_id/secret the token was
+    # minted with must be supplied on every use, not just at capture
+    # time. See notes.md's ytmusic-oauth entry.
+    if not client_id or not client_secret:
+        return None
+    return OAuthCredentials(client_id=client_id, client_secret=client_secret)
 
 # YouTube's own thumbnail API only ever returns small (60x60/120x120)
 # images from ytmusicapi — but the URLs are a Google image-proxy scheme
@@ -46,12 +58,21 @@ class TrackMeta:
     thumbnail_url: str | None = None
 
 
-def list_playlists(oauth_path: str, limit: int | None = None) -> list[PlaylistSummary]:
+def list_playlists(
+    oauth_path: str,
+    limit: int | None = None,
+    *,
+    oauth_client_id: str | None = None,
+    oauth_client_secret: str | None = None,
+) -> list[PlaylistSummary]:
     # get_library_playlists needs an authenticated session — unlike
     # get_playlist_tracks below, there's no public/unauthenticated
     # equivalent for "the account's own library". Confirmed against the
     # real ytmusicapi 1.12.1 source (LibraryMixin.get_library_playlists).
-    yt = YTMusic(auth=oauth_path)
+    yt = YTMusic(
+        auth=oauth_path,
+        oauth_credentials=_oauth_credentials(oauth_client_id, oauth_client_secret),
+    )
     playlists = yt.get_library_playlists(limit=limit)
     return [
         PlaylistSummary(
@@ -64,7 +85,13 @@ def list_playlists(oauth_path: str, limit: int | None = None) -> list[PlaylistSu
     ]
 
 
-def get_playlist_summary(playlist_id: str, oauth_path: str | None = None) -> PlaylistSummary:
+def get_playlist_summary(
+    playlist_id: str,
+    oauth_path: str | None = None,
+    *,
+    oauth_client_id: str | None = None,
+    oauth_client_secret: str | None = None,
+) -> PlaylistSummary:
     """Metadata for one playlist by id -- unlike list_playlists (which
     can only ever see the authenticated account's own library),
     get_playlist() works fully unauthenticated for a public playlist
@@ -77,7 +104,10 @@ def get_playlist_summary(playlist_id: str, oauth_path: str | None = None) -> Pla
     limit=1 (not the default 100, and not 0) -- only trackCount is
     needed, not the actual track list, but 0 wasn't confirmed safe
     against ytmusicapi's own handling and 1 costs nothing extra."""
-    yt = YTMusic(auth=oauth_path)
+    yt = YTMusic(
+        auth=oauth_path,
+        oauth_credentials=_oauth_credentials(oauth_client_id, oauth_client_secret),
+    )
     playlist = yt.get_playlist(playlist_id, limit=1)
     return PlaylistSummary(
         source_id=playlist.get("id", playlist_id),
@@ -91,12 +121,21 @@ def _artist_names(track: dict) -> str:
     return ", ".join(a["name"] for a in track.get("artists") or [] if a.get("name"))
 
 
-def get_playlist_tracks(playlist_id: str, oauth_path: str | None = None) -> list[TrackMeta]:
+def get_playlist_tracks(
+    playlist_id: str,
+    oauth_path: str | None = None,
+    *,
+    oauth_client_id: str | None = None,
+    oauth_client_secret: str | None = None,
+) -> list[TrackMeta]:
     # oauth_path is optional here: confirmed live against a real public
     # playlist that get_playlist() works completely unauthenticated —
     # only the account's own library listing (list_playlists above)
     # requires a session. See notes.md.
-    yt = YTMusic(auth=oauth_path)
+    yt = YTMusic(
+        auth=oauth_path,
+        oauth_credentials=_oauth_credentials(oauth_client_id, oauth_client_secret),
+    )
     playlist = yt.get_playlist(playlist_id, limit=None)
     tracks: list[TrackMeta] = []
     for track in playlist.get("tracks", []):

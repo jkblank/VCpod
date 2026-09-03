@@ -49,6 +49,16 @@ class YtMusicSource(StrictModel):
     # CDN download, which YouTube's bot-check gates independently of
     # ytmusicapi's own session. See notes.md.
     cookies_file: str
+    # JSON {"client_id", "client_secret"} for the Google OAuth client
+    # oauth_file's token was minted with. ytmusicapi has no default
+    # client of its own -- every user creates their own via Google
+    # Cloud Console -- and the *same* client_id/secret must be supplied
+    # again on every use for token refresh to work, not just at capture
+    # time (a bare oauth_file with no matching client raises
+    # YTMusicUserError the moment the token expires). Optional: absent
+    # (empty string) means oauth_file, if present, will work until it
+    # expires and then need re-capturing instead of auto-refreshing.
+    oauth_client_file: str = ""
 
 
 class SourcesConfig(StrictModel):

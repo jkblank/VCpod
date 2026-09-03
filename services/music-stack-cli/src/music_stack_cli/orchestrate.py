@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,6 +48,25 @@ def resolve_roots(library_root: Path, state_root: Path, profile_name: str) -> Ro
         podcasts_library_root=library_root / "podcasts",
         state_db_path=state_root / f"{profile_name}.sqlite",
     )
+
+
+def _load_ytmusic_oauth_client(
+    oauth_client_file: str, config_root: Path
+) -> tuple[str | None, str | None]:
+    """oauth_client_file is optional (empty string if never set up via
+    the web GUI) -- absent or unreadable just means ytmusic_oauth.json,
+    if present, works until it expires instead of auto-refreshing. See
+    common.models.YtMusicSource.oauth_client_file and notes.md."""
+    if not oauth_client_file:
+        return None, None
+    path = resolve_config_path(oauth_client_file, config_root)
+    if not path.is_file():
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data["client_id"], data["client_secret"]
+    except (json.JSONDecodeError, KeyError, OSError):
+        return None, None
 
 
 def select_playlists(
@@ -164,6 +184,9 @@ def run_fetch(
                 global_config.sources.ytmusic.oauth_file, config_root
             )
             oauth_path = candidate_oauth_path if candidate_oauth_path.is_file() else None
+            oauth_client_id, oauth_client_secret = _load_ytmusic_oauth_client(
+                global_config.sources.ytmusic.oauth_client_file, config_root
+            )
             try:
                 result.ytmusic_outcomes = fetch_ytmusic_playlists(
                     ytmusic_entries,
@@ -173,6 +196,8 @@ def run_fetch(
                     playlists_root=roots.playlists_root,
                     state_db_path=roots.state_db_path,
                     oauth_path=oauth_path,
+                    oauth_client_id=oauth_client_id,
+                    oauth_client_secret=oauth_client_secret,
                     lock_timeout=lock_timeout,
                 )
             except (YtDownloadError, OSError, ValueError) as e:

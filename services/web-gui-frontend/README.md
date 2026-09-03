@@ -54,7 +54,8 @@ deploy would actually run; `npm run dev` never type-checks on its own.
   `ExternalLibrary`/`Audiobooks` (browse a real directory tree and tick
   what to sync), `Credentials` ("Sources & credentials" in the nav —
   per-source enable toggles + credential status, wiring the capture
-  forms into a permanent home). Sync and Activity are still just the
+  forms into a permanent home, including the YouTube Music OAuth
+  device-code sign-in flow). Sync and Activity are still just the
   mockup's UX/copy spec (`docs/VCpod Console.html` at the repo root),
   not built here yet.
 - `src/components/` — `CredentialWarning` (the big plaintext-storage
@@ -62,9 +63,12 @@ deploy would actually run; `npm run dev` never type-checks on its own.
   Music/YouTube — paste or upload an already-exported `cookies.txt`;
   real cross-origin cookie *capture* isn't possible from a browser at
   all, see `notes.md`), `PocketCastsLoginForm` (validated against a
-  real login before saving), `ScheduleEditor` (cron-free schedule
-  picker, backed by `cronBuilder.ts`), `DirectoryPicker` (breadcrumb
-  directory browser shared by `ExternalLibrary`/`Audiobooks`).
+  real login before saving), `YtmusicOauthForm` (Google OAuth client
+  capture, then the RFC 8628 device-code flow — shows the real
+  verification URL + user code and polls until the backend confirms
+  sign-in), `ScheduleEditor` (cron-free schedule picker, backed by
+  `cronBuilder.ts`), `DirectoryPicker` (breadcrumb directory browser
+  shared by `ExternalLibrary`/`Audiobooks`).
 - `src/useProfileStore.ts` — "which profile is currently being edited"
   lifted out of any one screen into a shared hook — `App.tsx` calls it
   once and passes the same store down to `Profiles`/`Sources`/

@@ -13,6 +13,7 @@ build. See notes.md's 2026-09-02 entry."""
 from __future__ import annotations
 
 import dataclasses
+import json
 import tempfile
 from http.cookiejar import LoadError, MozillaCookieJar
 from pathlib import Path
@@ -26,6 +27,12 @@ from fetcher_apple.api import list_playlists as list_apple_music_playlists
 from fetcher_ytmusic.api import (
     get_playlist_summary as get_ytmusic_playlist_summary,
     list_playlists as list_ytmusic_playlists,
+)
+from fetcher_ytmusic.oauth import (
+    OAuthFlowError,
+    OAuthPending,
+    poll_device_flow,
+    start_device_flow,
 )
 
 from web_gui_backend.atomic import write_text_atomic
@@ -109,8 +116,18 @@ def ytmusic_playlists(request: Request) -> list[dict]:
     oauth_path = resolve_config_path(
         config.sources.ytmusic.oauth_file, request.app.state.config_root
     )
+    # oauth_client is optional -- when it hasn't been saved yet, this
+    # falls back to the old behavior (token works until it expires,
+    # then needs re-capturing) rather than blocking listing on it.
+    client_id = client_secret = None
     try:
-        playlists = list_ytmusic_playlists(str(oauth_path))
+        client_id, client_secret = _load_ytmusic_oauth_client(request)
+    except HTTPException:
+        pass
+    try:
+        playlists = list_ytmusic_playlists(
+            str(oauth_path), oauth_client_id=client_id, oauth_client_secret=client_secret
+        )
     except Exception as e:
         raise HTTPException(
             status_code=502, detail=f"could not list YouTube Music playlists: {e}"
@@ -188,6 +205,88 @@ def put_ytmusic_cookies(body: dict, request: Request) -> dict:
     return {"status": "ok"}
 
 
+def _ytmusic_oauth_client_path(request: Request) -> Path:
+    config = _global_config(request)
+    client_file = config.sources.ytmusic.oauth_client_file
+    if not client_file:
+        raise HTTPException(
+            status_code=422,
+            detail="no oauth_client_file configured for ytmusic in global.yaml",
+        )
+    return resolve_config_path(client_file, request.app.state.config_root)
+
+
+def _load_ytmusic_oauth_client(request: Request) -> tuple[str, str]:
+    path = _ytmusic_oauth_client_path(request)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=422,
+            detail="no YouTube Music OAuth client saved yet -- set one up first",
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data["client_id"], data["client_secret"]
+    except (json.JSONDecodeError, KeyError) as e:
+        raise HTTPException(
+            status_code=422, detail=f"saved OAuth client file is unreadable: {e}"
+        ) from e
+
+
+@router.put("/api/sources/ytmusic/oauth-client")
+def put_ytmusic_oauth_client(body: dict, request: Request) -> dict:
+    """Saves the Google OAuth client (client_id/client_secret) the user
+    creates themselves via Google Cloud Console -- ytmusicapi has no
+    default/shared client of its own. This is a prerequisite for the
+    device-code flow below, and is also read back on every ytmusic
+    playlist listing call so an already-captured token can auto-refresh
+    (see fetcher_ytmusic.api._oauth_credentials)."""
+    client_id = (body.get("client_id") or "").strip()
+    client_secret = (body.get("client_secret") or "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=422, detail="client_id and client_secret are both required")
+    config = _global_config(request)
+    client_file = config.sources.ytmusic.oauth_client_file
+    if not client_file:
+        raise HTTPException(
+            status_code=422,
+            detail="no oauth_client_file configured for ytmusic in global.yaml",
+        )
+    target = resolve_config_path(client_file, request.app.state.config_root)
+    write_text_atomic(json.dumps({"client_id": client_id, "client_secret": client_secret}), target)
+    return {"status": "ok"}
+
+
+@router.post("/api/sources/ytmusic/oauth/start")
+def start_ytmusic_oauth(request: Request) -> dict:
+    client_id, client_secret = _load_ytmusic_oauth_client(request)
+    try:
+        code = start_device_flow(client_id, client_secret)
+    except OAuthFlowError as e:
+        raise HTTPException(status_code=502, detail=f"could not start OAuth flow: {e}") from e
+    return dataclasses.asdict(code)
+
+
+@router.post("/api/sources/ytmusic/oauth/poll")
+def poll_ytmusic_oauth(body: dict, request: Request) -> dict:
+    device_code = body.get("device_code", "")
+    if not device_code:
+        raise HTTPException(status_code=422, detail="device_code is required")
+    client_id, client_secret = _load_ytmusic_oauth_client(request)
+    try:
+        token = poll_device_flow(client_id, client_secret, device_code)
+    except OAuthPending:
+        return {"status": "pending"}
+    except OAuthFlowError as e:
+        raise HTTPException(status_code=502, detail=f"OAuth flow failed: {e}") from e
+
+    config = _global_config(request)
+    target = resolve_config_path(
+        config.sources.ytmusic.oauth_file, request.app.state.config_root
+    )
+    write_text_atomic(json.dumps(token), target)
+    return {"status": "ok"}
+
+
 @router.get("/api/sources/status")
 def sources_status(request: Request) -> dict:
     config = _global_config(request)
@@ -214,6 +313,11 @@ def sources_status(request: Request) -> dict:
             "enabled": config.sources.ytmusic.enabled,
             "cookies": _file_status(config.sources.ytmusic.cookies_file),
             "oauth": _file_status(config.sources.ytmusic.oauth_file),
+            # Whether a Google OAuth client (client_id/secret) has been
+            # saved -- a prerequisite for the device-code flow, and also
+            # what lets an already-captured oauth token auto-refresh
+            # instead of silently breaking once it expires.
+            "oauth_client": _file_status(config.sources.ytmusic.oauth_client_file),
         },
         "spotify": {
             "enabled": config.sources.spotify.enabled,

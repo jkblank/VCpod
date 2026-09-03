@@ -69,7 +69,12 @@ export type GlobalConfig = {
   sources: {
     apple_music: { enabled: boolean; cookies_file: string }
     spotify: { enabled: boolean; credentials_file: string }
-    ytmusic: { enabled: boolean; oauth_file: string; cookies_file: string }
+    ytmusic: {
+      enabled: boolean
+      oauth_file: string
+      cookies_file: string
+      oauth_client_file: string
+    }
   }
   [key: string]: unknown
 }
@@ -109,6 +114,15 @@ export type YtmusicStatus = {
   enabled: boolean
   cookies: CredentialFileStatus
   oauth: CredentialFileStatus
+  oauth_client: CredentialFileStatus
+}
+
+export type OAuthDeviceCode = {
+  device_code: string
+  user_code: string
+  verification_url: string
+  expires_in: number
+  interval: number
 }
 
 export type SourcesStatus = {
@@ -179,6 +193,19 @@ export const api = {
       body: JSON.stringify({ cookies_txt: cookiesTxt }),
     }),
   getSourcesStatus: () => request<SourcesStatus>('/api/sources/status'),
+
+  putYtmusicOauthClient: (clientId: string, clientSecret: string) =>
+    request<{ status: string }>('/api/sources/ytmusic/oauth-client', {
+      method: 'PUT',
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    }),
+  startYtmusicOauth: () =>
+    request<OAuthDeviceCode>('/api/sources/ytmusic/oauth/start', { method: 'POST' }),
+  pollYtmusicOauth: (deviceCode: string) =>
+    request<{ status: 'ok' | 'pending' }>('/api/sources/ytmusic/oauth/poll', {
+      method: 'POST',
+      body: JSON.stringify({ device_code: deviceCode }),
+    }),
 
   getPocketcastsStatus: (profileName: string) =>
     request<CredentialFileStatus>(

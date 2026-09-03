@@ -4177,3 +4177,74 @@ Capturing the direction now rather than losing it:
   live: real cookies exist, real oauth doesn't, both now visible
   correctly (previously the missing oauth would have looked like
   cookies were also missing).
+
+## 2026-09-03: Web GUI M13, part 2 — ytmusic OAuth device-code flow, and fixing the token-refresh gap
+
+Built the `ytmusic_oauth.json` capture flow the M13 plan called for, and
+along the way fixed a real, previously-just-documented gap: a captured
+oauth token had no way to auto-refresh once it expired.
+
+- **The gap**: `YTMusic(auth=oauth_path)` works fine on a fresh token,
+  but ytmusicapi raises `YTMusicUserError` the moment that token needs
+  refreshing *unless* the exact same `oauth_credentials=OAuthCredentials
+  (client_id, client_secret)` used to mint it is passed on every
+  construction — and ytmusicapi has no default/shared OAuth client of
+  its own (every user creates their own via Google Cloud Console).
+  Neither `fetcher_ytmusic.api` nor `web-gui-backend` had anywhere to
+  store `client_id`/`client_secret`, so a captured token silently
+  degraded from "works" to "broken, re-capture from scratch" the first
+  time it expired.
+- **Fix**: added `YtMusicSource.oauth_client_file` to
+  `common.models`/`config/global.yaml` (JSON `{client_id,
+  client_secret}`, optional — empty string means old behavior:
+  works-until-expiry, no auto-refresh). `fetcher_ytmusic.api`'s
+  `list_playlists`/`get_playlist_summary`/`get_playlist_tracks` now take
+  optional `oauth_client_id`/`oauth_client_secret` kwargs and pass a real
+  `OAuthCredentials` through to `YTMusic()` when both are present.
+  `music_stack_cli.orchestrate` now resolves and passes them too (new
+  `_load_ytmusic_oauth_client` helper) — the actual fetch pipeline
+  benefits from this, not just the GUI's own playlist-listing calls.
+  `fetcher-ytmusic`'s standalone CLI got matching `--oauth-client-id`/
+  `--oauth-client-secret` flags for manual debugging.
+- **New `fetcher_ytmusic.oauth` module**: `start_device_flow`/
+  `poll_device_flow`, splitting ytmusicapi's own blocking
+  `RefreshingToken.prompt_for_token()` (which calls Python's `input()`)
+  into two non-blocking calls a web backend can drive via polling.
+  `poll_device_flow` distinguishes RFC 8628's "still waiting"
+  (`authorization_pending`/`slow_down`, raised as `OAuthPending` — not
+  an error, caller should just poll again) from real failures
+  (`OAuthFlowError` — expired code, denied consent, bad client
+  credentials). The persisted token shape matches ytmusicapi's own
+  `RefreshingToken.as_dict()` exactly: `{scope, token_type, access_token,
+  refresh_token, expires_at, expires_in}` — note `expires_in` here is
+  actually the *refresh* token's lifetime (`refresh_token_expires_in`
+  from Google's response), not the access token's, matching a real
+  ytmusicapi quirk confirmed by reading its own `prompt_for_token`
+  source, not guessed.
+- **New `web-gui-backend` routes**: `PUT /api/sources/ytmusic/
+  oauth-client` (save client_id/secret), `POST /api/sources/ytmusic/
+  oauth/start` (returns `{device_code, user_code, verification_url,
+  expires_in, interval}`), `POST /api/sources/ytmusic/oauth/poll` (body
+  `{device_code}` → `{"status": "pending"}` while waiting, writes
+  `oauth_file` atomically and returns `{"status": "ok"}` on success, 502
+  on real failure). `/api/sources/status`'s `ytmusic` entry gained a
+  third independent `oauth_client` status alongside `cookies`/`oauth`.
+  The existing `/api/sources/ytmusic/playlists` route now also passes
+  the saved client credentials through automatically when present.
+- **New `YtmusicOauthForm.tsx`**: two-step UI in the Credentials screen
+  — client_id/secret capture first (if not saved yet, big plaintext-
+  storage warning same as every other credential form), then a "Start
+  sign-in" button showing the real verification URL + user code and
+  polling client-side (`setInterval` at the server-told `interval`,
+  giving up at `expires_in` with a clear "code expired, start over"
+  message) until the backend confirms success.
+- **Verified live** (not just mocked in tests): pointed a throwaway
+  backend instance at a scratch config copy, PUT a (deliberately fake)
+  client_id/secret, called `/oauth/start` for real — it made a genuine
+  request to Google's OAuth endpoint and correctly surfaced Google's
+  real `invalid_client` rejection as a clean 502, proving the whole path
+  is wired to the real API, not just internally consistent. Never
+  touched the real `config/secrets/` (real Google credentials for this
+  flow require a Google Cloud Console project the user hasn't set up
+  yet, so end-to-end success wasn't verified against a real account —
+  only the plumbing and the real-API failure path were).

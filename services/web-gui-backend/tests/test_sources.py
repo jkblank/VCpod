@@ -55,6 +55,7 @@ def _global_config() -> GlobalConfig:
                 enabled=True,
                 oauth_file="/config/secrets/ytmusic_oauth.json",
                 cookies_file="/config/secrets/youtube_cookies.txt",
+                oauth_client_file="/config/secrets/ytmusic_oauth_client.json",
             ),
         ),
         podcasts=PodcastsGlobalConfig(pocketcasts=PocketCastsGlobalConfig(poll_interval_minutes=60)),
@@ -116,7 +117,9 @@ def test_apple_music_playlists_resolves_config_rooted_cookies_path(monkeypatch, 
 
 def test_ytmusic_playlists_returns_listed_playlists(monkeypatch, client):
     fake = [_FakePlaylist("PL1", "Commute", 8, None)]
-    monkeypatch.setattr(routers.sources, "list_ytmusic_playlists", lambda path: fake)
+    monkeypatch.setattr(
+        routers.sources, "list_ytmusic_playlists", lambda path, **kwargs: fake
+    )
 
     resp = client.get("/api/sources/ytmusic/playlists")
 
@@ -276,6 +279,7 @@ def test_sources_status_reports_ytmusic_cookies_and_oauth_independently(client, 
     ytmusic = resp.json()["ytmusic"]
     assert ytmusic["cookies"] == {"exists": False, "updated_at": None}
     assert ytmusic["oauth"] == {"exists": False, "updated_at": None}
+    assert ytmusic["oauth_client"] == {"exists": False, "updated_at": None}
 
     client.put("/api/sources/ytmusic/cookies", json={"cookies_txt": VALID_YT_COOKIES})
 
@@ -284,3 +288,171 @@ def test_sources_status_reports_ytmusic_cookies_and_oauth_independently(client, 
     assert ytmusic["cookies"]["exists"] is True
     # oauth still untouched -- cookies and oauth are independent credentials
     assert ytmusic["oauth"] == {"exists": False, "updated_at": None}
+
+
+def test_put_ytmusic_oauth_client_saves_file(client, config_root):
+    resp = client.put(
+        "/api/sources/ytmusic/oauth-client",
+        json={"client_id": "abc.apps.googleusercontent.com", "client_secret": "shh"},
+    )
+
+    assert resp.status_code == 200
+    written = config_root / "secrets" / "ytmusic_oauth_client.json"
+    assert written.exists()
+    import json as _json
+
+    assert _json.loads(written.read_text()) == {
+        "client_id": "abc.apps.googleusercontent.com",
+        "client_secret": "shh",
+    }
+    assert client.get("/api/sources/status").json()["ytmusic"]["oauth_client"]["exists"] is True
+
+
+def test_put_ytmusic_oauth_client_rejects_missing_fields(client, config_root):
+    resp = client.put("/api/sources/ytmusic/oauth-client", json={"client_id": "abc"})
+
+    assert resp.status_code == 422
+    assert not (config_root / "secrets" / "ytmusic_oauth_client.json").exists()
+
+
+def test_start_ytmusic_oauth_requires_client_saved_first(client):
+    resp = client.post("/api/sources/ytmusic/oauth/start")
+
+    assert resp.status_code == 422
+    assert "no YouTube Music OAuth client saved" in resp.json()["detail"]
+
+
+def test_start_ytmusic_oauth_returns_device_code(monkeypatch, client):
+    client.put(
+        "/api/sources/ytmusic/oauth-client",
+        json={"client_id": "abc", "client_secret": "shh"},
+    )
+    from fetcher_ytmusic.oauth import DeviceCodeStart
+
+    captured = {}
+
+    def _capture(client_id, client_secret):
+        captured["client_id"] = client_id
+        captured["client_secret"] = client_secret
+        return DeviceCodeStart(
+            device_code="dev123",
+            user_code="ABCD-EFGH",
+            verification_url="https://www.google.com/device",
+            expires_in=1800,
+            interval=5,
+        )
+
+    monkeypatch.setattr(routers.sources, "start_device_flow", _capture)
+
+    resp = client.post("/api/sources/ytmusic/oauth/start")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "device_code": "dev123",
+        "user_code": "ABCD-EFGH",
+        "verification_url": "https://www.google.com/device",
+        "expires_in": 1800,
+        "interval": 5,
+    }
+    assert captured == {"client_id": "abc", "client_secret": "shh"}
+
+
+def test_poll_ytmusic_oauth_returns_pending_status(monkeypatch, client):
+    client.put(
+        "/api/sources/ytmusic/oauth-client",
+        json={"client_id": "abc", "client_secret": "shh"},
+    )
+    from fetcher_ytmusic.oauth import OAuthPending
+
+    def _pending(client_id, client_secret, device_code):
+        raise OAuthPending("authorization_pending")
+
+    monkeypatch.setattr(routers.sources, "poll_device_flow", _pending)
+
+    resp = client.post("/api/sources/ytmusic/oauth/poll", json={"device_code": "dev123"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "pending"}
+
+
+def test_poll_ytmusic_oauth_writes_token_on_success(monkeypatch, client, config_root):
+    client.put(
+        "/api/sources/ytmusic/oauth-client",
+        json={"client_id": "abc", "client_secret": "shh"},
+    )
+    token = {
+        "scope": "https://www.googleapis.com/auth/youtube",
+        "token_type": "Bearer",
+        "access_token": "at",
+        "refresh_token": "rt",
+        "expires_at": 1234567890,
+        "expires_in": 15552000,
+    }
+    monkeypatch.setattr(
+        routers.sources, "poll_device_flow", lambda client_id, client_secret, device_code: token
+    )
+
+    resp = client.post("/api/sources/ytmusic/oauth/poll", json={"device_code": "dev123"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    import json as _json
+
+    written = config_root / "secrets" / "ytmusic_oauth.json"
+    assert _json.loads(written.read_text()) == token
+
+
+def test_poll_ytmusic_oauth_returns_502_on_flow_error(monkeypatch, client):
+    client.put(
+        "/api/sources/ytmusic/oauth-client",
+        json={"client_id": "abc", "client_secret": "shh"},
+    )
+    from fetcher_ytmusic.oauth import OAuthFlowError
+
+    def _boom(client_id, client_secret, device_code):
+        raise OAuthFlowError("expired_token")
+
+    monkeypatch.setattr(routers.sources, "poll_device_flow", _boom)
+
+    resp = client.post("/api/sources/ytmusic/oauth/poll", json={"device_code": "dev123"})
+
+    assert resp.status_code == 502
+    assert "expired_token" in resp.json()["detail"]
+
+
+def test_poll_ytmusic_oauth_requires_device_code(client):
+    resp = client.post("/api/sources/ytmusic/oauth/poll", json={})
+    assert resp.status_code == 422
+
+
+def test_ytmusic_playlists_passes_oauth_client_when_saved(monkeypatch, client):
+    client.put(
+        "/api/sources/ytmusic/oauth-client",
+        json={"client_id": "abc", "client_secret": "shh"},
+    )
+    captured = {}
+
+    def _capture(oauth_path, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(routers.sources, "list_ytmusic_playlists", _capture)
+
+    client.get("/api/sources/ytmusic/playlists")
+
+    assert captured == {"oauth_client_id": "abc", "oauth_client_secret": "shh"}
+
+
+def test_ytmusic_playlists_works_without_oauth_client_saved(monkeypatch, client):
+    captured = {}
+
+    def _capture(oauth_path, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(routers.sources, "list_ytmusic_playlists", _capture)
+
+    resp = client.get("/api/sources/ytmusic/playlists")
+
+    assert resp.status_code == 200
+    assert captured == {"oauth_client_id": None, "oauth_client_secret": None}

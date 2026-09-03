@@ -61,7 +61,7 @@ def patched_pipeline(monkeypatch, tmp_path):
     library_root.mkdir()
 
     monkeypatch.setattr(
-        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: TRACKS
+        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None, **kwargs: TRACKS
     )
     monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
 
@@ -147,7 +147,7 @@ def test_fetch_playlist_one_failed_track_does_not_abort_rest(monkeypatch, tmp_pa
     library_root.mkdir()
 
     monkeypatch.setattr(
-        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: TRACKS
+        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None, **kwargs: TRACKS
     )
     monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run_one_track_fails("vid-1"))
 
@@ -175,7 +175,7 @@ def test_fetch_playlist_additive_mode_preserves_existing_m3u8_entries(
     m3u8_path.write_text("#EXTM3U\n/already/there.m4a\n")
 
     monkeypatch.setattr(
-        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: TRACKS[:1]
+        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None, **kwargs: TRACKS[:1]
     )
 
     result = download_module.fetch_playlist(
@@ -203,7 +203,7 @@ def test_fetch_playlist_m3u8_paths_are_absolute_even_with_relative_library_root(
     # items == [] (the playlist was created on the device but empty).
     # Same bug class as fetcher-apple's per-track fallback fix.
     monkeypatch.setattr(
-        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: TRACKS
+        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None, **kwargs: TRACKS
     )
     monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
     monkeypatch.chdir(tmp_path)
@@ -252,7 +252,7 @@ def test_fetch_playlists_lock_timeout_on_one_entry_does_not_abort_the_rest(
     monkeypatch, tmp_path
 ):
     monkeypatch.setattr(
-        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: TRACKS
+        download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None, **kwargs: TRACKS
     )
     library_root = tmp_path / "library"
     playlists_root = tmp_path / "playlists"
@@ -296,7 +296,7 @@ def test_fetch_per_track_embeds_artwork_when_thumbnail_url_present(monkeypatch, 
         album="Album One",
         thumbnail_url="https://yt3.googleusercontent.com/abc=w1200-h1200-l90-rj",
     )
-    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: [track])
+    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None, **kwargs: [track])
     monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
 
     def fake_get(url, timeout=None, follow_redirects=None):
@@ -326,7 +326,7 @@ def test_fetch_per_track_skips_artwork_when_no_thumbnail_url(monkeypatch, tmp_pa
     track = TrackMeta(
         source_id="vid-1", title="Track One", artist="Artist One", album="Album One"
     )
-    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: [track])
+    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None, **kwargs: [track])
     monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
 
     def _fail_if_called(*args, **kwargs):
@@ -357,7 +357,7 @@ def test_fetch_per_track_thumbnail_download_failure_does_not_fail_track(monkeypa
         album="Album One",
         thumbnail_url="https://yt3.googleusercontent.com/abc=w1200-h1200-l90-rj",
     )
-    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None: [track])
+    monkeypatch.setattr(download_module, "get_playlist_tracks", lambda playlist_id, oauth_path=None, **kwargs: [track])
     monkeypatch.setattr(subprocess, "run", _fake_ytdlp_run())
 
     def _raise(*args, **kwargs):

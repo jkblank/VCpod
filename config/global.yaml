@@ -13,6 +13,7 @@ sources:
     enabled: true
     oauth_file: /config/secrets/ytmusic_oauth.json
     cookies_file: /config/secrets/youtube_cookies.txt
+    oauth_client_file: /config/secrets/ytmusic_oauth_client.json
 
 podcasts:
   pocketcasts:

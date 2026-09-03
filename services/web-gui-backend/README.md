@@ -57,7 +57,10 @@ separate React SPA, not server-rendered.
 | GET | `/api/sources/ytmusic/resolve?url=...` | Resolves a public playlist by share link or bare id — works unauthenticated, for playlists not saved to your own account |
 | PUT | `/api/sources/apple-music/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format + `media-user-token` present), written atomically |
 | PUT | `/api/sources/ytmusic/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format), written atomically |
-| GET | `/api/sources/status` | Per-source status — `updated_at` is the credential file's real mtime, not a guessed expiry. `apple_music`/`spotify`: `{enabled, exists, updated_at}`. `ytmusic`: `{enabled, cookies: {...}, oauth: {...}}` — two independent credentials reported separately (cookies for every download, oauth only for private-playlist listing) |
+| GET | `/api/sources/status` | Per-source status — `updated_at` is the credential file's real mtime, not a guessed expiry. `apple_music`/`spotify`: `{enabled, exists, updated_at}`. `ytmusic`: `{enabled, cookies: {...}, oauth: {...}, oauth_client: {...}}` — three independent credentials reported separately (cookies for every download, oauth for private-playlist listing, oauth_client is the Google OAuth client the oauth token needs for auto-refresh) |
+| PUT | `/api/sources/ytmusic/oauth-client` | Body `{"client_id", "client_secret"}` — the user's own Google OAuth client (ytmusicapi has no shared/default one), written atomically. Prerequisite for the device-code flow below, and also read back on every playlist-listing call so a captured token can auto-refresh instead of breaking on expiry |
+| POST | `/api/sources/ytmusic/oauth/start` | Starts the RFC 8628 device-code flow — returns `{device_code, user_code, verification_url, expires_in, interval}`. 422 if no OAuth client saved yet |
+| POST | `/api/sources/ytmusic/oauth/poll` | Body `{"device_code"}` — `{"status": "pending"}` while the user hasn't finished the browser step yet (poll again after `interval` seconds), `{"status": "ok"}` and `oauth_file` written atomically on success, 502 on a real failure (expired code, denied, bad client) |
 | GET | `/api/profiles/{name}/pocketcasts-status` | `{exists, updated_at}` for that profile's saved Pocket Casts credentials |
 | GET | `/api/profiles/{name}/pocketcasts/subscriptions` | That profile's real Pocket Casts subscriptions (requires credentials already saved) |
 | PUT | `/api/profiles/{name}/pocketcasts-credentials` | Body `{"email", "password"}` — validated via a real Pocket Casts login *before* writing anything |
@@ -115,8 +118,9 @@ so a working file is never left corrupted mid-write, same pattern
   localhost/your LAN," not app-level auth. Appropriate for a
   single-user personal tool; revisit if that ever changes.
 - Credentials (Pocket Casts email/password, Apple Music/YouTube
-  cookies) stay plaintext under `config/secrets/`, same posture as
-  every CLI tool today. Not encrypted at rest — a deliberate, separate,
+  cookies, YouTube Music's OAuth client secret and captured token) stay
+  plaintext under `config/secrets/`, same posture as every CLI tool
+  today. Not encrypted at rest — a deliberate, separate,
   not-yet-scheduled follow-up if it ever happens.
 - Nothing here executes privileged commands. Auto-sync setup (planned,
   M14) will generate the filled-in systemd unit/udev rule files and

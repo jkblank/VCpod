@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { api, ApiError, type GlobalConfig, type SourcesStatus } from '../api'
 import CookieCaptureForm from '../components/CookieCaptureForm'
 import PocketCastsLoginForm from '../components/PocketCastsLoginForm'
+import YtmusicOauthForm from '../components/YtmusicOauthForm'
 import { formatRelativeTime } from '../format'
 import type { ProfileStore } from '../useProfileStore'
 
-type OpenForm = 'apple_music' | 'ytmusic-cookies' | 'pocketcasts' | null
+type OpenForm = 'apple_music' | 'ytmusic-cookies' | 'ytmusic-oauth' | 'pocketcasts' | null
 
 export default function Credentials({ store }: { store: ProfileStore }) {
   const { draft } = store
@@ -108,6 +109,9 @@ export default function Credentials({ store }: { store: ProfileStore }) {
           <button className="btn secondary" onClick={() => setOpenForm('ytmusic-cookies')}>
             {status.ytmusic.cookies.exists ? 'Re-export cookies' : 'Set up cookies'}
           </button>
+          <button className="btn secondary" onClick={() => setOpenForm('ytmusic-oauth')}>
+            {status.ytmusic.oauth.exists ? 'Re-authenticate' : 'Set up OAuth'}
+          </button>
         </div>
         <p className="muted">
           Cookies (required for every download):{' '}
@@ -126,6 +130,18 @@ export default function Credentials({ store }: { store: ProfileStore }) {
             path="config/secrets/youtube_cookies.txt"
             onSubmit={async (text) => {
               await api.putYtmusicCookies(text)
+              setOpenForm(null)
+              await reload()
+            }}
+          />
+        )}
+        {openForm === 'ytmusic-oauth' && (
+          <YtmusicOauthForm
+            clientPath={globalConfig.sources.ytmusic.oauth_client_file}
+            oauthPath={globalConfig.sources.ytmusic.oauth_file}
+            clientAlreadySaved={status.ytmusic.oauth_client.exists}
+            onClientSaved={reload}
+            onTokenSaved={async () => {
               setOpenForm(null)
               await reload()
             }}
