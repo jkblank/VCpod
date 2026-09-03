@@ -59,6 +59,13 @@ class YtMusicSource(StrictModel):
     # (empty string) means oauth_file, if present, will work until it
     # expires and then need re-capturing instead of auto-refreshing.
     oauth_client_file: str = ""
+    # yt-dlp's PO-token companion service (services/fetcher-ytmusic/
+    # pot-provider/) -- every YouTube Music download needs it reachable
+    # or it fails. Configurable rather than hardcoded so the web GUI's
+    # alerts check (a short-timeout connect) works against a non-default
+    # port/host too. Default matches the companion service's own
+    # documented default (127.0.0.1:4416).
+    pot_provider_url: str = "http://127.0.0.1:4416"
 
 
 class SourcesConfig(StrictModel):
@@ -143,6 +150,14 @@ class BackupMaintenanceConfig(StrictModel):
     default_max_age_days: int = Field(default=14, gt=0)
 
 
+class ActivityMaintenanceConfig(StrictModel):
+    # Same shape/reasoning as BackupMaintenanceConfig above -- runs as a
+    # fetch-scheduler maintenance post-step, no schedule of its own.
+    # False = the activity log just grows unbounded until turned on.
+    prune_enabled: bool = False
+    keep_last_days: int = Field(default=30, gt=0)
+
+
 class AudiobookManagerConfig(StrictModel):
     # Where raw, not-yet-processed audiobook source folders land (e.g.
     # Libby DevTools-captured MP3 parts, one subfolder per book — see
@@ -163,6 +178,7 @@ class GlobalConfig(StrictModel):
     library_manager: LibraryManagerConfig = Field(default_factory=LibraryManagerConfig)
     backups: BackupMaintenanceConfig = Field(default_factory=BackupMaintenanceConfig)
     audiobook_manager: AudiobookManagerConfig = Field(default_factory=AudiobookManagerConfig)
+    activity: ActivityMaintenanceConfig = Field(default_factory=ActivityMaintenanceConfig)
 
 
 class DeviceMatch(StrictModel):

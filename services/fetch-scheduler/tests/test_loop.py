@@ -194,6 +194,8 @@ library_manager:
   normalize_artwork_enabled: {normalize_artwork_enabled}
 backups:
   prune_enabled: {prune_enabled}
+activity:
+  prune_enabled: {activity_prune_enabled}
 """
 
 
@@ -204,6 +206,7 @@ def _setup_maintenance(
     cleanup_enabled: bool = False,
     normalize_artwork_enabled: bool = False,
     prune_enabled: bool = False,
+    activity_prune_enabled: bool = False,
     profiles: dict[str, str | None] | None = None,
 ) -> Path:
     config_root = tmp_path / "config"
@@ -213,6 +216,7 @@ def _setup_maintenance(
         cleanup_enabled=str(cleanup_enabled).lower(),
         normalize_artwork_enabled=str(normalize_artwork_enabled).lower(),
         prune_enabled=str(prune_enabled).lower(),
+        activity_prune_enabled=str(activity_prune_enabled).lower(),
     )
     (config_root / "global.yaml").write_text(yaml_text)
 
@@ -430,6 +434,50 @@ def test_run_tick_dry_run_maintenance_does_not_call_mutating_function(monkeypatc
 
     assert calls == []  # quarantine_duplicates never called under dry_run
     assert "would be quarantined" in result.maintenance["library_dedup"]
+
+
+def test_run_tick_activity_prune_fires_when_enabled_and_a_fetch_happens(monkeypatch, tmp_path):
+    from common.activity import ActivityEntry, record_activity
+
+    config_root = _setup_maintenance(
+        tmp_path, activity_prune_enabled=True, profiles={"john": "* * * * *"}
+    )
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: FetchAllResult())
+    state_root = tmp_path / "state"
+    record_activity(
+        state_root,
+        ActivityEntry(
+            started_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            service="fetch-scheduler",
+            profile="john",
+            description="ancient",
+            duration_seconds=1.0,
+            result="ok",
+        ),
+    )
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=state_root,
+        now=NOW,
+    )
+
+    assert "pruned 1" in result.maintenance["activity_prune"]
+
+
+def test_run_tick_activity_prune_skipped_when_not_enabled(monkeypatch, tmp_path):
+    config_root = _setup_maintenance(tmp_path, profiles={"john": "* * * * *"})
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: FetchAllResult())
+
+    result = run_tick(
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+    )
+
+    assert "activity_prune" not in result.maintenance
 
 
 def test_run_tick_one_profile_exception_does_not_abort_the_rest(monkeypatch, tmp_path):

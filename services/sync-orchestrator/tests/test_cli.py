@@ -644,7 +644,7 @@ def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
     )
 
     result = cli_module._run_sync(
-        _run_sync_args(allow_removals=True),
+        _run_sync_args(allow_removals=True, state_root=str(tmp_path)),
         profile,
         profile_path=Path("/config/profiles/john.yaml"),
         config_root=Path("/config"),
@@ -742,7 +742,7 @@ def test_run_sync_json_mode_plan_only_prints_single_json_line_on_stdout(
     assert "auto-mounted" not in captured.out
 
 
-def test_run_sync_json_mode_execute_prints_result_json(monkeypatch, capsys):
+def test_run_sync_json_mode_execute_prints_result_json(monkeypatch, capsys, tmp_path):
     profile = SimpleNamespace(
         profile="john",
         device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
@@ -757,7 +757,10 @@ def test_run_sync_json_mode_execute_prints_result_json(monkeypatch, capsys):
     )
 
     result = cli_module._run_sync(
-        _run_sync_args(execute=True, allow_removals=False, skip_eject=True, json=True),
+        _run_sync_args(
+            execute=True, allow_removals=False, skip_eject=True, json=True,
+            state_root=str(tmp_path),
+        ),
         profile,
         profile_path=Path("/config/profiles/john.yaml"),
         config_root=Path("/config"),
@@ -1167,7 +1170,9 @@ def test_run_rockbox_sync_refuses_execute_when_removal_proposed_without_allow_re
     assert "FAIL" in capsys.readouterr().out
 
 
-def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(monkeypatch):
+def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(
+    monkeypatch, tmp_path
+):
     from sync_orchestrator.rockbox_sync import PlannedRockboxSync, RockboxSyncPlan
 
     profile = _dispatch_profile(mode="rockbox")
@@ -1191,7 +1196,7 @@ def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(mo
     args = argparse.Namespace(
         pc_folders=None,
         library_root="/lib",
-        state_root="/state",
+        state_root=str(tmp_path),
         skip_backup=False,
         skip_podcasts=False,
         execute=True,
@@ -1215,6 +1220,8 @@ def _connected_device(**overrides) -> ConnectedDeviceInfo:
         generation="5.5th Gen",
         model_number="MA450",
         capacity="80GB",
+        used_bytes=118_400_000_000,
+        free_bytes=30_800_000_000,
     )
     base.update(overrides)
     return ConnectedDeviceInfo(**base)
@@ -1239,6 +1246,8 @@ def test_identify_device_prints_devices_as_json_on_stdout(monkeypatch, capsys):
                 "generation": "5.5th Gen",
                 "model_number": "MA450",
                 "capacity": "80GB",
+                "used_bytes": 118_400_000_000,
+                "free_bytes": 30_800_000_000,
             }
         ]
     }

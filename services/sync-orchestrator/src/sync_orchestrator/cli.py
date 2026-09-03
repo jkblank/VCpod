@@ -12,6 +12,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from common.activity import ActivityEntry, record_activity, record_last_sync
 from common.config import ConfigError, load_profile_config, resolve_profile_path
 from common.lock import FileLock, LockTimeoutError
 from common.models import ProfileConfig
@@ -289,11 +290,35 @@ def _run_sync(
     try:
         result, after = execute_sync(planned, progress_callback=_report_progress)
     except SyncError as e:
+        record_activity(
+            args.state_root,
+            ActivityEntry(
+                started_at=datetime.now(timezone.utc),
+                service="sync-orchestrator",
+                profile=profile.profile,
+                description=f"sync — execute failed: {e}",
+                duration_seconds=time.monotonic() - start_time,
+                result="error",
+            ),
+        )
         return _fail(str(e))
 
     _out(f"  {result.summary}")
     after_count = len(after.get("mhlt", []))
     _out(f"  {after_count} tracks now on device (was {planned.before_track_count})")
+
+    record_last_sync(args.state_root, profile.profile, datetime.now(timezone.utc))
+    record_activity(
+        args.state_root,
+        ActivityEntry(
+            started_at=datetime.now(timezone.utc),
+            service="sync-orchestrator",
+            profile=profile.profile,
+            description=result.summary,
+            duration_seconds=time.monotonic() - start_time,
+            result="ok",
+        ),
+    )
 
     snapshot_note = (
         f"Backup snapshot {planned.snapshot.id}"
@@ -458,6 +483,17 @@ def _run_rockbox_sync(
     try:
         result = execute_rockbox_sync(planned, progress_callback=_report_progress)
     except RockboxSyncError as e:
+        record_activity(
+            args.state_root,
+            ActivityEntry(
+                started_at=datetime.now(timezone.utc),
+                service="sync-orchestrator",
+                profile=profile.profile,
+                description=f"sync (rockbox) — execute failed: {e}",
+                duration_seconds=time.monotonic() - start_time,
+                result="error",
+            ),
+        )
         return _fail(str(e))
 
     print(
@@ -472,6 +508,22 @@ def _run_rockbox_sync(
     print(
         f"\nPASS: wrote {result['added'] + result['updated']} file(s) to a real device. "
         f"{snapshot_note} is available for rollback if needed."
+    )
+
+    record_last_sync(args.state_root, profile.profile, datetime.now(timezone.utc))
+    record_activity(
+        args.state_root,
+        ActivityEntry(
+            started_at=datetime.now(timezone.utc),
+            service="sync-orchestrator",
+            profile=profile.profile,
+            description=(
+                f"sync (rockbox) — added={result['added']} updated={result['updated']} "
+                f"removed={result['removed']}"
+            ),
+            duration_seconds=time.monotonic() - start_time,
+            result="ok",
+        ),
     )
 
     # No Rockbox equivalent yet — Rockbox keeps its own play history in
