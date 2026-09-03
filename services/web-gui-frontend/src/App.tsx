@@ -83,7 +83,7 @@ export default function App() {
     <div className="shell">
       <nav className="nav">
         <div className="nav-title">
-          <Mark size={25} />
+          <Mark size={30} />
           VCpod
         </div>
         {(Object.keys(SCREENS) as ScreenId[]).map((id) => {
