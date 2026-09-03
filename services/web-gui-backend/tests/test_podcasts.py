@@ -59,6 +59,31 @@ def test_subscriptions_returns_502_when_no_credentials_saved_yet(client):
     assert "not saved yet" in resp.json()["detail"]
 
 
+def test_pocketcasts_status_reports_missing_credentials(client):
+    resp = client.get("/api/profiles/alice/pocketcasts-status")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"exists": False, "updated_at": None}
+
+
+def test_pocketcasts_status_reports_existing_credentials(client, config_root):
+    creds_path = config_root / "secrets" / "pocketcasts" / "alice.json"
+    creds_path.parent.mkdir(parents=True)
+    creds_path.write_text(json.dumps({"email": "alice@example.com", "password": "x"}))
+
+    resp = client.get("/api/profiles/alice/pocketcasts-status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is True
+    assert isinstance(body["updated_at"], float)
+
+
+def test_pocketcasts_status_returns_404_for_unknown_profile(client):
+    resp = client.get("/api/profiles/nobody/pocketcasts-status")
+    assert resp.status_code == 404
+
+
 def test_subscriptions_returns_404_for_unknown_profile(client):
     resp = client.get("/api/profiles/nobody/pocketcasts/subscriptions")
     assert resp.status_code == 404

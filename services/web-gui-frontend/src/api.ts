@@ -33,7 +33,10 @@ export type PodcastsConfig = {
   sync_unplayed_only: boolean
   max_episodes_per_show: number
   shows: 'all' | (string | { name: string; fetch_schedule?: string | null })[]
-  [key: string]: unknown
+  fetch_schedule: string | null
+  episode_filter: 'played' | 'archived'
+  fill_modes: Record<string, 'newest' | 'next'>
+  delete_played_episodes: boolean
 }
 
 export type SelectionConfig = {
@@ -95,15 +98,22 @@ export type PodcastSubscription = {
   author: string
 }
 
-export type SourceStatus = {
-  enabled: boolean
+export type CredentialFileStatus = {
   exists: boolean
   updated_at: number | null
 }
 
+export type SourceStatus = CredentialFileStatus & { enabled: boolean }
+
+export type YtmusicStatus = {
+  enabled: boolean
+  cookies: CredentialFileStatus
+  oauth: CredentialFileStatus
+}
+
 export type SourcesStatus = {
   apple_music: SourceStatus
-  ytmusic: SourceStatus
+  ytmusic: YtmusicStatus
   spotify: SourceStatus
 }
 
@@ -170,6 +180,10 @@ export const api = {
     }),
   getSourcesStatus: () => request<SourcesStatus>('/api/sources/status'),
 
+  getPocketcastsStatus: (profileName: string) =>
+    request<CredentialFileStatus>(
+      `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts-status`,
+    ),
   getPocketcastsSubscriptions: (profileName: string) =>
     request<PodcastSubscription[]>(
       `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts/subscriptions`,

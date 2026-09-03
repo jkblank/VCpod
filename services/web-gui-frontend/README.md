@@ -49,9 +49,12 @@ deploy would actually run; `npm run dev` never type-checks on its own.
 - `src/screens/` — one component per screen: `Overview`, `Profiles`,
   `Sources` (Apple Music/YouTube Music playlist picker, plus "add a
   public playlist by link" for YouTube), `Podcasts` (Pocket Casts
-  subscription picker), `ExternalLibrary`/`Audiobooks` (browse a real
-  directory tree and tick what to sync). Sync, Activity, and the
-  polished Sources & credentials status screen are still just the
+  subscription picker + every `ProfilePodcastsConfig` setting —
+  episode filter, fill_modes, fetch schedule, ...),
+  `ExternalLibrary`/`Audiobooks` (browse a real directory tree and tick
+  what to sync), `Credentials` ("Sources & credentials" in the nav —
+  per-source enable toggles + credential status, wiring the capture
+  forms into a permanent home). Sync and Activity are still just the
   mockup's UX/copy spec (`docs/VCpod Console.html` at the repo root),
   not built here yet.
 - `src/components/` — `CredentialWarning` (the big plaintext-storage

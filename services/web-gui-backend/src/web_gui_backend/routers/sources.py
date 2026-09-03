@@ -204,9 +204,16 @@ def sources_status(request: Request) -> dict:
             "enabled": config.sources.apple_music.enabled,
             **_file_status(config.sources.apple_music.cookies_file),
         },
+        # Unlike apple_music/spotify, ytmusic has two independent
+        # credentials: cookies_file (yt-dlp, needed for every real
+        # download) and oauth_file (ytmusicapi, only needed to list the
+        # account's own private library -- public playlists resolve
+        # fine without it). Reporting only one used to silently hide
+        # whether the other was ever set up at all.
         "ytmusic": {
             "enabled": config.sources.ytmusic.enabled,
-            **_file_status(config.sources.ytmusic.oauth_file),
+            "cookies": _file_status(config.sources.ytmusic.cookies_file),
+            "oauth": _file_status(config.sources.ytmusic.oauth_file),
         },
         "spotify": {
             "enabled": config.sources.spotify.enabled,

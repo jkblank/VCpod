@@ -4149,3 +4149,31 @@ Capturing the direction now rather than losing it:
   which of these actually fits best — worth a real look once M12-M14
   are further along and there's more surface area to judge "simple
   setup" against.
+
+## 2026-09-03: Web GUI M13, part 1 — full podcast settings + Sources & credentials screen
+
+- **Podcasts screen** now edits every `ProfilePodcastsConfig` field, not
+  just `shows`: `episode_filter` (played/archived), `sync_unplayed_only`,
+  `delete_played_episodes`, `max_episodes_per_show`, `fetch_schedule`
+  (reuses `<ScheduleEditor>` from the M12 fast-follow), and per-show
+  `fill_modes` (newest/oldest-unheard-first) — a dropdown next to each
+  *selected* show's row, since `fill_modes` only means anything for a
+  show actually in the curated list.
+- **New `Credentials.tsx` screen** ("Sources & credentials" in the
+  nav) — the polished status view the mockup specified, wiring the
+  capture forms already built (M12) into a permanent home instead of
+  only appearing inline when a picker screen's fetch call fails.
+  Enable/disable toggles write straight to `global.yaml` via the
+  already-existing `PUT /api/global-config`; each source's card shows
+  real credential-file status ("saved, updated 2 hours ago" — real
+  mtime, not a guessed expiry, same principle `/api/sources/status`
+  already established in M12).
+- **Fixed a real gap found while building the above**: `/api/sources/
+  status`'s `ytmusic` entry only ever reported `oauth_file`'s status,
+  never `cookies_file` — silently hiding whether cookies (needed for
+  *every* real download) were ever set up, if oauth (only needed for
+  private-playlist listing) happened to exist. `ytmusic` now reports
+  `{enabled, cookies: {...}, oauth: {...}}` independently. Verified
+  live: real cookies exist, real oauth doesn't, both now visible
+  correctly (previously the missing oauth would have looked like
+  cookies were also missing).

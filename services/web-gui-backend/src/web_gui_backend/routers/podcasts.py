@@ -30,6 +30,17 @@ def _profile(request: Request, name: str):
         raise HTTPException(status_code=404, detail=f"no profile named {name!r}") from e
 
 
+@router.get("/api/profiles/{name}/pocketcasts-status")
+def pocketcasts_status(name: str, request: Request) -> dict:
+    profile = _profile(request, name)
+    creds_path = resolve_config_path(
+        profile.podcasts.pocketcasts.credentials_file, request.app.state.config_root
+    )
+    if not creds_path.is_file():
+        return {"exists": False, "updated_at": None}
+    return {"exists": True, "updated_at": creds_path.stat().st_mtime}
+
+
 @router.get("/api/profiles/{name}/pocketcasts/subscriptions")
 def pocketcasts_subscriptions(name: str, request: Request) -> list[dict]:
     profile = _profile(request, name)

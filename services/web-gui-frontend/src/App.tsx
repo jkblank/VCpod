@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import Audiobooks from './screens/Audiobooks'
+import Credentials from './screens/Credentials'
 import ExternalLibrary from './screens/ExternalLibrary'
 import Overview from './screens/Overview'
 import Podcasts from './screens/Podcasts'
@@ -8,7 +9,14 @@ import Sources from './screens/Sources'
 import { useProfileStore } from './useProfileStore'
 import './App.css'
 
-type ScreenId = 'overview' | 'profiles' | 'sources' | 'podcasts' | 'external_library' | 'audiobooks'
+type ScreenId =
+  | 'overview'
+  | 'profiles'
+  | 'sources'
+  | 'podcasts'
+  | 'external_library'
+  | 'audiobooks'
+  | 'credentials'
 
 const SCREENS: Record<ScreenId, { label: string; blurb: string }> = {
   overview: {
@@ -35,6 +43,10 @@ const SCREENS: Record<ScreenId, { label: string; blurb: string }> = {
   audiobooks: {
     label: 'Audiobooks',
     blurb: 'Merged, chaptered .m4b files under library/audiobooks.',
+  },
+  credentials: {
+    label: 'Sources & credentials',
+    blurb: 'Global enable flags and credential health, plus the current profile’s Pocket Casts login.',
   },
 }
 
@@ -72,6 +84,7 @@ export default function App() {
         {screen === 'podcasts' && <Podcasts store={store} />}
         {screen === 'external_library' && <ExternalLibrary store={store} />}
         {screen === 'audiobooks' && <Audiobooks store={store} />}
+        {screen === 'credentials' && <Credentials store={store} />}
       </main>
     </div>
   )

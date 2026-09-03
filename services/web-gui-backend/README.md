@@ -57,7 +57,8 @@ separate React SPA, not server-rendered.
 | GET | `/api/sources/ytmusic/resolve?url=...` | Resolves a public playlist by share link or bare id — works unauthenticated, for playlists not saved to your own account |
 | PUT | `/api/sources/apple-music/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format + `media-user-token` present), written atomically |
 | PUT | `/api/sources/ytmusic/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format), written atomically |
-| GET | `/api/sources/status` | Per-source `{enabled, exists, updated_at}` — `updated_at` is the credential file's real mtime, not a guessed expiry |
+| GET | `/api/sources/status` | Per-source status — `updated_at` is the credential file's real mtime, not a guessed expiry. `apple_music`/`spotify`: `{enabled, exists, updated_at}`. `ytmusic`: `{enabled, cookies: {...}, oauth: {...}}` — two independent credentials reported separately (cookies for every download, oauth only for private-playlist listing) |
+| GET | `/api/profiles/{name}/pocketcasts-status` | `{exists, updated_at}` for that profile's saved Pocket Casts credentials |
 | GET | `/api/profiles/{name}/pocketcasts/subscriptions` | That profile's real Pocket Casts subscriptions (requires credentials already saved) |
 | PUT | `/api/profiles/{name}/pocketcasts-credentials` | Body `{"email", "password"}` — validated via a real Pocket Casts login *before* writing anything |
 | GET | `/api/external-library/browse?root=...&subpath=...` | Lists one directory under an arbitrary, user-supplied root (`ExternalLibraryConfig.path`) — the one route that reads a filesystem location this project doesn't otherwise manage, so every listing is confined to `root` (see `browse.py`) |

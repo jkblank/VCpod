@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError, type PodcastSubscription } from '../api'
 import PocketCastsLoginForm from '../components/PocketCastsLoginForm'
+import ScheduleEditor from '../components/ScheduleEditor'
 import type { ProfileStore } from '../useProfileStore'
 
 export default function Podcasts({ store }: { store: ProfileStore }) {
@@ -44,23 +45,81 @@ export default function Podcasts({ store }: { store: ProfileStore }) {
     )
   }
 
-  const shows = draft.podcasts.shows
+  const podcasts = draft.podcasts
+  const shows = podcasts.shows
   const isAll = shows === 'all'
   const selectedUuids = new Set(
     isAll ? [] : shows.map((s) => (typeof s === 'string' ? s : s.name)),
   )
 
+  const setPodcasts = (patch: Partial<typeof podcasts>) =>
+    setDraft({ ...draft, podcasts: { ...podcasts, ...patch } })
+
   const toggle = (uuid: string) => {
     const current = isAll ? [] : [...shows]
     const next = current.includes(uuid) ? current.filter((u) => u !== uuid) : [...current, uuid]
-    setDraft({ ...draft, podcasts: { ...draft.podcasts, shows: next } })
+    setPodcasts({ shows: next })
   }
+
+  const setFillMode = (uuid: string, mode: 'newest' | 'next') =>
+    setPodcasts({ fill_modes: { ...podcasts.fill_modes, [uuid]: mode } })
 
   return (
     <>
       <p className="muted">Editing podcasts for profile: {draft.profile}</p>
       {saveErrors && <div className="error-banner">{saveErrors.join('\n')}</div>}
       {loadError && <div className="error-banner">{loadError}</div>}
+
+      <div className="card">
+        <h3>Settings</h3>
+        <div className="field">
+          <label>Episode filter (what counts as "done" for sync_unplayed_only)</label>
+          <select
+            value={podcasts.episode_filter}
+            onChange={(e) =>
+              setPodcasts({ episode_filter: e.target.value as 'played' | 'archived' })
+            }
+          >
+            <option value="played">Played (Pocket Casts playingStatus)</option>
+            <option value="archived">Archived</option>
+          </select>
+        </div>
+        <div className="row">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+            <input
+              type="checkbox"
+              checked={podcasts.sync_unplayed_only}
+              onChange={(e) => setPodcasts({ sync_unplayed_only: e.target.checked })}
+            />
+            Only sync unplayed/unarchived episodes
+          </label>
+        </div>
+        <div className="row">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+            <input
+              type="checkbox"
+              checked={podcasts.delete_played_episodes}
+              onChange={(e) => setPodcasts({ delete_played_episodes: e.target.checked })}
+            />
+            Delete played episodes locally (only applies when the above is on)
+          </label>
+        </div>
+        <div className="field">
+          <label>Max episodes per show</label>
+          <input
+            type="number"
+            min={1}
+            value={podcasts.max_episodes_per_show}
+            onChange={(e) =>
+              setPodcasts({ max_episodes_per_show: Number(e.target.value) || 1 })
+            }
+          />
+        </div>
+        <ScheduleEditor
+          value={podcasts.fetch_schedule}
+          onChange={(schedule) => setPodcasts({ fetch_schedule: schedule })}
+        />
+      </div>
 
       {needsCredentials && (
         <PocketCastsLoginForm
@@ -79,22 +138,30 @@ export default function Podcasts({ store }: { store: ProfileStore }) {
           <p className="muted">
             {isAll
               ? 'Currently syncing all subscribed shows. Tick specific shows to switch to a curated list.'
-              : `${selectedUuids.size} of ${subscriptions.length} shows selected.`}
+              : `${selectedUuids.size} of ${subscriptions.length} shows selected. Fill mode only applies to selected shows.`}
           </p>
-          {subscriptions.map((s) => (
-            <label className="picker-row" key={s.uuid}>
-              <input
-                type="checkbox"
-                checked={isAll || selectedUuids.has(s.uuid)}
-                onChange={() => toggle(s.uuid)}
-              />
-              <span className="name">{s.title}</span>
-              <span className="meta">{s.author}</span>
-            </label>
-          ))}
+          {subscriptions.map((s) => {
+            const selected = isAll || selectedUuids.has(s.uuid)
+            return (
+              <div className="picker-row" key={s.uuid}>
+                <input type="checkbox" checked={selected} onChange={() => toggle(s.uuid)} />
+                <span className="name">{s.title}</span>
+                <span className="meta">{s.author}</span>
+                {selected && !isAll && (
+                  <select
+                    value={podcasts.fill_modes[s.uuid] ?? 'newest'}
+                    onChange={(e) => setFillMode(s.uuid, e.target.value as 'newest' | 'next')}
+                  >
+                    <option value="newest">Newest first</option>
+                    <option value="next">Oldest unheard first</option>
+                  </select>
+                )}
+              </div>
+            )
+          })}
           <div className="row" style={{ marginTop: '16px' }}>
             <button className="btn" onClick={() => save()} disabled={saving}>
-              {saving ? 'Saving…' : 'Save selection'}
+              {saving ? 'Saving…' : 'Save'}
             </button>
           </div>
         </>

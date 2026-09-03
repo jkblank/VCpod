@@ -268,3 +268,19 @@ def test_sources_status_reports_existing_file(client, config_root):
     apple = resp.json()["apple_music"]
     assert apple["exists"] is True
     assert isinstance(apple["updated_at"], float)
+
+
+def test_sources_status_reports_ytmusic_cookies_and_oauth_independently(client, config_root):
+    resp = client.get("/api/sources/status")
+
+    ytmusic = resp.json()["ytmusic"]
+    assert ytmusic["cookies"] == {"exists": False, "updated_at": None}
+    assert ytmusic["oauth"] == {"exists": False, "updated_at": None}
+
+    client.put("/api/sources/ytmusic/cookies", json={"cookies_txt": VALID_YT_COOKIES})
+
+    resp = client.get("/api/sources/status")
+    ytmusic = resp.json()["ytmusic"]
+    assert ytmusic["cookies"]["exists"] is True
+    # oauth still untouched -- cookies and oauth are independent credentials
+    assert ytmusic["oauth"] == {"exists": False, "updated_at": None}

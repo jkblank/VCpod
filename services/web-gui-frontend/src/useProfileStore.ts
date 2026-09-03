@@ -24,6 +24,10 @@ export function emptyProfile(name: string): Profile {
       sync_unplayed_only: true,
       max_episodes_per_show: 5,
       shows: 'all',
+      fetch_schedule: null,
+      episode_filter: 'played',
+      fill_modes: {},
+      delete_played_episodes: true,
     },
   }
 }
