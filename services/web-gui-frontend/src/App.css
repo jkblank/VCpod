@@ -356,6 +356,35 @@ button.btn:disabled {
   font-size: 13px;
 }
 
+.code-block {
+  background: #10121c;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+  color: var(--text-dim);
+}
+
+.sync-log {
+  background: #10121c;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+
 .discover-table {
   width: 100%;
   border-collapse: collapse;

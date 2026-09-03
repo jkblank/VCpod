@@ -54,6 +54,11 @@ process".
   `model_dump(mode="json")`) — extend the types here as later screens
   need more fields; unmodeled fields pass through untouched via each
   type's index signature rather than getting silently dropped on save.
+  Also home to `streamSSE`/`streamSyncPlan`/`streamSyncExecute` — a
+  `fetch()` + `ReadableStream` reader that parses `event:`/`data:`
+  frames manually (native `EventSource` is GET-only, can't carry a
+  JSON body, so a POST that streams Server-Sent Events needs this
+  instead — the standard workaround, not a new dependency).
 - `src/screens/` — one component per screen: `Overview`, `Profiles`,
   `Sources` (Apple Music/YouTube Music playlist picker, plus "add a
   public playlist by link" for YouTube), `Podcasts` (Pocket Casts
@@ -67,7 +72,14 @@ process".
   credentials" in the nav —
   per-source enable toggles + credential status, wiring the capture
   forms into a permanent home, including the YouTube Music OAuth
-  device-code sign-in flow). Sync and Activity are still just the
+  device-code sign-in flow), `Sync` (compute a real sync plan against
+  a connected device via `/api/sync/plan`'s SSE stream, review it —
+  sample track/playlist lists, storage delta, an explicit "I've
+  reviewed the removals" checkbox whenever the plan proposes removing
+  anything — then `/api/sync/execute` to actually write it; a
+  "Dangerous mode" toggle skips straight to executing with removals
+  allowed, no plan review, for when you already know what you want;
+  also hosts the auto-sync setup card). Activity is still just the
   mockup's UX/copy spec (`docs/VCpod Console.html` at the repo root),
   not built here yet.
 - `src/components/` — `CredentialWarning` (the big plaintext-storage
@@ -81,7 +93,10 @@ process".
   sign-in), `ScheduleEditor` (cron-free schedule picker, backed by
   `cronBuilder.ts`), `DirectoryPicker` (breadcrumb directory browser
   shared by `ExternalLibrary`/`Audiobooks`), `AudiobookDiscovery` (the
-  discover-and-process card described above).
+  discover-and-process card described above), `AutoSyncSetupCard`
+  (generated systemd unit/udev rule + install commands, read-only —
+  no "install for me" button, this backend never runs privileged
+  commands itself).
 - `src/useProfileStore.ts` — "which profile is currently being edited"
   lifted out of any one screen into a shared hook — `App.tsx` calls it
   once and passes the same store down to `Profiles`/`Sources`/

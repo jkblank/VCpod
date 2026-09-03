@@ -4395,3 +4395,106 @@ without real data to test it against.
   `services/common/tests/test_config.py`'s `test_example_profiles_load`
   to match john.yaml's real content (it asserts against the actual
   tracked file) — twice, once per pass.
+
+## 2026-09-04: Web GUI M14 — sync visibility + auto-sync setup
+
+Last unbuilt piece of the Web GUI arc (M11-M14). Per the original
+`music-stack-planning.md` milestone table: "Trigger a manual sync from
+the UI, view live/last sync plan and result, see health-check alerts."
+Planned properly (plan mode) before implementing, given the real
+architectural decisions involved — see the approved plan for the full
+reasoning; this entry covers what actually got built and what changed
+from the plan during implementation.
+
+- **`sync-orchestrator sync --json`** (iTunes mode only — Rockbox mode
+  fails loudly if combined with `--json`, not yet supported): routes
+  every progress line to stderr, prints exactly one JSON object (the
+  plan, or the executed result) as the sole stdout line. New
+  `plan_json.py` (`plan_summary`/`result_summary`) builds this from the
+  exact fields `cli.py`'s existing `_print_plan`/`_run_sync` already
+  read off iopenpod's `SyncPlan`/`SyncItem`/`StorageSummary` — same
+  10/20-item sample caps `_print_plan` already uses, so a huge library
+  never dumps thousands of track labels over the wire. Every existing
+  safety gate (unresolved-selection refusal, the `--allow-removals`
+  hard gate) is completely unchanged — `--json` only changes how the
+  outcome is *reported*. `_maybe_push_play_status` gained an `out`
+  parameter (defaults to `print`, unchanged for every other caller) so
+  its own prints route to stderr too under `--json` instead of leaking
+  onto stdout.
+- **New `web-gui-backend/sync_runner.py`**: the service's first
+  *streaming* subprocess (`asyncio.create_subprocess_exec`, reading
+  stdout/stderr as they arrive) — everywhere else either imports
+  in-process or uses `subprocess.run`'s buffer-until-exit, fine for
+  something that finishes in milliseconds but wrong for a real device
+  sync that can run 20-50+ minutes (the exact problem
+  `_ThrottledProgressPrinter` already solved for the terminal case).
+  Reads stderr progress lines live while draining stdout in the
+  background (it only ever carries 0-1 lines under `--json`), yields
+  `("progress"|"result"|"error", text)` tuples. Never raises — every
+  failure mode (can't even spawn, nonzero exit, unparseable stdout)
+  comes back as an `("error", ...)` event so a caller streaming this
+  into an HTTP response never needs its own try/except mid-stream.
+- **New `POST /api/sync/plan` / `POST /api/sync/execute`** (SSE, not
+  plain JSON) in `routers/sync.py`. **Confirmed with the user before
+  building**: the two routes are deliberately independent — nothing
+  server-side requires a `/plan` call before `/execute` accepts
+  `allow_removals: true`, matching the CLI's own trust model (`sync
+  --execute --allow-removals` can already be run directly today, no
+  forced plan-only run first). `sync-orchestrator`'s own hard gate is
+  what actually backstops this, not request sequencing.
+- **New `GET /api/auto-sync/setup`**: generates the systemd unit + udev
+  rule filled in with this install's *real* paths (previously only a
+  hand-edited example existed, checked into
+  `services/sync-orchestrator/udev/`), writes them to
+  `state/generated/` (a location this process can already write to
+  without privilege), and returns the exact `sudo cp`/`daemon-reload`/
+  `udevadm control --reload-rules` commands plus real install status.
+  **Confirmed by reading this machine's actual state**: the systemd
+  unit was already installed by hand back at M9 time, but the udev
+  rule was not — auto-sync has been silently half-installed here this
+  whole time (no trigger, so plugging in an iPod never actually fired
+  it). The route's `status` field surfaces exactly this kind of gap.
+  Known, disclosed limitation baked into the generated rule itself as
+  a comment: the `05ac`/`1209` USB `idVendor`/`idProduct` is only
+  confirmed for a 5th/5.5th-gen iPod Video — nothing in this project
+  derives that value for any other generation, so a different device
+  needs a manual `lsusb` lookup and edit before installing.
+  **Bug caught before it shipped**: the first version templated
+  `ExecStart`/paths straight from `app.state`, which can be a relative
+  path (`--config-root config`, the documented common case) — a
+  systemd oneshot unit has no notion of "this process's cwd" and
+  would have silently failed to start with a relative `ExecStart`.
+  Fixed by `.resolve()`-ing config/library/state root specifically for
+  this route; caught by re-running the live smoke test against the
+  real repo layout, not by a unit test (the tmp_path-based tests
+  happened to already be absolute paths, so they didn't catch it).
+- **"Dangerous mode" toggle** (confirmed with the user, a direct
+  answer to "is there a way to start the sync without first computing
+  the plan, and immediately allowing removals?"): a switch on the new
+  `Sync.tsx` screen, off by default and reset every time the screen
+  mounts (never persisted, so a stale "still on from last visit"
+  toggle can't happen). Off: the normal compute-plan → review →
+  tick-removals-checkbox → execute flow. On: a single "Sync now
+  (dangerous)" button calls `/api/sync/execute` directly with
+  `allow_removals: true` immediately — still streams live progress
+  (it's the review step being skipped, not visibility).
+- **New `src/api.ts` `streamSSE`/`streamSyncPlan`/`streamSyncExecute`**:
+  native `EventSource` is GET-only and can't carry a JSON body, so a
+  POST that streams SSE needs a manual `fetch()` + `ReadableStream`
+  reader parsing `event:`/`data:` frames instead — the standard
+  workaround, not a new dependency. New `AutoSyncSetupCard.tsx`
+  component, collapsed by default, hosted on the `Sync` screen rather
+  than its own nav entry (a rarely-visited one-time setup step).
+- **Verified live**: `sync-orchestrator sync --json` against a real
+  profile with no device connected — stdout was exactly one `FAIL: ...`
+  line, progress correctly on stderr. The full stack (one-process-
+  served frontend + backend) end to end: `/api/sync/plan` against
+  john's real profile correctly streamed real progress then a real
+  `DeviceNotFoundError` as an `error` event; `/api/auto-sync/setup`
+  correctly reported `systemd_installed: true, udev_rule_installed:
+  false`, matching this machine's real state confirmed by hand.
+  **Not verified**: an actual successful plan/execute against a real
+  connected device (none available this session), and the frontend's
+  rendering/interaction itself (no browser automation tool available
+  this session, per this project's usual caveat — only build/curl/SSE-
+  wire-format-level verification).

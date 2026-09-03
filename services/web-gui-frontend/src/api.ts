@@ -135,6 +135,45 @@ export type SourcesStatus = {
 export type DirEntry = { name: string; is_dir: boolean }
 export type BrowseResult = { subpath: string; entries: DirEntry[] }
 
+export type SyncPlanSummary = {
+  to_add_count: number
+  to_remove_count: number
+  to_update_metadata_count: number
+  to_update_file_count: number
+  to_update_artwork_count: number
+  to_add_sample: string[]
+  to_add_sample_more: number
+  to_remove_sample: string[]
+  to_remove_sample_more: number
+  metadata_field_changes: Record<string, number>
+  duplicates_count: number
+  playlists_to_add: string[]
+  playlists_to_edit: string[]
+  playlists_to_remove: string[]
+  storage: { bytes_to_add: number; bytes_to_remove: number; bytes_to_update: number; net_change: number }
+  unresolved_selections: string[]
+  unresolved_audiobook_selections: string[]
+  unresolved_music_selections: string[]
+  play_states_updated: number
+  before_track_count: number
+}
+
+export type SyncResultSummary = {
+  summary: string
+  tracks_added: number
+  after_track_count: number
+  before_track_count: number
+  snapshot_id: string | null
+  ejected: boolean
+}
+
+export type AutoSyncSetup = {
+  systemd_unit: string
+  udev_rule: string
+  install_commands: string[]
+  status: { systemd_installed: boolean; udev_rule_installed: boolean }
+}
+
 export type DiscoveredBook = {
   name: string
   path: string
@@ -172,6 +211,50 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (resp.status === 204) return undefined as T
   return resp.json() as Promise<T>
+}
+
+export type SSEEvent = { event: 'progress' | 'result' | 'error'; data: string }
+
+// Native EventSource is GET-only and can't carry a JSON body, so a POST
+// that streams Server-Sent Events (sync-orchestrator's own progress +
+// final plan/result, see web_gui_backend/sync_runner.py) needs a manual
+// fetch() + ReadableStream reader instead -- the standard workaround,
+// not a new dependency.
+async function* streamSSE(path: string, body: unknown): AsyncGenerator<SSEEvent> {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok || !resp.body) {
+    const detail = await resp.json().catch(() => resp.statusText)
+    throw new ApiError(resp.status, (detail as { detail?: unknown })?.detail ?? detail)
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let sepIndex: number
+      while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, sepIndex)
+        buffer = buffer.slice(sepIndex + 2)
+        let event: SSEEvent['event'] = 'progress'
+        const dataLines: string[] = []
+        for (const line of rawEvent.split('\n')) {
+          if (line.startsWith('event: ')) event = line.slice(7) as SSEEvent['event']
+          else if (line.startsWith('data: ')) dataLines.push(line.slice(6))
+        }
+        if (dataLines.length) yield { event, data: dataLines.join('\n') }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 export const api = {
@@ -245,4 +328,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
+
+  getAutoSyncSetup: () => request<AutoSyncSetup>('/api/auto-sync/setup'),
+}
+
+export type SyncPlanBody = { profile: string; skip_backup?: boolean; skip_podcasts?: boolean }
+export type SyncExecuteBody = SyncPlanBody & { allow_removals?: boolean }
+
+export function streamSyncPlan(body: SyncPlanBody): AsyncGenerator<SSEEvent> {
+  return streamSSE('/api/sync/plan', body)
+}
+
+export function streamSyncExecute(body: SyncExecuteBody): AsyncGenerator<SSEEvent> {
+  return streamSSE('/api/sync/execute', body)
 }

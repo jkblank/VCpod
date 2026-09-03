@@ -6,6 +6,7 @@ import Overview from './screens/Overview'
 import Podcasts from './screens/Podcasts'
 import Profiles from './screens/Profiles'
 import Sources from './screens/Sources'
+import Sync from './screens/Sync'
 import { useProfileStore } from './useProfileStore'
 import './App.css'
 
@@ -17,6 +18,7 @@ type ScreenId =
   | 'external_library'
   | 'audiobooks'
   | 'credentials'
+  | 'sync'
 
 const SCREENS: Record<ScreenId, { label: string; blurb: string }> = {
   overview: {
@@ -47,6 +49,10 @@ const SCREENS: Record<ScreenId, { label: string; blurb: string }> = {
   credentials: {
     label: 'Sources & credentials',
     blurb: 'Global enable flags and credential health, plus the current profile’s Pocket Casts login.',
+  },
+  sync: {
+    label: 'Sync',
+    blurb: 'Compute a real sync plan, review it, and write it to a connected device.',
   },
 }
 
@@ -85,6 +91,7 @@ export default function App() {
         {screen === 'external_library' && <ExternalLibrary store={store} />}
         {screen === 'audiobooks' && <Audiobooks store={store} />}
         {screen === 'credentials' && <Credentials store={store} />}
+        {screen === 'sync' && <Sync store={store} />}
       </main>
     </div>
   )

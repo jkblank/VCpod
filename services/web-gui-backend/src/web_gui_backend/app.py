@@ -22,12 +22,14 @@ from fastapi.staticfiles import StaticFiles
 from web_gui_backend.routers import (
     audiobooks,
     audiobooks_discover,
+    auto_sync_setup,
     device,
     external_library,
     global_config,
     podcasts,
     profiles,
     sources,
+    sync,
 )
 
 # Bound to localhost/LAN only per this build's locked-in access-control
@@ -82,6 +84,8 @@ def create_app(
         external_library,
         audiobooks,
         audiobooks_discover,
+        sync,
+        auto_sync_setup,
     ):
         app.include_router(router_module.router)
 

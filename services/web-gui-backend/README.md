@@ -98,6 +98,9 @@ separate React SPA, not server-rendered.
 | GET | `/api/audiobooks/browse?subpath=...` | Lists one directory under `library_root/audiobooks` (resolved internally, never client-supplied) |
 | GET | `/api/audiobooks/discover` | Scans `global.yaml`'s `audiobook_manager.discover_root` for raw, not-yet-processed parts-dirs (`audiobook_manager.discover.discover_audiobooks`), flagging which ones a previous import already handled. `{"root": "", "books": []}` when `discover_root` isn't set yet — not an error |
 | POST | `/api/audiobooks/discover/import` | Body `{"name"}` — runs the real merge+tag pipeline (`audiobook_manager.pipeline.run_import_audiobook`, the same code `audiobook-manager import-audiobook` uses) against `{discover_root}/{name}`. 502 on a real failure (no ffmpeg, beets crashing); 422 if beets-audible couldn't confidently match the book (not a failure — the merged file is left in place for a manual `metadata.yml` retry, see `services/audiobook-manager/README.md`); `{"status": "ok", "imported_paths": [...]}` on success |
+| POST | `/api/sync/plan` | Body `{"profile", "skip_backup"?, "skip_podcasts"?}` — **Server-Sent Events**, not plain JSON: streams `sync-orchestrator sync --json`'s progress as `event: progress` frames, then one `event: result` frame carrying the computed plan (`sync_orchestrator.plan_json.plan_summary`'s shape), or `event: error` on any failure (device not found, unresolved selection, ...). Never passes `--execute` — nothing is written |
+| POST | `/api/sync/execute` | Same SSE shape as `/api/sync/plan`, body adds `allow_removals` (default `false`) — always passes `--execute`, passes `--allow-removals` only when the body says so. **Deliberately independent of `/api/sync/plan`** — no prior plan call is required server-side, same trust model the CLI already has; `sync-orchestrator`'s own hard gate (refuses removals without `--allow-removals`) is what actually backstops this |
+| GET | `/api/auto-sync/setup` | Generates the systemd unit + udev rule for unattended auto-sync-on-connect, filled in with this install's real paths, written to `state/generated/` (a location this process can already write to) — returns their content, the exact `sudo cp`/`daemon-reload`/`udevadm control --reload-rules` commands to install them, and `{"systemd_installed", "udev_rule_installed"}` (real `Path.is_file()` checks against `/etc/...`). Never installs anything itself |
 
 A validation failure (bad enum value, missing required field, a
 profile named the reserved `"global"`, a duplicate profile name across
@@ -130,11 +133,18 @@ so a working file is never left corrupted mid-write, same pattern
   `music-stack-cli`/`fetch-scheduler`/`library-manager` aren't needed
   yet (M14 territory).
 - **`sync-orchestrator` stays a subprocess call** (`device.py`,
-  `identify_connected_devices`), same reasoning
-  `sync-orchestrator`'s own `_build_music_stack_fetch_cmd` already
-  documents for the reverse direction: it's a standalone `uv` project
-  specifically so its `iopenpod`/PyQt6 dependency tree never merges
-  with this (or any other root-workspace) service's.
+  `identify_connected_devices`; `sync_runner.py`,
+  `stream_sync`), same reasoning `sync-orchestrator`'s own
+  `_build_music_stack_fetch_cmd` already documents for the reverse
+  direction: it's a standalone `uv` project specifically so its
+  `iopenpod`/PyQt6 dependency tree never merges with this (or any other
+  root-workspace) service's. `sync_runner.py` is the first *streaming*
+  subprocess in this service (`asyncio.create_subprocess_exec`,
+  reading stdout/stderr as they arrive) — everywhere else either
+  imports in-process or uses `subprocess.run`'s buffer-until-exit,
+  fine for something that finishes in milliseconds but wrong for a
+  real device sync that can run 20-50+ minutes (see
+  `sync-orchestrator/README.md`'s own progress-reporting rationale).
 - **Config is the only source of truth** — no database, no cached
   copy. Every route reads/writes through `common.config`'s
   `load_*`/`save_*` functions, the same ones every CLI tool already
@@ -158,10 +168,20 @@ so a working file is never left corrupted mid-write, same pattern
   plaintext under `config/secrets/`, same posture as every CLI tool
   today. Not encrypted at rest — a deliberate, separate,
   not-yet-scheduled follow-up if it ever happens.
-- Nothing here executes privileged commands. Auto-sync setup (planned,
-  M14) will generate the filled-in systemd unit/udev rule files and
-  display the exact `sudo` commands for a human to run — never attempt
-  to run them itself.
+- Nothing here executes privileged commands. `/api/auto-sync/setup`
+  generates the filled-in systemd unit/udev rule files and displays
+  the exact `sudo` commands for a human to run — it never attempts to
+  run them itself.
+- `/api/sync/execute` genuinely can write to and delete tracks from a
+  real device, unlike every other route in this service (which only
+  ever edits YAML or lists/validates things) — this is intentional
+  (M14's whole point: trigger a manual sync from the browser), backed
+  by the same safety gates `sync-orchestrator sync` already has
+  (`--execute` alone refuses on any removal; `--allow-removals` is a
+  separate, explicit opt-in). There is no request-level guard beyond
+  that — see `routers/sync.py`'s docstring for why (confirmed with the
+  user: the frontend's "dangerous mode" toggle is a deliberate way to
+  skip the plan-review step, not a bug).
 
 ## Tests
 

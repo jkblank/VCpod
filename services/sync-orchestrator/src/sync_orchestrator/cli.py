@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +28,7 @@ from sync_orchestrator.device import (
     iter_connected_devices,
     mount_candidate_devices,
 )
+from sync_orchestrator.plan_json import plan_summary, result_summary
 from sync_orchestrator.rockbox_sync import RockboxSyncError, execute_rockbox_sync, plan_rockbox_sync
 from sync_orchestrator.sync import SyncError, execute_sync, plan_sync
 
@@ -152,9 +153,17 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 def _run_sync(
     args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path
 ) -> int:
+    # full-sync/auto-sync's argparse namespaces never define --json (only
+    # the plain `sync` subparser does) -- getattr, not args.json, so this
+    # function still works unmodified as their shared dispatch target.
+    json_mode = getattr(args, "json", False)
+
+    def _out(message: str) -> None:
+        print(message, file=sys.stderr if json_mode else sys.stdout)
+
     start_time = time.monotonic()
-    print(f"== Finding device for profile {profile.profile!r} "
-          f"({profile.device.match_by}={profile.device.match_value!r}) ==")
+    _out(f"== Finding device for profile {profile.profile!r} "
+         f"({profile.device.match_by}={profile.device.match_value!r}) ==")
     # Unlike auto-sync (udev-triggered, no desktop session guaranteed to be
     # watching), an interactive `sync`/`full-sync` invocation used to assume
     # a human had already seen the device auto-mount by their file manager
@@ -166,19 +175,19 @@ def _run_sync(
     # auto-sync's own call -- an unrelated USB drive that can't be mounted
     # must never block finding the actual iPod. See notes.md.
     for block_device in mount_candidate_devices():
-        print(f"  auto-mounted {block_device}")
+        _out(f"  auto-mounted {block_device}")
     try:
         device_info = find_matching_device(profile.device)
     except DeviceNotFoundError as e:
         return _fail(str(e))
-    print(
+    _out(
         f"  {device_info.model_family} {device_info.generation} "
         f"({device_info.model_number}), capacity={device_info.capacity}, "
         f"path={device_info.path}"
     )
 
     def _report_progress(message: str) -> None:
-        print(f"  {message}")
+        _out(f"  {message}")
 
     extra_pc_folders = tuple(args.pc_folders) if args.pc_folders else ()
     try:
@@ -196,27 +205,31 @@ def _run_sync(
         return _fail(str(e))
 
     for selection in planned.unresolved_selections:
-        print(f"  WARNING: external_library selection {selection!r} matched 0 files")
+        _out(f"  WARNING: external_library selection {selection!r} matched 0 files")
     for selection in planned.unresolved_audiobook_selections:
-        print(f"  WARNING: audiobooks selection {selection!r} matched 0 files")
+        _out(f"  WARNING: audiobooks selection {selection!r} matched 0 files")
     for selection in planned.unresolved_music_selections:
-        print(f"  WARNING: music selection {selection!r} matched 0 files")
+        _out(f"  WARNING: music selection {selection!r} matched 0 files")
 
     if planned.play_states_updated:
-        print(
+        _out(
             f"  {planned.play_states_updated} episode(s) with new local play state "
             "recorded (pushed to Pocket Casts below if this is a real --execute run)"
         )
 
-    print(f"== Plan for {profile.profile!r} ==")
-    _print_plan(planned.plan)
+    if not json_mode:
+        print(f"== Plan for {profile.profile!r} ==")
+        _print_plan(planned.plan)
 
     if not args.execute:
-        print(
-            "\nPLAN ONLY (no --execute passed). Review the numbers above, "
-            "especially to_remove, before re-running with --execute."
-        )
-        print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
+        if json_mode:
+            print(json.dumps(plan_summary(planned)))
+        else:
+            print(
+                "\nPLAN ONLY (no --execute passed). Review the numbers above, "
+                "especially to_remove, before re-running with --execute."
+            )
+            print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
         return 0
 
     # A selection that resolves to 0 files is almost certainly a typo'd
@@ -272,28 +285,29 @@ def _run_sync(
             "--allow-removals (review the removal list above first)"
         )
 
-    print("== Executing ==")
+    _out("== Executing ==")
     try:
         result, after = execute_sync(planned, progress_callback=_report_progress)
     except SyncError as e:
         return _fail(str(e))
 
-    print(f"  {result.summary}")
+    _out(f"  {result.summary}")
     after_count = len(after.get("mhlt", []))
-    print(f"  {after_count} tracks now on device (was {planned.before_track_count})")
+    _out(f"  {after_count} tracks now on device (was {planned.before_track_count})")
 
     snapshot_note = (
         f"Backup snapshot {planned.snapshot.id}"
         if planned.snapshot is not None
         else "The most recent backup snapshot"
     )
-    print(
+    _out(
         f"\nPASS: wrote {result.tracks_added} track(s) to a real device. "
         f"{snapshot_note} is available for rollback if needed."
     )
 
-    _maybe_push_play_status(args, profile, profile_path, config_root)
+    _maybe_push_play_status(args, profile, profile_path, config_root, out=_out)
 
+    ejected = False
     if not args.skip_eject:
         # A plain filesystem unmount (the previous manual workflow)
         # leaves the USB mass-storage session logically active — the
@@ -303,11 +317,15 @@ def _run_sync(
         # See device.py/notes.md.
         try:
             eject_device(device_info)
-            print("Device ejected — safe to disconnect.")
+            ejected = True
+            _out("Device ejected — safe to disconnect.")
         except EjectError as e:
-            print(f"WARNING: could not eject device automatically: {e}")
+            _out(f"WARNING: could not eject device automatically: {e}")
 
-    print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
+    if json_mode:
+        print(json.dumps(result_summary(exec_result=result, after=after, planned=planned, ejected=ejected)))
+    else:
+        print(f"  elapsed: {_format_duration(time.monotonic() - start_time)}")
     return 0
 
 
@@ -349,6 +367,11 @@ def _run_rockbox_sync(
     (RockboxSyncPlan vs. iopenpod's SyncPlan), so sharing one function
     body would mean conditionals at nearly every line rather than one
     clean dispatch point."""
+    if getattr(args, "json", False):
+        return _fail(
+            "--json is not yet supported in Rockbox mode (profile.sync.mode: "
+            "rockbox) -- only iTunes mode has a plan_json.py counterpart today"
+        )
     start_time = time.monotonic()
     print(
         f"== Finding device for profile {profile.profile!r} "
@@ -618,6 +641,8 @@ def _maybe_push_play_status(
     profile: ProfileConfig,
     profile_path: Path,
     config_root: Path,
+    *,
+    out: Callable[[str], None] = print,
 ) -> None:
     """After a real device sync, push any locally-confirmed plays to
     Pocket Casts right away.
@@ -660,17 +685,17 @@ def _maybe_push_play_status(
     if pending_count == 0:
         return
 
-    print(f"== Pushing {pending_count} play-state update(s) to Pocket Casts ==")
+    out(f"== Pushing {pending_count} play-state update(s) to Pocket Casts ==")
     cmd = _build_music_stack_fetch_cmd(
         args, profile_path, config_root, sources=["podcasts"]
     )
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.stdout:
-        print(proc.stdout, end="")
+        out(proc.stdout.rstrip("\n"))
     if proc.stderr:
-        print(proc.stderr, end="")
+        out(proc.stderr.rstrip("\n"))
     if proc.returncode != 0:
-        print(
+        out(
             f"WARNING: play-status push failed (exit {proc.returncode}); "
             "will retry on the next podcast sync"
         )
@@ -920,6 +945,18 @@ def main() -> None:
         "successful --execute (to push device-observed play state to "
         "Pocket Casts) — kept out-of-process deliberately, see "
         "_maybe_push_play_status.",
+    )
+    sync_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Machine-readable mode for a driving process (e.g. "
+        "web-gui-backend): all progress/status lines go to stderr instead "
+        "of stdout, and exactly one JSON object (the computed plan, or the "
+        "executed result) is printed as the only line on stdout. Every "
+        "existing safety gate (unresolved-selection refusal, the "
+        "--allow-removals hard gate) is unchanged — this only changes how "
+        "the outcome is reported. iTunes mode only (rockbox mode fails "
+        "loudly if combined with --json — not yet supported).",
     )
     sync_parser.set_defaults(func=_cmd_sync)
 
