@@ -4718,3 +4718,53 @@ warranted.
   the one-process backend with real 200s. **Not verified**: actual
   visual rendering in a browser, same caveat as the icon set entry
   above — no browser automation tool available this session.
+
+## 2026-09-03: Real sync failure — podcast artwork backfill conflicting with removal
+
+A real `sync --execute --allow-removals` for `john`, triggered from the
+web GUI, failed with 6 `update_conflicts_with_remove` errors across 4
+shows (Linux Matters, Lateral with Tom Scott, Timothy Keller Sermons,
+The Standup with ThePrimeagen) — iopenpod's own plan validator refused
+to execute a plan proposing both an artwork update *and* a removal for
+the same `db_track_id`. Nothing was written; it failed safely, but
+blocked the whole sync, not just those 6 episodes.
+
+Root cause, found by tracing `sync.py`'s podcast plan assembly:
+`build_podcast_artwork_backfill_items` (added 2026-08-26/09-01 to
+backfill artwork for the ~1600+ episodes already on-device before the
+cover-art fix existed) has **no notion of played/unsubscribed state at
+all** — by design, per its own docstring, it only checks "is this
+on-device track art-less and does a local file still resolve art for
+it." Meanwhile `build_podcast_removal_items` proposes removal for any
+episode `known_episodes` (the state db, freshly updated by *this same
+run's* device play-count read-back a few dozen lines earlier in
+`plan_sync`) says is now played or unsubscribed, keyed off the state
+db rather than local-file presence specifically *because*
+podcast-manager's own file deletion happens on a later, independent
+fetch-scheduler tick — not synchronously with the played-state
+detection. That gap is exactly the window this hit: an episode
+discovered as newly-played by this run's own device read-back, whose
+local file (and art-less on-device track) hadn't been cleaned up yet,
+is simultaneously a real removal candidate and a real artwork-backfill
+candidate. Both proposals are individually correct given their own
+inputs; nothing reconciled them against each other before finalizing
+the plan.
+
+Fix: new `podcast_artwork_backfill.exclude_conflicting_with_removal()`
+— filters artwork_items (and the matching matched_pc_paths) down to
+exclude anything whose db_track_id is also in removal_items, called
+right before either list gets merged into the plan in `sync.py`.
+Removal always wins on a genuine conflict — a track on its way off the
+device has no reason to also get its artwork rewritten first. Kept as
+its own small, independently unit-tested function (mirroring this
+codebase's existing pattern of small single-purpose podcast-plan
+modules) rather than teaching `build_podcast_artwork_backfill_items`
+itself about played/unsubscribed state, which would duplicate matching
+logic `build_podcast_removal_items` already owns.
+
+**Verified**: 3 new unit tests for `exclude_conflicting_with_removal`
+(overlap dropped, no-overlap unchanged, no-removals unchanged); full
+sync-orchestrator suite (189 passed) and root workspace suite (541
+passed). **Not verified against a real device** — no live re-sync run
+this session after the fix; worth confirming the exact 6 episodes from
+the failed run now sync cleanly next real sync.
