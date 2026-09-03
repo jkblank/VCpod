@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
 
 import uvicorn
 
@@ -36,10 +38,36 @@ def main() -> None:
         "to a LAN address deliberately).",
     )
     parser.add_argument("--port", type=int, default=8420)
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Dev only: auto-restart on code changes under this package's "
+        "src/web_gui_backend/. Route/handler edits are picked up without "
+        "manually killing and restarting the process -- see notes.md's "
+        "2026-09-03 entry for why this used to require a manual restart "
+        "(a stale process silently serving old routes, confirmed live).",
+    )
     args = parser.parse_args()
 
-    app = create_app(args.config_root, args.sync_orchestrator_dir, args.library_root)
-    uvicorn.run(app, host=args.host, port=args.port)
+    if args.reload:
+        # See app.py::create_app_from_env's docstring for why env vars,
+        # not plain args, are what actually reach the app on each reload.
+        os.environ["WEB_GUI_CONFIG_ROOT"] = str(args.config_root)
+        if args.sync_orchestrator_dir:
+            os.environ["WEB_GUI_SYNC_ORCHESTRATOR_DIR"] = str(args.sync_orchestrator_dir)
+        if args.library_root:
+            os.environ["WEB_GUI_LIBRARY_ROOT"] = str(args.library_root)
+        uvicorn.run(
+            "web_gui_backend.app:create_app_from_env",
+            factory=True,
+            host=args.host,
+            port=args.port,
+            reload=True,
+            reload_dirs=[str(Path(__file__).resolve().parent)],
+        )
+    else:
+        app = create_app(args.config_root, args.sync_orchestrator_dir, args.library_root)
+        uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

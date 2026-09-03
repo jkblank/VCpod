@@ -25,6 +25,18 @@ uv run web-gui-backend --config-root config
   This service has no login system (see "Security posture" below); it's
   meant to stay on localhost or your own LAN, never the open internet.
 - `--port` (default `8420`)
+- `--reload` (dev only) — auto-restarts on code changes under this
+  package's `src/web_gui_backend/`, so a route/handler edit is picked
+  up without manually killing and restarting the process. Confirmed
+  live: without this, a long-running process silently keeps serving
+  its old routes after a `git pull`/new commit — every newly-added
+  route 404s (not 500, not a validation error — genuinely "route not
+  found", since the running process never re-imports anything on its
+  own) until it's restarted. See `notes.md`'s 2026-09-03 entry.
+
+  ```bash
+  uv run web-gui-backend --config-root config --reload
+  ```
 
 ## API
 

@@ -12,6 +12,7 @@ ConfigError/ValidationError -> HTTP response helpers every router uses.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -66,3 +67,19 @@ def create_app(
         app.include_router(router_module.router)
 
     return app
+
+
+# uvicorn --reload re-execs and re-imports the app fresh in a subprocess
+# on every file change under reload_dirs -- it can only do that from an
+# import string ("module:factory_name"), never an already-constructed
+# app object, so config_root/library_root/sync_orchestrator_dir can't
+# be passed as plain Python call args the way create_app() takes them
+# for a normal run. Env vars are the one channel that survives across
+# that re-exec; cli.py's --reload flag sets these before handing this
+# factory's dotted path to uvicorn.
+def create_app_from_env() -> FastAPI:
+    return create_app(
+        config_root=os.environ.get("WEB_GUI_CONFIG_ROOT", "config"),
+        sync_orchestrator_dir=os.environ.get("WEB_GUI_SYNC_ORCHESTRATOR_DIR") or None,
+        library_root=os.environ.get("WEB_GUI_LIBRARY_ROOT") or None,
+    )

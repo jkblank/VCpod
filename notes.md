@@ -4057,3 +4057,66 @@ behind an explicit "enable this section" checkbox, since both fields
 are optional on `ProfileConfig` and mean something different when
 entirely unset vs. present-with-empty-selections (documented inline in
 each screen, matching each model's own doc comments in `models.py`).
+
+## 2026-09-03: web-gui-backend `--reload`, prompted by a real stale-process bug
+
+User hit `/api/external-library/browse` returning a plain 404 (not the
+422 the route itself would raise for a bad root) right after M12b
+shipped. Root cause, confirmed live via `ps -o lstart=`: their backend
+process had been running continuously since *before* the commit that
+added that route — nothing re-imports a running Python process's code
+on `git pull`, so it was genuinely serving the old route table. This is
+now the third time this exact class of confusion has come up this
+project (see the two 2026-09-02 entries) — worth a real fix, not just
+"remember to restart it."
+
+New `--reload` flag (`uv run web-gui-backend --config-root config
+--reload`), backed by `uvicorn --reload` + a new `create_app_from_env()`
+factory in `app.py`. Uvicorn's reload re-execs and re-imports the app
+fresh in a subprocess on every file change — it can only do that from a
+dotted import string, never an already-built `FastAPI` object, so
+`config_root`/`library_root`/`sync_orchestrator_dir` can't cross that
+re-exec as plain Python call args the way `create_app()`'s normal
+(non-reload) path takes them. `cli.py`'s `--reload` branch sets
+`WEB_GUI_CONFIG_ROOT`/`WEB_GUI_LIBRARY_ROOT`/
+`WEB_GUI_SYNC_ORCHESTRATOR_DIR` env vars before handing uvicorn the
+factory's dotted path; those survive the re-exec since env vars are
+inherited by the child process, unlike Python objects. `reload_dirs` is
+pinned to this package's own `src/web_gui_backend/` (not the repo-wide
+default) so editing the frontend or another service doesn't trigger a
+pointless restart.
+
+**Verified live, not just by reading the uvicorn docs**: started with
+`--reload`, added a throwaway `/api/_reload_smoke_test` route to
+`routers/device.py`, confirmed via the log
+(`WatchFiles detected changes in '...device.py'. Reloading...`) and a
+follow-up `curl` that the new route worked *without any manual
+restart*, then reverted the throwaway route.
+
+## Stretch goal, not investigated yet: sync over USB directly from the browser
+
+User's idea — worth a real look eventually, flagged here rather than
+acted on. One real technical obstacle worth knowing going in: a
+click-wheel iPod enumerates as a standard USB Mass Storage device, and
+essentially every desktop OS auto-claims that class of device at the
+kernel/driver level the moment it's plugged in (that's what makes it
+mount as a filesystem at all). WebUSB — the actual browser API for
+"a web page talks to a USB device directly" — is explicitly unable to
+claim an interface the OS already owns; it's designed for
+custom/vendor-specific USB interfaces (Arduino-style boards, some
+cameras), not standard mass-storage devices. So "WebUSB drives the
+iPod directly, replacing sync-orchestrator/iopenpod entirely" is likely
+a dead end as literally stated, not just unbuilt — worth confirming
+before investing real time, not assuming.
+
+A more realistic middle ground, closer to what's actually already on
+the roadmap: keep `sync-orchestrator` doing the real USB/iTunesDB work
+(as today), and have the browser trigger a real sync run and stream its
+live progress back — this is essentially M14's planned "Sync screen"
+(trigger a manual sync from the UI, view live plan/result) already,
+just framed as "from the browser" instead of a CLI. Also worth noting:
+genuine in-browser filesystem access (the separate File System Access
+API, `showDirectoryPicker()`) only reaches a device mounted on
+whichever machine the *browser* is running on — if the web GUI backend
+and the browser aren't on the same machine (a real possible deployment
+shape for this project), that API wouldn't reach the iPod either way.
