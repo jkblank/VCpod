@@ -1,11 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  ApiError,
-  streamSyncExecute,
-  streamSyncPlan,
-  type SyncPlanSummary,
-  type SyncResultSummary,
-} from '../api'
+import { api, type SyncStatus } from '../api'
 import AutoSyncSetupCard from '../components/AutoSyncSetupCard'
 import Dialog from '../components/Dialog'
 import {
@@ -19,6 +13,7 @@ import {
 } from '../icons'
 import { useConnectedDevices } from '../useConnectedDevices'
 import type { ProfileStore } from '../useProfileStore'
+import type { SyncSessions } from '../useSyncSessions'
 
 function formatBytes(bytes: number): string {
   const sign = bytes < 0 ? '-' : ''
@@ -34,24 +29,54 @@ function formatBytes(bytes: number): string {
   return `${sign}${value.toFixed(1)} ${units[unit]}`
 }
 
-type RunningAction = 'plan' | 'execute' | 'dangerous' | null
-
-export default function Sync({ store }: { store: ProfileStore }) {
+export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncSessions }) {
   const { draft } = store
   const { devices, error: deviceError } = useConnectedDevices()
-  const [runningAction, setRunningAction] = useState<RunningAction>(null)
-  const [log, setLog] = useState<string[]>([])
-  const [plan, setPlan] = useState<SyncPlanSummary | null>(null)
-  const [result, setResult] = useState<SyncResultSummary | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // Owned by App.tsx, keyed by profile -- survives this component
+  // unmounting when you switch screens mid-sync (see useSyncSessions.ts).
+  const session = draft ? sync.getSession(draft.profile) : null
+  const { runningAction, log, plan, result, error } = session ?? {
+    runningAction: null,
+    log: [],
+    plan: null,
+    result: null,
+    error: null,
+  }
   const [allowRemovals, setAllowRemovals] = useState(false)
   const [dangerousMode, setDangerousMode] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [externalStatus, setExternalStatus] = useState<SyncStatus | null>(null)
   const logRef = useRef<HTMLPreElement | null>(null)
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [log])
+
+  // Catches a sync we didn't ourselves start streaming: a fresh page
+  // load/reload, a different browser/session, or a headless auto-sync
+  // run (udev-triggered, never goes through this backend's own
+  // /api/sync/execute at all -- see sync_status.py). Only polls while we
+  // have no live SSE session of our own for this profile; once we do,
+  // that's already a strictly better source of truth than polling.
+  useEffect(() => {
+    if (!draft || runningAction !== null) {
+      setExternalStatus(null)
+      return
+    }
+    let cancelled = false
+    const poll = () => {
+      api
+        .getSyncStatus(draft.profile)
+        .then((s) => !cancelled && setExternalStatus(s))
+        .catch(() => !cancelled && setExternalStatus(null))
+    }
+    poll()
+    const interval = window.setInterval(poll, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [draft?.profile, runningAction])
 
   const connected =
     draft && devices
@@ -62,65 +87,28 @@ export default function Sync({ store }: { store: ProfileStore }) {
         )
       : null
 
-  const reset = () => {
-    setLog([])
-    setPlan(null)
-    setResult(null)
-    setError(null)
-    setAllowRemovals(false)
+  const resetLocal = () => setAllowRemovals(false)
+
+  const resetAll = () => {
+    resetLocal()
+    if (draft) sync.resetSession(draft.profile)
   }
 
-  const run = async (
-    action: Exclude<RunningAction, null>,
-    stream: AsyncGenerator<{ event: 'progress' | 'result' | 'error'; data: string }>,
-    onResult: (data: string) => void,
-  ) => {
-    setRunningAction(action)
-    try {
-      for await (const evt of stream) {
-        if (evt.event === 'progress') {
-          setLog((prev) => [...prev, evt.data])
-        } else if (evt.event === 'result') {
-          onResult(evt.data)
-        } else {
-          setError(evt.data)
-          return
-        }
-      }
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e))
-    } finally {
-      setRunningAction(null)
-    }
-  }
-
-  const computePlan = async () => {
+  const computePlan = () => {
     if (!draft) return
-    reset()
-    await run('plan', streamSyncPlan({ profile: draft.profile }), (data) => {
-      setPlan(JSON.parse(data) as SyncPlanSummary)
-    })
+    resetLocal()
+    void sync.computePlan(draft.profile)
   }
 
-  const execute = async () => {
+  const execute = () => {
     if (!draft) return
-    setResult(null)
-    setError(null)
-    await run(
-      'execute',
-      streamSyncExecute({ profile: draft.profile, allow_removals: allowRemovals }),
-      (data) => setResult(JSON.parse(data) as SyncResultSummary),
-    )
+    void sync.execute(draft.profile, allowRemovals)
   }
 
-  const dangerousSync = async () => {
+  const dangerousSync = () => {
     if (!draft) return
-    reset()
-    await run(
-      'dangerous',
-      streamSyncExecute({ profile: draft.profile, allow_removals: true }),
-      (data) => setResult(JSON.parse(data) as SyncResultSummary),
-    )
+    resetLocal()
+    void sync.dangerousSync(draft.profile)
   }
 
   if (!draft) {
@@ -142,7 +130,8 @@ export default function Sync({ store }: { store: ProfileStore }) {
   }
 
   const hasRemovals = plan != null && (plan.to_remove_count > 0 || plan.playlists_to_remove.length > 0)
-  const running = runningAction !== null
+  const externalRunning = externalStatus?.running ?? false
+  const running = runningAction !== null || externalRunning
 
   return (
     <>
@@ -170,6 +159,21 @@ export default function Sync({ store }: { store: ProfileStore }) {
           </span>
         </p>
 
+        {externalRunning && (
+          <div className="warning-banner">
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Spinner size={14} />A sync for <strong>{draft.profile}</strong> is already running —
+              started elsewhere (a headless auto-sync, or another session). Waiting for it to
+              finish before you can start another.
+            </span>
+            {externalStatus?.log_tail && (
+              <pre className="sync-log" style={{ marginTop: '8px', marginBottom: 0 }}>
+                {externalStatus.log_tail.join('\n')}
+              </pre>
+            )}
+          </div>
+        )}
+
         <div className="row">
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
             <input
@@ -177,7 +181,7 @@ export default function Sync({ store }: { store: ProfileStore }) {
               checked={dangerousMode}
               onChange={(e) => {
                 setDangerousMode(e.target.checked)
-                reset()
+                resetAll()
               }}
               disabled={running}
             />

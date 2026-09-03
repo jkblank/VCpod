@@ -12,6 +12,7 @@ import Sync from './screens/Sync'
 import Dialog from './components/Dialog'
 import { useConnectedDevices } from './useConnectedDevices'
 import { useProfileStore } from './useProfileStore'
+import { useSyncSessions } from './useSyncSessions'
 import { toYamlish } from './yamlish'
 import {
   AudiobookIcon,
@@ -147,6 +148,7 @@ export default function App() {
   const [screen, setScreen] = useState<ScreenId>('overview')
   const [yamlOpen, setYamlOpen] = useState(false)
   const store = useProfileStore()
+  const syncSessions = useSyncSessions()
 
   const badges: Partial<Record<ScreenId, number>> = {
     sources: store.draft ? store.draft.playlists.length : undefined,
@@ -237,7 +239,7 @@ export default function App() {
         {screen === 'external_library' && <ExternalLibrary store={store} />}
         {screen === 'audiobooks' && <Audiobooks store={store} />}
         {screen === 'credentials' && <Credentials store={store} />}
-        {screen === 'sync' && <Sync store={store} />}
+        {screen === 'sync' && <Sync store={store} sync={syncSessions} />}
         {screen === 'activity' && <Activity />}
       </main>
       {yamlOpen && store.draft && (

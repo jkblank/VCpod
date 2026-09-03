@@ -11,6 +11,7 @@ sequencing."""
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Request
@@ -20,6 +21,7 @@ from common.config import ConfigError, resolve_profile_path
 
 from web_gui_backend.device import _default_sync_orchestrator_dir
 from web_gui_backend.sync_runner import stream_sync
+from web_gui_backend.sync_status import is_sync_running, recent_auto_sync_log_tail
 
 router = APIRouter()
 
@@ -85,3 +87,17 @@ async def execute_sync_now(body: dict, request: Request) -> StreamingResponse:
         _sync_events(request=request, body=body, execute=True),
         media_type="text/event-stream",
     )
+
+
+@router.get("/api/sync/status")
+def sync_status(profile: str, request: Request) -> dict:
+    """Is a sync running for this profile right now, regardless of who
+    started it -- a fresh page load, a different browser/device, or a
+    headless auto-sync run (which never goes through this backend's own
+    /api/sync/execute at all, see sync_status.py). Read-only, cannot
+    interfere with a real sync in progress -- see sync_status.py's
+    docstring for why."""
+    state_root = request.app.state.state_root
+    running = is_sync_running(state_root, profile)
+    log_tail = recent_auto_sync_log_tail(state_root, now=time.time()) if running else None
+    return {"running": running, "log_tail": log_tail}

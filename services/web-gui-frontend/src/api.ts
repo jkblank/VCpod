@@ -215,6 +215,16 @@ export type OverviewDeviceCard = {
   next_fetch: string | null
 }
 
+export type SyncStatus = {
+  running: boolean
+  // Best-effort tail of state/auto-sync.log -- only ever populated for a
+  // real headless auto-sync run (a GUI-triggered sync never writes to
+  // that file), and only when recent enough to plausibly describe what's
+  // running right now. null whenever there's nothing to show, including
+  // when a GUI-triggered sync is the one actually holding the lock.
+  log_tail: string[] | null
+}
+
 export type Overview = {
   devices: OverviewDeviceCard[]
   alerts: Alert[]
@@ -429,6 +439,8 @@ export const api = {
   getAutoSyncSetup: () => request<AutoSyncSetup>('/api/auto-sync/setup'),
 
   getOverview: () => request<Overview>('/api/overview'),
+  getSyncStatus: (profile: string) =>
+    request<SyncStatus>(`/api/sync/status?profile=${encodeURIComponent(profile)}`),
   getActivity: (limit = 50) => request<{ entries: ActivityEntry[] }>(`/api/activity?limit=${limit}`),
   getAlerts: () => request<{ alerts: Alert[] }>('/api/alerts'),
 }
