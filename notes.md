@@ -4768,3 +4768,13 @@ sync-orchestrator suite (189 passed) and root workspace suite (541
 passed). **Not verified against a real device** — no live re-sync run
 this session after the fix; worth confirming the exact 6 episodes from
 the failed run now sync cleanly next real sync.
+
+## 2026-09-03: `config/profiles/john-copy.yaml` removed (user action, not a bug)
+
+`services/common/tests/test_config.py::test_example_profiles_load`
+started failing after this real, gitignored profile was deliberately
+deleted from disk by the user (unrelated to any code change this
+session — confirmed nothing in this session's work touched
+`config/profiles/`). Removed `"john-copy"` from the test's hardcoded
+subset-check set; the other three tracked-in-spirit names
+(`alice`/`bob`/`john`) are untouched.
