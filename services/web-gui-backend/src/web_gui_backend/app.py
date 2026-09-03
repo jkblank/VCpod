@@ -20,12 +20,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from web_gui_backend.routers import (
+    activity,
+    alerts,
     audiobooks,
     audiobooks_discover,
     auto_sync_setup,
     device,
     external_library,
     global_config,
+    overview,
     podcasts,
     profile_sources,
     profiles,
@@ -88,6 +91,9 @@ def create_app(
         audiobooks_discover,
         sync,
         auto_sync_setup,
+        alerts,
+        overview,
+        activity,
     ):
         app.include_router(router_module.router)
 
