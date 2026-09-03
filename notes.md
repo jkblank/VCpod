@@ -4355,20 +4355,43 @@ without real data to test it against.
 - **Removed all 5 currently-synced audiobooks from john's profile**:
   `config/profiles/john.yaml`'s `audiobooks:` block changed from
   `mode: include, selections: []` (sync everything, the default) to
-  `mode: exclude, selections: [Franz Kafka, George Orwell, Marcus
-  Aurelius, Neil Postman]` — every author currently in
-  `library/audiobooks`. Verified via a real call to
-  `sync_orchestrator.selection.resolve_audiobooks_folder` against the
-  real profile + real `library/audiobooks`: resolves to an empty
-  staging dir, confirming zero audiobooks would sync. Not yet applied
-  to a real device — john's iPod wasn't connected this session
-  (`identify-device` returned `{"devices": []}`); takes effect on the
-  next real connect/sync (`sync: trigger: on_connect` is already set on
-  this profile, and auto-sync always runs with `--allow-removals`, so
-  no extra step needed once the device is plugged in). **Caveat left
-  for the user**: this exclude list is by author name — if either of
-  the two new books turns out to be by one of these same four authors,
-  it would also get excluded once processed; the list will need
-  updating in that case. Updated `services/common/tests/test_config.py`'s
-  `test_example_profiles_load` to match john.yaml's new real content
-  (it asserts against the actual tracked file).
+  `mode: exclude` with per-book `selections`. First pass used
+  author-level entries (`[Franz Kafka, George Orwell, Marcus Aurelius,
+  Neil Postman]`) and got flagged as a real problem: that would also
+  exclude any *future* book by these same authors, including the two
+  pending ones if either turns out to be by one of them. **Fixed same
+  day** — `AudiobooksConfig.selections` already supports `{Author}/
+  {Title}` granularity (`"Franz Kafka/The Trial"` matches only that
+  book, not the whole author — see the field's own docstring, which
+  already documented this and was simply under-used the first time)
+  and a mapping shorthand (`{Author: [Title1, Title2]}`) for a tidier
+  YAML shape. No code changes needed, just switched to book-level
+  selections:
+  ```yaml
+  audiobooks:
+    mode: exclude
+    selections:
+      - Franz Kafka:
+          - The Trial
+      - George Orwell:
+          - "1984"
+          - Animal Farm
+      - Marcus Aurelius:
+          - Marcus Aurelius – Meditations
+      - Neil Postman:
+          - Amusing Ourselves to Death
+  ```
+  Verified live twice: (1) `resolve_audiobooks_folder` against the real
+  profile + real `library/audiobooks` still resolves to zero synced
+  files, confirming the same 5-book removal as before; (2) a temporary
+  6th fake book dropped under `Franz Kafka/A Hunger Artist` *does*
+  resolve into the staging dir — proving a new book by an already-
+  excluded author now syncs normally, the actual problem this fix was
+  for. Not yet applied to a real device — john's iPod wasn't connected
+  this session (`identify-device` returned `{"devices": []}`); takes
+  effect on the next real connect/sync (`sync: trigger: on_connect`
+  already set on this profile, auto-sync always runs with
+  `--allow-removals`, no extra step needed once plugged in). Updated
+  `services/common/tests/test_config.py`'s `test_example_profiles_load`
+  to match john.yaml's real content (it asserts against the actual
+  tracked file) — twice, once per pass.

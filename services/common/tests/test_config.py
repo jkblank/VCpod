@@ -72,10 +72,11 @@ def test_example_profiles_load():
     assert profiles["bob"].audiobooks is None
     assert profiles["john"].audiobooks.mode == "exclude"
     assert profiles["john"].audiobooks.selections == [
-        "Franz Kafka",
-        "George Orwell",
-        "Marcus Aurelius",
-        "Neil Postman",
+        "Franz Kafka/The Trial",
+        "George Orwell/1984",
+        "George Orwell/Animal Farm",
+        "Marcus Aurelius/Marcus Aurelius – Meditations",
+        "Neil Postman/Amusing Ourselves to Death",
     ]
 
 
