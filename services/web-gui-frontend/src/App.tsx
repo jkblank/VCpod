@@ -83,7 +83,7 @@ export default function App() {
     <div className="shell">
       <nav className="nav">
         <div className="nav-title">
-          <Mark size={20} />
+          <Mark size={25} />
           VCpod
         </div>
         {(Object.keys(SCREENS) as ScreenId[]).map((id) => {
@@ -94,7 +94,7 @@ export default function App() {
               className={id === screen ? 'nav-item active' : 'nav-item'}
               onClick={() => setScreen(id)}
             >
-              <Icon size={16} className="nav-item-icon" />
+              <Icon size={20} className="nav-item-icon" />
               {SCREENS[id].label}
             </button>
           )
