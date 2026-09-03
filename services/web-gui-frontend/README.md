@@ -38,6 +38,14 @@ npm run build
 Type-checks (`tsc -b`) then bundles to `dist/` — this is what CI/a real
 deploy would actually run; `npm run dev` never type-checks on its own.
 
+For everyday use (as opposed to frontend development, where this dev
+server's hot reload is worth keeping), you don't need this dev server
+running at all once you've built once: `services/web-gui-backend`
+serves this `dist/` directory itself when it exists, so `uv run
+web-gui-backend` alone becomes "the whole app, one process, one port"
+— see `services/web-gui-backend/README.md`'s "Running it as one
+process".
+
 ## Where things live
 
 - `src/api.ts` — typed fetch client for the backend's JSON API. Field

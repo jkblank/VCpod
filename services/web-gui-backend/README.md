@@ -21,6 +21,12 @@ uv run web-gui-backend --config-root config
 - `--sync-orchestrator-dir` (default: sibling `services/sync-orchestrator`,
   derived from this package's own install location) — where to find
   `sync-orchestrator identify-device` to shell out to.
+- `--frontend-dist` (default: sibling `services/web-gui-frontend/dist`) —
+  when this directory exists (i.e. `npm run build` has been run over
+  there), this one process serves the built SPA *and* the JSON API
+  together on `--port`, no separate `npm run dev`/static server needed.
+  When it doesn't exist yet, this is a no-op — the backend just serves
+  the API as before. See "Running it as one process" below.
 - `--host` (default `127.0.0.1`) — **only widen this deliberately.**
   This service has no login system (see "Security posture" below); it's
   meant to stay on localhost or your own LAN, never the open internet.
@@ -37,6 +43,26 @@ uv run web-gui-backend --config-root config
   ```bash
   uv run web-gui-backend --config-root config --reload
   ```
+
+## Running it as one process
+
+For everyday use (not frontend development, where the Vite dev server's
+hot reload is worth keeping — see `services/web-gui-frontend/README.md`),
+build the frontend once and just run the backend:
+
+```bash
+cd services/web-gui-frontend && npm run build && cd ../..
+uv run web-gui-backend --config-root config
+```
+
+Visit `http://127.0.0.1:8420/` — the backend serves the built SPA
+itself (`fastapi.staticfiles.StaticFiles`, mounted at `/` *after* every
+`/api/...` route, so API routes always take priority) alongside the
+JSON API on the same port. No CORS setup needed since it's all one
+origin. This is "one thing to run" for setup purposes; see notes.md's
+"package the web GUI as one thing to run" entry for the heavier
+options (a single Docker image, an installer, ...) still being
+weighed for later.
 
 ## API
 

@@ -4128,15 +4128,12 @@ wrapping the web GUI's pieces into a "single application" at some
 point — explicitly "somewhere down the line," not immediate work.
 Capturing the direction now rather than losing it:
 
-- **Smallest real step toward this, whenever it's picked up**: have
-  `web-gui-backend` serve the frontend's built static assets itself
-  (FastAPI `StaticFiles`, pointed at `web-gui-frontend/dist` after `npm
-  run build`) instead of running two separate processes (`uv run
-  web-gui-backend` + `npm run dev`/a separate static server). Turns
-  "two things to start" into "one" without needing Docker, an
-  installer, or Electron — just a build step plus one new mount in
-  `app.py`. Cheap, and doesn't foreclose any of the heavier options
-  below.
+- **Smallest real step toward this — done 2026-09-03, see the M13 part 3
+  entry below**: `web-gui-backend` now serves the frontend's built
+  static assets itself (FastAPI `StaticFiles`, pointed at
+  `web-gui-frontend/dist` after `npm run build`) instead of requiring
+  two separate processes. "Two things to start" is now "one" for
+  everyday use, without needing Docker, an installer, or Electron.
 - **Heavier options for later, not decided between yet**: a single
   Docker image (backend + pre-built frontend baked in, still bare-metal
   for the actual host run given the device-access constraints discussed
@@ -4248,3 +4245,39 @@ oauth token had no way to auto-refresh once it expired.
   flow require a Google Cloud Console project the user hasn't set up
   yet, so end-to-end success wasn't verified against a real account —
   only the plumbing and the real-API failure path were).
+
+## 2026-09-03: Web GUI M13, part 3 — one-process serving (StaticFiles mount)
+
+The "smallest real step" floated in the "package the web GUI as one
+thing to run" direction above, folded into M13 rather than left for
+later: `web-gui-backend` now optionally serves the frontend's built
+`dist/` itself.
+
+- `create_app()` gained a `frontend_dist` param; when given a real
+  directory, `app.mount("/", StaticFiles(directory=..., html=True))` is
+  added *after* every router (`app.include_router` calls, plus
+  FastAPI's own auto-added `/docs`/`/openapi.json`) — Starlette matches
+  routes in registration order, so the static mount only ever catches a
+  path nothing else claimed. `frontend_dist=None` (the default) mounts
+  nothing at all — behavior is unchanged from before this existed.
+- **Deliberately not auto-detected inside `create_app()`/
+  `create_app_from_env()`** — `default_frontend_dist()` (the sibling
+  `services/web-gui-frontend/dist` path, same derivation pattern
+  `device.py`'s `_default_sync_orchestrator_dir()` already uses) lives
+  in `app.py` but is only ever *called* from `cli.py`. Reasoning: every
+  test calls `create_app()` directly, and this repo's own `dist/` now
+  really exists on disk (a fresh `npm run build` was run earlier this
+  session) — if `create_app()` auto-defaulted, every test using it
+  would silently pick up this real machine's real build output instead
+  of staying hermetic. `cli.py` is the one real caller that wants the
+  convenience, so it computes the default explicitly and passes it in;
+  `create_app()` itself stays dumb and explicit.
+- New `--frontend-dist` CLI flag (defaults to the sibling `dist/`,
+  same as above) — plumbed through both the plain-uvicorn path and the
+  `--reload` path (`WEB_GUI_FRONTEND_DIST` env var, same reload-env-var
+  mechanism `--library-root`/`--sync-orchestrator-dir` already use).
+- **Verified live**: threw away a test instance, hit `/` — got the
+  real built `index.html`; hit a real hashed asset under `/assets/` —
+  200; hit `/api/profiles` — still 200, confirming API routes really do
+  take priority over the catch-all static mount rather than the mount
+  silently swallowing `/api/*` too.
