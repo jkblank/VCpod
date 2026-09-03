@@ -4120,3 +4120,32 @@ API, `showDirectoryPicker()`) only reaches a device mounted on
 whichever machine the *browser* is running on — if the web GUI backend
 and the browser aren't on the same machine (a real possible deployment
 shape for this project), that API wouldn't reach the iPod either way.
+
+## Direction, not yet acted on: package the web GUI as one thing to run
+
+User wants setup to stay as simple as possible long-term, and floated
+wrapping the web GUI's pieces into a "single application" at some
+point — explicitly "somewhere down the line," not immediate work.
+Capturing the direction now rather than losing it:
+
+- **Smallest real step toward this, whenever it's picked up**: have
+  `web-gui-backend` serve the frontend's built static assets itself
+  (FastAPI `StaticFiles`, pointed at `web-gui-frontend/dist` after `npm
+  run build`) instead of running two separate processes (`uv run
+  web-gui-backend` + `npm run dev`/a separate static server). Turns
+  "two things to start" into "one" without needing Docker, an
+  installer, or Electron — just a build step plus one new mount in
+  `app.py`. Cheap, and doesn't foreclose any of the heavier options
+  below.
+- **Heavier options for later, not decided between yet**: a single
+  Docker image (backend + pre-built frontend baked in, still bare-metal
+  for the actual host run given the device-access constraints discussed
+  the same day — see the "single container vs. frontend-only container"
+  exchange above), a proper installer/packaging story
+  (`music-stack-planning.md` already flagged this as natural
+  GUI-existence-dependent work — "packaging its install ... deferred
+  until the web GUI (Phase 4) exists"), or something Electron-shaped for
+  a true single-executable desktop app. No investigation done yet on
+  which of these actually fits best — worth a real look once M12-M14
+  are further along and there's more surface area to judge "simple
+  setup" against.
