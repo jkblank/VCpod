@@ -129,6 +129,16 @@ export default function Sync({ store }: { store: ProfileStore }) {
     )
   }
 
+  if (draft.sync.mode === 'rockbox') {
+    return (
+      <p className="no-profile-notice">
+        Rockbox mode — coming soon. sync-orchestrator doesn't have <code>--json</code> output for
+        Rockbox mode yet, so this screen can't drive it. Use the CLI (
+        <code>sync-orchestrator sync --profile {draft.profile} ...</code>) for now.
+      </p>
+    )
+  }
+
   const hasRemovals = plan != null && (plan.to_remove_count > 0 || plan.playlists_to_remove.length > 0)
   const running = runningAction !== null
 

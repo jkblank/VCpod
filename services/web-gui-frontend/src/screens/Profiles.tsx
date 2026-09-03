@@ -136,8 +136,17 @@ export default function Profiles({ store }: { store: ProfileStore }) {
               }
             >
               <option value="itunes">iTunes (iTunesDB/ArtworkDB)</option>
-              <option value="rockbox">Rockbox (plain file mirror)</option>
+              <option value="rockbox" disabled>
+                Rockbox (plain file mirror) — coming soon
+              </option>
             </select>
+            {draft.sync.mode === 'rockbox' && (
+              <p className="muted">
+                This profile is already set to Rockbox mode (edited outside the GUI) — the Sync
+                screen doesn't support it yet (no <code>--json</code> output from
+                sync-orchestrator in Rockbox mode). CLI sync still works normally.
+              </p>
+            )}
           </div>
           <div className="row">
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
