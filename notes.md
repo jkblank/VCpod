@@ -4765,9 +4765,10 @@ logic `build_podcast_removal_items` already owns.
 **Verified**: 3 new unit tests for `exclude_conflicting_with_removal`
 (overlap dropped, no-overlap unchanged, no-removals unchanged); full
 sync-orchestrator suite (189 passed) and root workspace suite (541
-passed). **Not verified against a real device** — no live re-sync run
-this session after the fix; worth confirming the exact 6 episodes from
-the failed run now sync cleanly next real sync.
+passed). **Verified live**: a real resync for `john` right after this
+landed succeeded (`activity` log: added 1, removed 7 tracks, including
+the previously-conflicting episodes) — the two prior attempts at this
+exact state had both failed with `update_conflicts_with_remove`.
 
 ## 2026-09-03: `config/profiles/john-copy.yaml` removed (user action, not a bug)
 
