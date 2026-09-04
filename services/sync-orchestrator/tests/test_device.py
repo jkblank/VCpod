@@ -16,6 +16,7 @@ from sync_orchestrator.device import (
     AmbiguousDeviceMatchError,
     DeviceNotFoundError,
     EjectError,
+    _disk_usage,
     eject_device,
     find_matching_device,
     find_matching_profile,
@@ -240,6 +241,22 @@ def test_iter_connected_devices_returns_identity_for_each_mounted_ipod(monkeypat
     assert device.model_family == "iPod Video"
     assert device.generation == "5.5th Gen"
     assert device.capacity == "160GB"
+    # Real shutil.disk_usage() against the real tmp_path filesystem --
+    # can't assert exact values, but confirms it's a real measurement,
+    # not a stub/zero.
+    assert device.used_bytes > 0
+    assert device.free_bytes > 0
+
+
+def test_disk_usage_real_path_returns_positive_values(tmp_path):
+    used, free = _disk_usage(str(tmp_path))
+    assert used > 0
+    assert free > 0
+
+
+def test_disk_usage_missing_path_returns_zero_not_raise(tmp_path):
+    used, free = _disk_usage(str(tmp_path / "does-not-exist"))
+    assert (used, free) == (0, 0)
 
 
 def test_iter_connected_devices_returns_empty_list_when_nothing_connected(monkeypatch):

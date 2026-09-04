@@ -12,7 +12,11 @@ from fetcher_ytmusic.download import DownloadError, fetch_playlist
 
 def _cmd_list_playlists(args: argparse.Namespace) -> int:
     try:
-        playlists = list_playlists(args.oauth_path)
+        playlists = list_playlists(
+            args.oauth_path,
+            oauth_client_id=args.oauth_client_id,
+            oauth_client_secret=args.oauth_client_secret,
+        )
     except Exception as e:  # ytmusicapi raises plain Exception on auth failure
         print(f"ERROR: could not authenticate with YouTube Music: {e}")
         return 1
@@ -57,6 +61,8 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
             profile=profile.profile,
             cookies_path=args.cookies_path,
             oauth_path=args.oauth_path,
+            oauth_client_id=args.oauth_client_id,
+            oauth_client_secret=args.oauth_client_secret,
             library_root=args.library_root,
             playlists_root=args.playlists_root,
             state_db_path=args.state_path,
@@ -91,6 +97,13 @@ def main() -> None:
     list_parser.add_argument(
         "--oauth-path", required=True, help="ytmusicapi OAuth token file"
     )
+    list_parser.add_argument(
+        "--oauth-client-id",
+        default=None,
+        help="Google OAuth client_id the oauth token was minted with. Optional, "
+        "but required for ytmusicapi to auto-refresh an expiring token.",
+    )
+    list_parser.add_argument("--oauth-client-secret", default=None)
     list_parser.set_defaults(func=_cmd_list_playlists)
 
     fetch_parser = subparsers.add_parser(
@@ -110,6 +123,13 @@ def main() -> None:
         help="ytmusicapi OAuth token file. Optional: public playlists resolve "
         "fine without it, only needed for the account's own private playlists.",
     )
+    fetch_parser.add_argument(
+        "--oauth-client-id",
+        default=None,
+        help="Google OAuth client_id --oauth-path's token was minted with. "
+        "Optional, but required for ytmusicapi to auto-refresh an expiring token.",
+    )
+    fetch_parser.add_argument("--oauth-client-secret", default=None)
     fetch_parser.add_argument("--library-root", required=True)
     fetch_parser.add_argument("--playlists-root", required=True)
     fetch_parser.add_argument("--state-path", required=True)

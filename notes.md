@@ -3867,3 +3867,915 @@ Environment note: this dev machine had `node` but no `npm`/`pnpm`/
 `yarn`/`corepack` at all — had to be installed by hand mid-session
 before the frontend scaffold could start. Worth having on hand before
 picking M12-M14 back up.
+
+## 2026-09-02: Web GUI M12 (scoped as M12a) — playlist/podcast picking + credential capture
+
+Built on top of M11 (stacked branch, PR against `feat/web-gui-m11-
+foundations` rather than `main`, since M11 wasn't merged yet). Scoped
+down from the full M12 roadmap: this pass covers Profiles field
+expansion, the Music sources picker, a basic Podcasts picker, and the
+actual credential capture forms — the things explicitly asked for.
+External library/Audiobooks screens are pushed to a fast-follow "M12b"
+(same picker pattern, lower priority, not explicitly requested).
+
+**`resolve_config_path` moved from `music_stack_cli.orchestrate` to
+`common.config`** (mechanical, no behavior change, 2 tests moved with
+it) — the web backend needed the exact same `/config/...`-container-
+path-to-real-host-path resolution `global.yaml`'s credential paths
+already use, and duplicating it would drift. `orchestrate.py`'s 4 call
+sites now import it from `common` instead.
+
+**`web-gui-backend` split into routers** (`routers/profiles.py`,
+`global_config.py`, `device.py`, and two new ones below) — outgrew a
+single `app.py` file. Gained `fetcher-apple`/`fetcher-ytmusic`/
+`podcast-manager` as real dependencies (previously only `common`).
+
+**New: `routers/sources.py`** — `GET /api/sources/{apple-music,ytmusic}
+/playlists` (wraps `list_playlists`, resolves the cookies/oauth path via
+`resolve_config_path`), `PUT /api/sources/{apple-music,ytmusic}/cookies`
+(manual paste/upload of an already-exported `cookies.txt` — real
+cross-origin cookie reading from a browser is impossible, same-origin
+policy; an automated Playwright-driven capture stays a separate, later
+piece, unchanged from the M11 planning decision), `GET
+/api/sources/status`. Cookie validation reuses the exact parser gamdl
+itself uses (`http.cookiejar.MozillaCookieJar`) against a temp file
+first — a bad paste never touches the real file (same temp-then-rename
+pattern `podcast_manager/download.py::_download_enclosure` already
+uses) — and checks for the specific `media-user-token` cookie on
+`.music.apple.com` gamdl's own `create_from_netscape_cookies` requires,
+so a wrong/incomplete paste is caught here instead of surfacing later
+as a confusing fetch failure.
+
+**New: `routers/podcasts.py`** — `GET /api/profiles/{name}/pocketcasts/
+subscriptions`, `PUT /api/profiles/{name}/pocketcasts-credentials`
+(validates via a real `login()` call *before* writing anything — a bad
+password is rejected immediately, never silently saved).
+
+**Frontend**: lifted "which profile is being edited" out of
+`Profiles.tsx` into a shared `useProfileStore()` hook (`App.tsx` calls
+it once, passes the same store instance down to `Profiles`/`Sources`/
+`Podcasts` as a prop) — the picker screens need to mutate the exact
+same draft profile Profiles.tsx edits, not a separate copy. New
+`Sources.tsx` (tabbed playlist picker, Spotify tab visibly disabled)
+and `Podcasts.tsx` (subscription picker, falls back to the credential
+form when nothing's saved yet for that profile) screens. New shared
+`CredentialWarning`/`CookieCaptureForm`/`PocketCastsLoginForm`
+components — the actual "BIG and appropriate warnings" the user asked
+for, shown prominently above every credential input, not a tooltip:
+*"This is stored in plain text on this server's disk, unencrypted... at
+`config/secrets/...`. Anyone with filesystem access to this machine can
+read it back out... never expose this web UI to the open internet."*
+
+**Verified live against real data**, not just synthetic fixtures: real
+Apple Music playlists (`ALT CTRL`, `Antidote`, ...) and real Pocket
+Casts subscriptions for the real `john` profile (`Let's Learn
+Everything!`, `Linux Matters`, ...) both listed correctly through the
+new endpoints against the actual `config/secrets/` files already on
+this machine. `bob` (a tracked example profile with no real Pocket
+Casts credentials) correctly got the "not saved yet" 502, not a crash.
+
+Hit the exact same stale-process-squatting-the-port confusion as M11's
+own wrap-up while testing this — except this time the squatter turned
+out to be the *user's own* long-running backend from testing M11
+earlier, not a leftover of mine. Worth remembering: `pgrep -af
+web-gui-backend` before assuming a "Not Found"/wrong-behavior response
+is a code bug — it might just be an old process still holding the port.
+
+## Fast-follow to M12: dropdown for transcode_format, sidebar layout fix, YouTube add-by-URL
+
+User feedback after trying the M12 UI:
+
+- **`transcode_format` free-text field replaced with a dropdown**
+  (`alac`/`aac` only). Discovered in the process: `sync.py`'s
+  `_TRANSCODE_FORMAT_TO_PREFER_LOSSY = {"alac": False, "aac": True}` is
+  the actual, complete set of values that work at sync time — anything
+  else raises `SyncError`. The tracked example profile `bob.yaml` sets
+  `transcode_format: mp3`, which is **not** in that dict and would fail
+  if bob's profile were ever actually synced — a pre-existing
+  inconsistency in the example file, not something this pass touched
+  (it's documentation content, not a real profile).
+- **Sidebar layout fix**: `.nav` is now `position: sticky; height:
+  100vh` instead of stretching to match `.main`'s own height. Root
+  cause — `.shell` is a flex row with the default `align-items:
+  stretch`, so a long playlist list on the Sources screen made `.main`
+  (and therefore `.nav`, stretched to match) grow far taller than the
+  viewport, pushing the "editing: {profile}" indicator (anchored to the
+  bottom of `.nav` via `margin-top: auto`) off-screen below the fold —
+  exactly the profile-context-loss the user reported.
+- **YouTube "add by public URL"**: new `fetcher_ytmusic.api.
+  get_playlist_summary(playlist_id, oauth_path=None)` — confirmed live
+  against a real public playlist
+  (`PLQwVIlKxHM6qv-o99iX9R85og7IzF9YS_`, ytmusicapi's own docs example)
+  that `get_playlist()` really does work fully unauthenticated, same
+  fact `get_playlist_tracks` already relied on. New backend route `GET
+  /api/sources/ytmusic/resolve?url=...` accepts either a bare playlist
+  ID or a share link (`music.youtube.com/playlist?list=...` or
+  `youtube.com/playlist?list=...`) and extracts the id. This is the
+  "manual entry as fallback" mechanism `music-stack-planning.md`
+  already called for, now actually built — needed because
+  `list_playlists`/`get_library_playlists` can only ever see the
+  authenticated account's own library, never a playlist someone else
+  shared with you.
+
+**Known issue, not yet investigated**: user reports YouTube Music
+playlist tracks "still sound funny" on playback (unclear yet whether
+this is a transcode artifact, a yt-dlp audio-format/bitrate choice, a
+loudness-normalization difference vs. Apple Music tracks, or something
+else) — flagged for a real investigation later, not touched this pass.
+
+## Same fast-follow: cron-free schedule builder, tab-switch race condition
+
+- **`fetch.schedule` no longer needs cron syntax**: new
+  `src/cronBuilder.ts` (`cronToSchedule`/`scheduleToCron`) + new
+  `<ScheduleEditor>` component, replacing the raw cron text input in
+  `Profiles.tsx`. Structured picker (Manual / Every day / Every N
+  hours / Weekly / Custom) generates the cron string underneath;
+  anything already saved that doesn't fit one of those shapes (spot-
+  checked against a genuinely complex real-world expression, e.g.
+  `*/15 9-17 * * 1-5`) round-trips through "Custom (cron)" untouched
+  rather than being silently mangled — verified the parse/generate
+  round-trip against every real cron string actually used across
+  `config/profiles/*.yaml` (`0 3 * * *`, `0 */6 * * *`, `30 2 * * 6`).
+  Purely derived from the `value` prop each render, no local component
+  state — scoped to the one place a cron field exists in the UI today
+  (profile-level `fetch.schedule`); reusable as-is once M13 makes
+  per-playlist/per-show `fetch_schedule` overrides editable too.
+
+- **Fixed a real bug found live, not just reported**: switching tabs on
+  the Sources screen before a slow request finished could let a stale
+  response land after a newer one and overwrite it — user reported
+  seeing Apple Music playlists show up under the YouTube Music tab.
+  Root cause: Apple Music's playlist listing is a slow real network
+  call (gamdl's async API); a user switching to YouTube Music before it
+  resolves would see the fast YouTube response, immediately followed by
+  the late Apple Music response landing and clobbering it, since
+  nothing tracked "is this response still for the currently-requested
+  tab." Fixed with a request-id ref in `Sources.tsx` — only the most
+  recently *requested* load's result (error or success) is ever
+  committed to state, any earlier in-flight request's resolution is
+  silently discarded once superseded.
+
+## 2026-09-02: Web GUI M12b — External library + Audiobooks screens
+
+Closes out M12's deferred scope (same picker pattern as Sources/
+Podcasts, just browsing a real directory tree instead of calling a
+source API).
+
+**`web-gui-backend` gained a `--library-root`** (default: sibling
+`library/` next to `--config-root`, same convention every other CLI
+here already uses) — needed for the Audiobooks screen to know where
+`library/audiobooks` actually is; nothing tracked this before since
+M11/M12 never needed a real filesystem path beyond `config/`.
+
+**New `browse.py`**: a shared, security-scoped directory listing —
+every listing is confined to a given root (a subpath that would
+resolve outside it, e.g. a literal `..` segment, is rejected, not
+silently followed). This is the one place in the backend that reads an
+arbitrary, user-supplied filesystem location (`ExternalLibraryConfig.
+path` can be anywhere on disk the user points it at) rather than
+something only ever config_root/library_root-relative, so it gets its
+own explicit escape check — verified live against a real escape
+attempt (`../../../../etc` → correctly rejected, not followed).
+
+**Two new routes**: `GET /api/external-library/browse?root=...&subpath=...`
+(root is whatever real path the user typed in) and `GET
+/api/audiobooks/browse?subpath=...` (root is always `library_root/
+audiobooks`, resolved internally — the client never passes it). Both
+verified live against real data: the real `MusicLibrary` folder's
+artists, and the real `library/audiobooks`' four authors (Franz Kafka,
+George Orwell, Marcus Aurelius, Neil Postman).
+
+**Frontend**: shared `<DirectoryPicker>` component (breadcrumb + one
+level at a time, not a full expand-all tree — a personal library can
+be large) reused by both new `ExternalLibrary.tsx` and `Audiobooks.tsx`
+screens. Checking a folder selects its whole relative-path prefix
+(matching `ExternalLibraryConfig`/`AudiobooksConfig.selections`'
+exact string-prefix convention); checking/unchecking never tries to
+reconcile against an already-selected ancestor folder — kept simple
+and predictable rather than clever. Both screens gate the picker
+behind an explicit "enable this section" checkbox, since both fields
+are optional on `ProfileConfig` and mean something different when
+entirely unset vs. present-with-empty-selections (documented inline in
+each screen, matching each model's own doc comments in `models.py`).
+
+## 2026-09-03: web-gui-backend `--reload`, prompted by a real stale-process bug
+
+User hit `/api/external-library/browse` returning a plain 404 (not the
+422 the route itself would raise for a bad root) right after M12b
+shipped. Root cause, confirmed live via `ps -o lstart=`: their backend
+process had been running continuously since *before* the commit that
+added that route — nothing re-imports a running Python process's code
+on `git pull`, so it was genuinely serving the old route table. This is
+now the third time this exact class of confusion has come up this
+project (see the two 2026-09-02 entries) — worth a real fix, not just
+"remember to restart it."
+
+New `--reload` flag (`uv run web-gui-backend --config-root config
+--reload`), backed by `uvicorn --reload` + a new `create_app_from_env()`
+factory in `app.py`. Uvicorn's reload re-execs and re-imports the app
+fresh in a subprocess on every file change — it can only do that from a
+dotted import string, never an already-built `FastAPI` object, so
+`config_root`/`library_root`/`sync_orchestrator_dir` can't cross that
+re-exec as plain Python call args the way `create_app()`'s normal
+(non-reload) path takes them. `cli.py`'s `--reload` branch sets
+`WEB_GUI_CONFIG_ROOT`/`WEB_GUI_LIBRARY_ROOT`/
+`WEB_GUI_SYNC_ORCHESTRATOR_DIR` env vars before handing uvicorn the
+factory's dotted path; those survive the re-exec since env vars are
+inherited by the child process, unlike Python objects. `reload_dirs` is
+pinned to this package's own `src/web_gui_backend/` (not the repo-wide
+default) so editing the frontend or another service doesn't trigger a
+pointless restart.
+
+**Verified live, not just by reading the uvicorn docs**: started with
+`--reload`, added a throwaway `/api/_reload_smoke_test` route to
+`routers/device.py`, confirmed via the log
+(`WatchFiles detected changes in '...device.py'. Reloading...`) and a
+follow-up `curl` that the new route worked *without any manual
+restart*, then reverted the throwaway route.
+
+## Stretch goal, not investigated yet: sync over USB directly from the browser
+
+User's idea — worth a real look eventually, flagged here rather than
+acted on. One real technical obstacle worth knowing going in: a
+click-wheel iPod enumerates as a standard USB Mass Storage device, and
+essentially every desktop OS auto-claims that class of device at the
+kernel/driver level the moment it's plugged in (that's what makes it
+mount as a filesystem at all). WebUSB — the actual browser API for
+"a web page talks to a USB device directly" — is explicitly unable to
+claim an interface the OS already owns; it's designed for
+custom/vendor-specific USB interfaces (Arduino-style boards, some
+cameras), not standard mass-storage devices. So "WebUSB drives the
+iPod directly, replacing sync-orchestrator/iopenpod entirely" is likely
+a dead end as literally stated, not just unbuilt — worth confirming
+before investing real time, not assuming.
+
+A more realistic middle ground, closer to what's actually already on
+the roadmap: keep `sync-orchestrator` doing the real USB/iTunesDB work
+(as today), and have the browser trigger a real sync run and stream its
+live progress back — this is essentially M14's planned "Sync screen"
+(trigger a manual sync from the UI, view live plan/result) already,
+just framed as "from the browser" instead of a CLI. Also worth noting:
+genuine in-browser filesystem access (the separate File System Access
+API, `showDirectoryPicker()`) only reaches a device mounted on
+whichever machine the *browser* is running on — if the web GUI backend
+and the browser aren't on the same machine (a real possible deployment
+shape for this project), that API wouldn't reach the iPod either way.
+
+## Direction, not yet acted on: package the web GUI as one thing to run
+
+User wants setup to stay as simple as possible long-term, and floated
+wrapping the web GUI's pieces into a "single application" at some
+point — explicitly "somewhere down the line," not immediate work.
+Capturing the direction now rather than losing it:
+
+- **Smallest real step toward this — done 2026-09-03, see the M13 part 3
+  entry below**: `web-gui-backend` now serves the frontend's built
+  static assets itself (FastAPI `StaticFiles`, pointed at
+  `web-gui-frontend/dist` after `npm run build`) instead of requiring
+  two separate processes. "Two things to start" is now "one" for
+  everyday use, without needing Docker, an installer, or Electron.
+- **Heavier options for later, not decided between yet**: a single
+  Docker image (backend + pre-built frontend baked in, still bare-metal
+  for the actual host run given the device-access constraints discussed
+  the same day — see the "single container vs. frontend-only container"
+  exchange above), a proper installer/packaging story
+  (`music-stack-planning.md` already flagged this as natural
+  GUI-existence-dependent work — "packaging its install ... deferred
+  until the web GUI (Phase 4) exists"), or something Electron-shaped for
+  a true single-executable desktop app. No investigation done yet on
+  which of these actually fits best — worth a real look once M12-M14
+  are further along and there's more surface area to judge "simple
+  setup" against.
+
+## 2026-09-03: Web GUI M13, part 1 — full podcast settings + Sources & credentials screen
+
+- **Podcasts screen** now edits every `ProfilePodcastsConfig` field, not
+  just `shows`: `episode_filter` (played/archived), `sync_unplayed_only`,
+  `delete_played_episodes`, `max_episodes_per_show`, `fetch_schedule`
+  (reuses `<ScheduleEditor>` from the M12 fast-follow), and per-show
+  `fill_modes` (newest/oldest-unheard-first) — a dropdown next to each
+  *selected* show's row, since `fill_modes` only means anything for a
+  show actually in the curated list.
+- **New `Credentials.tsx` screen** ("Sources & credentials" in the
+  nav) — the polished status view the mockup specified, wiring the
+  capture forms already built (M12) into a permanent home instead of
+  only appearing inline when a picker screen's fetch call fails.
+  Enable/disable toggles write straight to `global.yaml` via the
+  already-existing `PUT /api/global-config`; each source's card shows
+  real credential-file status ("saved, updated 2 hours ago" — real
+  mtime, not a guessed expiry, same principle `/api/sources/status`
+  already established in M12).
+- **Fixed a real gap found while building the above**: `/api/sources/
+  status`'s `ytmusic` entry only ever reported `oauth_file`'s status,
+  never `cookies_file` — silently hiding whether cookies (needed for
+  *every* real download) were ever set up, if oauth (only needed for
+  private-playlist listing) happened to exist. `ytmusic` now reports
+  `{enabled, cookies: {...}, oauth: {...}}` independently. Verified
+  live: real cookies exist, real oauth doesn't, both now visible
+  correctly (previously the missing oauth would have looked like
+  cookies were also missing).
+
+## 2026-09-03: Web GUI M13, part 2 — ytmusic OAuth device-code flow, and fixing the token-refresh gap
+
+Built the `ytmusic_oauth.json` capture flow the M13 plan called for, and
+along the way fixed a real, previously-just-documented gap: a captured
+oauth token had no way to auto-refresh once it expired.
+
+- **The gap**: `YTMusic(auth=oauth_path)` works fine on a fresh token,
+  but ytmusicapi raises `YTMusicUserError` the moment that token needs
+  refreshing *unless* the exact same `oauth_credentials=OAuthCredentials
+  (client_id, client_secret)` used to mint it is passed on every
+  construction — and ytmusicapi has no default/shared OAuth client of
+  its own (every user creates their own via Google Cloud Console).
+  Neither `fetcher_ytmusic.api` nor `web-gui-backend` had anywhere to
+  store `client_id`/`client_secret`, so a captured token silently
+  degraded from "works" to "broken, re-capture from scratch" the first
+  time it expired.
+- **Fix**: added `YtMusicSource.oauth_client_file` to
+  `common.models`/`config/global.yaml` (JSON `{client_id,
+  client_secret}`, optional — empty string means old behavior:
+  works-until-expiry, no auto-refresh). `fetcher_ytmusic.api`'s
+  `list_playlists`/`get_playlist_summary`/`get_playlist_tracks` now take
+  optional `oauth_client_id`/`oauth_client_secret` kwargs and pass a real
+  `OAuthCredentials` through to `YTMusic()` when both are present.
+  `music_stack_cli.orchestrate` now resolves and passes them too (new
+  `_load_ytmusic_oauth_client` helper) — the actual fetch pipeline
+  benefits from this, not just the GUI's own playlist-listing calls.
+  `fetcher-ytmusic`'s standalone CLI got matching `--oauth-client-id`/
+  `--oauth-client-secret` flags for manual debugging.
+- **New `fetcher_ytmusic.oauth` module**: `start_device_flow`/
+  `poll_device_flow`, splitting ytmusicapi's own blocking
+  `RefreshingToken.prompt_for_token()` (which calls Python's `input()`)
+  into two non-blocking calls a web backend can drive via polling.
+  `poll_device_flow` distinguishes RFC 8628's "still waiting"
+  (`authorization_pending`/`slow_down`, raised as `OAuthPending` — not
+  an error, caller should just poll again) from real failures
+  (`OAuthFlowError` — expired code, denied consent, bad client
+  credentials). The persisted token shape matches ytmusicapi's own
+  `RefreshingToken.as_dict()` exactly: `{scope, token_type, access_token,
+  refresh_token, expires_at, expires_in}` — note `expires_in` here is
+  actually the *refresh* token's lifetime (`refresh_token_expires_in`
+  from Google's response), not the access token's, matching a real
+  ytmusicapi quirk confirmed by reading its own `prompt_for_token`
+  source, not guessed.
+- **New `web-gui-backend` routes**: `PUT /api/sources/ytmusic/
+  oauth-client` (save client_id/secret), `POST /api/sources/ytmusic/
+  oauth/start` (returns `{device_code, user_code, verification_url,
+  expires_in, interval}`), `POST /api/sources/ytmusic/oauth/poll` (body
+  `{device_code}` → `{"status": "pending"}` while waiting, writes
+  `oauth_file` atomically and returns `{"status": "ok"}` on success, 502
+  on real failure). `/api/sources/status`'s `ytmusic` entry gained a
+  third independent `oauth_client` status alongside `cookies`/`oauth`.
+  The existing `/api/sources/ytmusic/playlists` route now also passes
+  the saved client credentials through automatically when present.
+- **New `YtmusicOauthForm.tsx`**: two-step UI in the Credentials screen
+  — client_id/secret capture first (if not saved yet, big plaintext-
+  storage warning same as every other credential form), then a "Start
+  sign-in" button showing the real verification URL + user code and
+  polling client-side (`setInterval` at the server-told `interval`,
+  giving up at `expires_in` with a clear "code expired, start over"
+  message) until the backend confirms success.
+- **Verified live** (not just mocked in tests): pointed a throwaway
+  backend instance at a scratch config copy, PUT a (deliberately fake)
+  client_id/secret, called `/oauth/start` for real — it made a genuine
+  request to Google's OAuth endpoint and correctly surfaced Google's
+  real `invalid_client` rejection as a clean 502, proving the whole path
+  is wired to the real API, not just internally consistent. Never
+  touched the real `config/secrets/` (real Google credentials for this
+  flow require a Google Cloud Console project the user hasn't set up
+  yet, so end-to-end success wasn't verified against a real account —
+  only the plumbing and the real-API failure path were).
+
+## 2026-09-03: Web GUI M13, part 3 — one-process serving (StaticFiles mount)
+
+The "smallest real step" floated in the "package the web GUI as one
+thing to run" direction above, folded into M13 rather than left for
+later: `web-gui-backend` now optionally serves the frontend's built
+`dist/` itself.
+
+- `create_app()` gained a `frontend_dist` param; when given a real
+  directory, `app.mount("/", StaticFiles(directory=..., html=True))` is
+  added *after* every router (`app.include_router` calls, plus
+  FastAPI's own auto-added `/docs`/`/openapi.json`) — Starlette matches
+  routes in registration order, so the static mount only ever catches a
+  path nothing else claimed. `frontend_dist=None` (the default) mounts
+  nothing at all — behavior is unchanged from before this existed.
+- **Deliberately not auto-detected inside `create_app()`/
+  `create_app_from_env()`** — `default_frontend_dist()` (the sibling
+  `services/web-gui-frontend/dist` path, same derivation pattern
+  `device.py`'s `_default_sync_orchestrator_dir()` already uses) lives
+  in `app.py` but is only ever *called* from `cli.py`. Reasoning: every
+  test calls `create_app()` directly, and this repo's own `dist/` now
+  really exists on disk (a fresh `npm run build` was run earlier this
+  session) — if `create_app()` auto-defaulted, every test using it
+  would silently pick up this real machine's real build output instead
+  of staying hermetic. `cli.py` is the one real caller that wants the
+  convenience, so it computes the default explicitly and passes it in;
+  `create_app()` itself stays dumb and explicit.
+- New `--frontend-dist` CLI flag (defaults to the sibling `dist/`,
+  same as above) — plumbed through both the plain-uvicorn path and the
+  `--reload` path (`WEB_GUI_FRONTEND_DIST` env var, same reload-env-var
+  mechanism `--library-root`/`--sync-orchestrator-dir` already use).
+- **Verified live**: threw away a test instance, hit `/` — got the
+  real built `index.html`; hit a real hashed asset under `/assets/` —
+  200; hit `/api/profiles` — still 200, confirming API routes really do
+  take priority over the catch-all static mount rather than the mount
+  silently swallowing `/api/*` too.
+
+## 2026-09-04: audiobook-manager discover + john's audiobooks reset
+
+User request: "since our audiobooks were manually merged, I think we
+should have a way to 'discover' audiobooks in an external library."
+Clarified over a few turns: remove all 5 currently-synced audiobooks
+from john's iPod, and discover+process two new ones once they're
+available — but those two are still on the user's server, not this
+machine ("pending webgui development being completed and then I'll
+deploy the whole system there"), so this pass builds the feature
+without real data to test it against.
+
+- **New `AudiobookManagerConfig.discover_root`** in `common.models`/
+  `config/global.yaml` — global (not per-profile), same reasoning as
+  `LibraryManagerConfig`: `library/audiobooks` is one shared pool, so
+  "where do raw captures land before processing" isn't a per-profile
+  question either. Real host path, used directly like
+  `ExternalLibraryConfig.path` (never `/config/...`-container-style).
+  Left empty on this machine — no real value to set yet.
+- **New `audiobook_manager.discover` module**: `discover_audiobooks(root,
+  state_root)` lists every immediate subdirectory of `root` containing
+  audio files (one folder per book, matching the manual Libby-capture
+  convention), cross-referenced against `record_import()`'s state
+  (`state/audiobooks/discovered_state.json`, written by every
+  successful import) so repeat scans distinguish "new" from "already
+  processed" — not by fuzzy-matching folder names against
+  `library/audiobooks`, which would break the moment beets renames
+  something during tagging. Deliberately has no beets import anywhere
+  in this module (unlike `beets_import.py`, whose own beets import is
+  lazy/inside a function body) — a caller that only wants to *list*
+  candidates should never pay for beets' dependency tree just by
+  importing this module.
+- **Extracted `audiobook_manager.pipeline.run_import_audiobook`** from
+  `cli.py`'s `_cmd_import_audiobook` — the merge+stage+tag+record
+  orchestration is now one function both the CLI and web-gui-backend's
+  new import route call, so the two can't drift (same reasoning
+  `resolve_config_path` was moved to `common` for). `cli.py`'s own
+  `_cmd_import_audiobook` is now a thin wrapper around it; behavior
+  unchanged, existing tests updated to monkeypatch `pipeline` instead
+  of `cli` where they were faking `merge_parts_to_m4b`/`import_audiobook`.
+- **New `audiobook-manager discover --root ... --state-root ...` CLI
+  command**, and **new web-gui-backend routes** `GET
+  /api/audiobooks/discover` / `POST /api/audiobooks/discover/import` —
+  `web-gui-backend` now depends on `audiobook-manager` directly
+  (in-process import, not a subprocess like `sync-orchestrator`)
+  because `audiobook-manager` is *already* a root-workspace member
+  (unlike `sync-orchestrator`/`fetcher-spotify`, which are standalone
+  `uv` projects specifically to isolate a conflicting dependency tree)
+  — beets-audible is already installed in this exact venv, so this
+  doesn't introduce any new isolation concern. `web-gui-backend` gained
+  a `--state-root` flag (same sibling-of-`--config-root` convention as
+  `--library-root`) since it had never needed to know where `state/`
+  was before this.
+- **New `AudiobookDiscovery.tsx`** component, wired into the top of the
+  Audiobooks screen, above (not gated behind) the per-profile curation
+  section — global settings/state, not tied to whichever profile is
+  selected. Editable drop-zone path (writes `global.yaml` via the
+  already-existing `PUT /api/global-config`), a table of discovered
+  books with status, and a "Process into library" button per new book
+  that runs the real pipeline and (slowly — real ffmpeg + real
+  Audible/Audnex network lookups) reports back success/failure inline.
+- **Verified live** against synthetic fixtures (real files, real
+  filesystem scan, real subprocess calls — just not real audiobook
+  content, since none exists on this machine yet): a throwaway backend
+  instance correctly discovered two fake candidate folders under a
+  scratch drop-zone; the import route's `ffprobe` call genuinely ran
+  against the (deliberately empty/invalid) fixture MP3s and correctly
+  surfaced ffmpeg's real "Invalid data found when processing input"
+  error as a 502 — confirms the whole pipeline is really wired, not
+  just internally mocked. End-to-end success against a real book was
+  NOT verified (no real audiobook parts exist here yet).
+- **Removed all 5 currently-synced audiobooks from john's profile**:
+  `config/profiles/john.yaml`'s `audiobooks:` block changed from
+  `mode: include, selections: []` (sync everything, the default) to
+  `mode: exclude` with per-book `selections`. First pass used
+  author-level entries (`[Franz Kafka, George Orwell, Marcus Aurelius,
+  Neil Postman]`) and got flagged as a real problem: that would also
+  exclude any *future* book by these same authors, including the two
+  pending ones if either turns out to be by one of them. **Fixed same
+  day** — `AudiobooksConfig.selections` already supports `{Author}/
+  {Title}` granularity (`"Franz Kafka/The Trial"` matches only that
+  book, not the whole author — see the field's own docstring, which
+  already documented this and was simply under-used the first time)
+  and a mapping shorthand (`{Author: [Title1, Title2]}`) for a tidier
+  YAML shape. No code changes needed, just switched to book-level
+  selections:
+  ```yaml
+  audiobooks:
+    mode: exclude
+    selections:
+      - Franz Kafka:
+          - The Trial
+      - George Orwell:
+          - "1984"
+          - Animal Farm
+      - Marcus Aurelius:
+          - Marcus Aurelius – Meditations
+      - Neil Postman:
+          - Amusing Ourselves to Death
+  ```
+  Verified live twice: (1) `resolve_audiobooks_folder` against the real
+  profile + real `library/audiobooks` still resolves to zero synced
+  files, confirming the same 5-book removal as before; (2) a temporary
+  6th fake book dropped under `Franz Kafka/A Hunger Artist` *does*
+  resolve into the staging dir — proving a new book by an already-
+  excluded author now syncs normally, the actual problem this fix was
+  for. Not yet applied to a real device — john's iPod wasn't connected
+  this session (`identify-device` returned `{"devices": []}`); takes
+  effect on the next real connect/sync (`sync: trigger: on_connect`
+  already set on this profile, auto-sync always runs with
+  `--allow-removals`, no extra step needed once plugged in). Updated
+  `services/common/tests/test_config.py`'s `test_example_profiles_load`
+  to match john.yaml's real content (it asserts against the actual
+  tracked file) — twice, once per pass.
+
+## 2026-09-04: Web GUI M14 — sync visibility + auto-sync setup
+
+Last unbuilt piece of the Web GUI arc (M11-M14). Per the original
+`music-stack-planning.md` milestone table: "Trigger a manual sync from
+the UI, view live/last sync plan and result, see health-check alerts."
+Planned properly (plan mode) before implementing, given the real
+architectural decisions involved — see the approved plan for the full
+reasoning; this entry covers what actually got built and what changed
+from the plan during implementation.
+
+- **`sync-orchestrator sync --json`** (iTunes mode only — Rockbox mode
+  fails loudly if combined with `--json`, not yet supported): routes
+  every progress line to stderr, prints exactly one JSON object (the
+  plan, or the executed result) as the sole stdout line. New
+  `plan_json.py` (`plan_summary`/`result_summary`) builds this from the
+  exact fields `cli.py`'s existing `_print_plan`/`_run_sync` already
+  read off iopenpod's `SyncPlan`/`SyncItem`/`StorageSummary` — same
+  10/20-item sample caps `_print_plan` already uses, so a huge library
+  never dumps thousands of track labels over the wire. Every existing
+  safety gate (unresolved-selection refusal, the `--allow-removals`
+  hard gate) is completely unchanged — `--json` only changes how the
+  outcome is *reported*. `_maybe_push_play_status` gained an `out`
+  parameter (defaults to `print`, unchanged for every other caller) so
+  its own prints route to stderr too under `--json` instead of leaking
+  onto stdout.
+- **New `web-gui-backend/sync_runner.py`**: the service's first
+  *streaming* subprocess (`asyncio.create_subprocess_exec`, reading
+  stdout/stderr as they arrive) — everywhere else either imports
+  in-process or uses `subprocess.run`'s buffer-until-exit, fine for
+  something that finishes in milliseconds but wrong for a real device
+  sync that can run 20-50+ minutes (the exact problem
+  `_ThrottledProgressPrinter` already solved for the terminal case).
+  Reads stderr progress lines live while draining stdout in the
+  background (it only ever carries 0-1 lines under `--json`), yields
+  `("progress"|"result"|"error", text)` tuples. Never raises — every
+  failure mode (can't even spawn, nonzero exit, unparseable stdout)
+  comes back as an `("error", ...)` event so a caller streaming this
+  into an HTTP response never needs its own try/except mid-stream.
+- **New `POST /api/sync/plan` / `POST /api/sync/execute`** (SSE, not
+  plain JSON) in `routers/sync.py`. **Confirmed with the user before
+  building**: the two routes are deliberately independent — nothing
+  server-side requires a `/plan` call before `/execute` accepts
+  `allow_removals: true`, matching the CLI's own trust model (`sync
+  --execute --allow-removals` can already be run directly today, no
+  forced plan-only run first). `sync-orchestrator`'s own hard gate is
+  what actually backstops this, not request sequencing.
+- **New `GET /api/auto-sync/setup`**: generates the systemd unit + udev
+  rule filled in with this install's *real* paths (previously only a
+  hand-edited example existed, checked into
+  `services/sync-orchestrator/udev/`), writes them to
+  `state/generated/` (a location this process can already write to
+  without privilege), and returns the exact `sudo cp`/`daemon-reload`/
+  `udevadm control --reload-rules` commands plus real install status.
+  **Confirmed by reading this machine's actual state**: the systemd
+  unit was already installed by hand back at M9 time, but the udev
+  rule was not — auto-sync has been silently half-installed here this
+  whole time (no trigger, so plugging in an iPod never actually fired
+  it). The route's `status` field surfaces exactly this kind of gap.
+  Known, disclosed limitation baked into the generated rule itself as
+  a comment: the `05ac`/`1209` USB `idVendor`/`idProduct` is only
+  confirmed for a 5th/5.5th-gen iPod Video — nothing in this project
+  derives that value for any other generation, so a different device
+  needs a manual `lsusb` lookup and edit before installing.
+  **Bug caught before it shipped**: the first version templated
+  `ExecStart`/paths straight from `app.state`, which can be a relative
+  path (`--config-root config`, the documented common case) — a
+  systemd oneshot unit has no notion of "this process's cwd" and
+  would have silently failed to start with a relative `ExecStart`.
+  Fixed by `.resolve()`-ing config/library/state root specifically for
+  this route; caught by re-running the live smoke test against the
+  real repo layout, not by a unit test (the tmp_path-based tests
+  happened to already be absolute paths, so they didn't catch it).
+- **"Dangerous mode" toggle** (confirmed with the user, a direct
+  answer to "is there a way to start the sync without first computing
+  the plan, and immediately allowing removals?"): a switch on the new
+  `Sync.tsx` screen, off by default and reset every time the screen
+  mounts (never persisted, so a stale "still on from last visit"
+  toggle can't happen). Off: the normal compute-plan → review →
+  tick-removals-checkbox → execute flow. On: a single "Sync now
+  (dangerous)" button calls `/api/sync/execute` directly with
+  `allow_removals: true` immediately — still streams live progress
+  (it's the review step being skipped, not visibility).
+- **New `src/api.ts` `streamSSE`/`streamSyncPlan`/`streamSyncExecute`**:
+  native `EventSource` is GET-only and can't carry a JSON body, so a
+  POST that streams SSE needs a manual `fetch()` + `ReadableStream`
+  reader parsing `event:`/`data:` frames instead — the standard
+  workaround, not a new dependency. New `AutoSyncSetupCard.tsx`
+  component, collapsed by default, hosted on the `Sync` screen rather
+  than its own nav entry (a rarely-visited one-time setup step).
+- **Verified live**: `sync-orchestrator sync --json` against a real
+  profile with no device connected — stdout was exactly one `FAIL: ...`
+  line, progress correctly on stderr. The full stack (one-process-
+  served frontend + backend) end to end: `/api/sync/plan` against
+  john's real profile correctly streamed real progress then a real
+  `DeviceNotFoundError` as an `error` event; `/api/auto-sync/setup`
+  correctly reported `systemd_installed: true, udev_rule_installed:
+  false`, matching this machine's real state confirmed by hand.
+  **Not verified**: an actual successful plan/execute against a real
+  connected device (none available this session), and the frontend's
+  rendering/interaction itself (no browser automation tool available
+  this session, per this project's usual caveat — only build/curl/SSE-
+  wire-format-level verification).
+
+## 2026-09-04: Per-profile source credential overrides
+
+User report: created a new profile (Tobie) via the web GUI and it
+showed up already "connected" to Apple Music. Root cause wasn't a
+leak — Apple Music/YouTube Music/Spotify credentials have *always*
+been entirely in `global.yaml` (`SourcesConfig`), with no per-profile
+field at all, unlike Pocket Casts (already per-profile). There was
+only ever one shared copy; every profile always implicitly used it,
+nothing to leak. Confirmed with the user before building: keep the
+global default as the unchanged behavior for anyone who doesn't opt
+in, add an *optional* per-profile override, and "import from another
+profile" means pointing at the exact same file (not a byte copy).
+
+- **`common.models`**: new `ProfileAppleMusicOverride`/
+  `ProfileYtMusicOverride` (each ytmusic field — cookies_file/
+  oauth_file/oauth_client_file — independently optional, since a
+  profile might override just one)/`ProfileSpotifySource`, bundled
+  into `ProfileSourcesConfig`, added as `ProfileConfig.sources: 
+  ProfileSourcesConfig | None = None`. Absent by default — existing
+  profiles round-trip completely unchanged, same `exclude_none`
+  convention `external_library`/`audiobooks`/`music` already use.
+  Never populated automatically by any code path — only by an
+  explicit web GUI action (or a hand-edit).
+- **`common.config`**: five new resolver functions
+  (`resolve_apple_music_cookies`/`resolve_ytmusic_cookies`/
+  `resolve_ytmusic_oauth`/`resolve_ytmusic_oauth_client`/
+  `resolve_spotify_credentials`) — the one place the override-or-
+  global fallback is actually decided, so `music-stack-cli`'s fetch
+  pipeline and `web-gui-backend`'s new routes can't drift apart on
+  this logic. `music_stack_cli.orchestrate.run_fetch`'s 4 credential-
+  resolution call sites now go through these instead of reading
+  `global_config.sources...` directly — mechanical swap, verified via
+  new tests that a profile *without* `sources:` still resolves
+  exactly as before (existing tests, unmodified, still pass) and a
+  profile *with* an override actually uses it (new tests).
+- **New `web-gui-backend/routers/profile_sources.py`**: `GET
+  /api/profiles/{name}/sources/status`, profile-scoped playlist-
+  listing routes (`Sources.tsx` now calls these instead of the global
+  ones, so a profile with its own account sees its own playlists),
+  `PUT .../cookies` / `.../oauth-client` (write to a new per-profile
+  file `config/secrets/{name}/...` and set the override — the shared
+  global file is never touched), profile-scoped OAuth device-code
+  `start`/`poll` (the OAuth *client* can stay global/shared — which
+  account you sign into during the flow is independent of which
+  client app is asking — but a successful poll always writes *this*
+  profile's own token, never global's), `POST .../{source}/import`
+  (points this profile at the literal same file another profile
+  already references — resolves the source profile's *effective*
+  path, override or global, as a raw `/config/...`-container string,
+  not the already-resolved host `Path` the `resolve_*` functions
+  return, since that string is what actually needs to round-trip
+  correctly through `resolve_config_path` for every future reader),
+  `DELETE .../{source}` (clears the override for that source,
+  reverting to global; drops the whole `sources:` block once nothing
+  is overridden any more, matching every other optional profile
+  section's "absent means default" convention). Spotify deliberately
+  left out of this router — it has no capture UI in the global
+  `sources.py` either (shelved), so there's no override UI to offer
+  yet even though the schema already supports one for later.
+- **Frontend**: `YtmusicOauthForm` refactored to take its three API
+  calls (`saveClient`/`startFlow`/`pollFlow`) as injected props
+  instead of hardcoding the global `api.*` functions — same component
+  now drives both the global card and each per-profile section, no
+  duplicated device-code-polling state machine. New shared
+  `ImportOrRevertSource` component (the dropdown/button pair). Each of
+  Apple Music's and YouTube Music's cards in `Credentials.tsx` gained
+  a "For {profile}" sub-section, shown only when a profile is
+  selected: real status ("using the shared login" / "using its own,
+  updated N ago"), a capture form writing to the new per-profile
+  route, and the import/revert control. `Sources.tsx`'s playlist
+  listing and its own inline "cookies expired, re-export" fallback
+  form both switched to the profile-scoped routes too — the fallback
+  form now always creates/updates *this profile's* override rather
+  than silently editing the shared global file, matching the whole
+  feature's "never silent" principle.
+- **Verified live** against this real machine's actual profiles
+  (alice/bob/john/Tobie/nienie): confirmed the exact reported bug —
+  `GET /api/profiles/Tobie/sources/status` showed `apple_music:
+  {using: "global", exists: true}`, i.e. Tobie really was silently
+  riding on john's real cookies file, now at least *visible* and
+  *explicit* rather than assumed. Exercised the full write path
+  against a disposable throwaway profile (`_smoketest`, deleted after):
+  import from john correctly pointed it at the exact same real
+  `/config/secrets/apple_music_cookies.txt` string (not a copy),
+  status flipped to `"override"`, and DELETE correctly reverted it
+  back to `"global"` with the `sources:` block removed from the
+  written YAML entirely. Never touched any of the user's real named
+  profiles' files during verification.
+
+## 2026-09-04: VCpod icon set imported from Claude Design
+
+Imported the "VCpod Icons" Claude Design project (`claude_design`
+MCP, authorized via `/design-login`) — a clickwheel-ring icon system
+(Nocturne design system) covering 12 sync-state icons, 6 source
+icons, 3 throbber variants, and a determinate progress ring, all
+built from one shared shape: a 52-unit viewBox, 46px ring, a 90°
+accent arc from twelve o'clock, and an 8.5px hub.
+
+- New `services/web-gui-frontend/src/icons/` — every icon ported 1:1
+  from the design source (`Mark`, `StateIcons.tsx`'s 12,
+  `SourceIcons.tsx`'s 6, `Spinner.tsx`'s 3 throbber variants,
+  `ProgressRing.tsx`). Colors reference `--color-accent-*`/
+  `--color-neutral-*` custom properties added to `App.css`'s `:root` —
+  confirmed this app's existing `--accent`/`--bg` were already the
+  exact same hex values as the design's `--color-accent`/`--color-bg`
+  (the app's palette was hand-matched to this same Nocturne system
+  earlier in the project), so `--color-accent` is just an alias for
+  the app's own `--accent` rather than a second source of truth.
+  `vc-spin`/`vc-spin-rev`/`vc-breathe`/`vc-dash` keyframes added
+  alongside.
+- Wired in, not just built: `App.tsx`'s nav gets the real logo mark
+  plus one icon per screen; `Sync.tsx` gets device-status icons
+  (connected/idle/unreachable), spinners on the compute/execute/
+  dangerous-sync buttons, add/remove icons next to the plan counts,
+  and a synced-checkmark on the result banner; `AudiobookDiscovery.tsx`
+  gets a spinner on "Process into library" and a synced/to-add icon
+  per row; `Credentials.tsx` gets a synced/needs-attention icon next
+  to the Apple Music and YouTube Music card labels.
+- The throbber's own three reference sizes (44/24/16px) drop stroke
+  width and lose the inner hub below 32px ("small sizes: at 20px and
+  under, strokes go to 3-5px and the hub drops out," per the design's
+  own annotation) — ported as a size-bucketing function in
+  `Spinner.tsx` rather than continuous interpolation, to stay a
+  faithful copy of the three drawn examples rather than inventing an
+  in-between look the design never specified.
+- **Verified**: `npm run build` type-checks and bundles clean; served
+  the built app through the one-process backend and confirmed the HTML
+  shell + JS + CSS all load with real 200s. **Not verified**: actual
+  visual rendering in a browser — no browser automation tool available
+  this session, same caveat as every other frontend change this
+  project has made without one. Worth a look next time a browser's
+  available, especially the animated states (syncing spin, throbbers)
+  and the small-size stroke/hub bucketing.
+
+## 2026-09-03: Web GUI aligned with the "VCpod Console" design — real Overview/Activity, not just a re-skin
+
+Follow-up to the icon set import above: the actual web GUI had
+drifted visually from the "VCpod Console" Claude Design mockup
+(plainer sidebar, no card/table/tag/dialog component language), and
+two of its screens (Overview, Activity) only existed as either a bare
+stat row or not at all — the mockup shows a real dashboard and a
+job-history feed. Asked the user how to scope this given that closing
+that specific gap needs new backend work, not just CSS: they chose
+"do it all now, including new backend work" — so this pass built the
+real data those screens needed rather than faking it or skipping them.
+Same principle used everywhere else in this project (e.g.
+`/api/sources/status`'s real mtime, never a guessed expiry): every
+number/state either screen shows now is either already-plumbed state
+or a live read, never one of the mockup's own fictional numbers.
+
+New backend, in order (each independently tested/committed):
+- `sync_orchestrator.device.ConnectedDeviceInfo` gains real
+  `used_bytes`/`free_bytes` (`shutil.disk_usage` on the resolved mount
+  path) — additive, `identify-device`'s existing JSON consumers
+  unaffected.
+- New `common.activity`: one shared `state/activity.sqlite` log
+  (`record_activity`/`list_activity`/`prune_activity`, `PRAGMA
+  busy_timeout` set since fetch-scheduler and sync-orchestrator can
+  both write around the same real moment) plus a per-profile
+  `state/{profile}_last_sync.json` marker — nothing before this
+  recorded "when did this profile's device last actually get synced"
+  anywhere queryable at all.
+- `sync-orchestrator`'s `_run_sync`/`_run_rockbox_sync` record an
+  activity entry + the last-sync marker after every real `--execute`
+  (interactive and auto-sync), success or failure.
+- `fetch-scheduler`'s `cli.py` (the tick caller, not `run_tick` itself)
+  records one activity entry per profile that actually fetched
+  something or hit a source error that tick — profiles with nothing
+  due are skipped on purpose, to avoid flooding the log with no-op
+  entries every tick (a deliberate divergence from the mockup's
+  illustrative "nothing due" row). New `activity_prune` maintenance
+  task alongside the existing dedup/cleanup/backup-prune ones, gated
+  by new `GlobalConfig.activity.prune_enabled`/`keep_last_days`.
+- `common.state.StateDB` gains `count_tracks()`/`count_episodes()`;
+  `common.schedule` gains `next_profile_fetch_time()` — both reused by
+  the Overview route below.
+- New web-gui-backend routes: `GET /api/activity` (the log, newest
+  first); `GET /api/alerts` (missing/stale credential files — reusing
+  the exact status logic `sources.py`/`profile_sources.py`/
+  `podcasts.py` already expose, not a re-derivation that could drift —
+  plus PO-token companion-service reachability via a real short-timeout
+  TCP connect; Spotify deliberately excluded, shelved, not real
+  signal); `GET /api/overview` (per-profile device cards, the alerts
+  above, whole-library track count, recent activity).
+
+Frontend: added the remaining Nocturne tokens/component classes
+(`--radius/--space/--shadow`, `.card-kicker/-title/-body`, `.tag*`,
+`.seg`/`.seg-opt`, `.table`, `.dialog*`, `.btn.ghost`) and a shared
+`Dialog` component; rebuilt `Overview.tsx` into a real dashboard
+(alert banners, per-profile device cards, recent activity, library
+stats) and added a new `Activity.tsx` screen, both against the routes
+above; restructured `App.tsx`'s sidebar (profile picker, grouped nav
+with real badge counts, a status footer built on a new shared
+`useConnectedDevices()` hook so the sidebar and Sync screen poll once,
+not twice) and gave every screen's header a breadcrumb + "View YAML"
+(client-side pretty-print of `store.draft`, not a new endpoint) /
+"Sync now" quick actions; restyled `Sources.tsx`/`Podcasts.tsx`'s
+playlist/show lists into real `.table`s, `Credentials.tsx`'s source
+cards with status `.tag`s, `Sync.tsx` with 4 stat cards + an
+execute-confirm `Dialog`, and reworked `Profiles.tsx` into a two-pane
+layout with `.seg` segmented controls and a real before/after
+review-diff `Dialog` (computed client-side against the last-loaded
+profile already sitting in `store.profiles`). `ExternalLibrary.tsx`/
+`Audiobooks.tsx` were deliberately left alone — they're recursive
+directory-tree browsers (`DirectoryPicker`), not flat lists, and don't
+fit the `.table` treatment without a bigger redesign than this pass
+warranted.
+
+- **Verified**: full workspace `pytest` (528 passed) after every
+  backend increment; `npm run build` type-checks and bundles clean
+  after every frontend increment; live-exercised `/api/overview`,
+  `/api/alerts`, `/api/activity` against this real machine's real
+  config/state (6 real profiles) — confirmed real numbers throughout
+  (e.g. john: 1813 tracks/125 episodes, a real 46-day-stale Apple
+  Music cookie file correctly flagged, a real unreachable PO-token
+  provider correctly flagged) — and served the built frontend through
+  the one-process backend with real 200s. **Not verified**: actual
+  visual rendering in a browser, same caveat as the icon set entry
+  above — no browser automation tool available this session.
+
+## 2026-09-03: Real sync failure — podcast artwork backfill conflicting with removal
+
+A real `sync --execute --allow-removals` for `john`, triggered from the
+web GUI, failed with 6 `update_conflicts_with_remove` errors across 4
+shows (Linux Matters, Lateral with Tom Scott, Timothy Keller Sermons,
+The Standup with ThePrimeagen) — iopenpod's own plan validator refused
+to execute a plan proposing both an artwork update *and* a removal for
+the same `db_track_id`. Nothing was written; it failed safely, but
+blocked the whole sync, not just those 6 episodes.
+
+Root cause, found by tracing `sync.py`'s podcast plan assembly:
+`build_podcast_artwork_backfill_items` (added 2026-08-26/09-01 to
+backfill artwork for the ~1600+ episodes already on-device before the
+cover-art fix existed) has **no notion of played/unsubscribed state at
+all** — by design, per its own docstring, it only checks "is this
+on-device track art-less and does a local file still resolve art for
+it." Meanwhile `build_podcast_removal_items` proposes removal for any
+episode `known_episodes` (the state db, freshly updated by *this same
+run's* device play-count read-back a few dozen lines earlier in
+`plan_sync`) says is now played or unsubscribed, keyed off the state
+db rather than local-file presence specifically *because*
+podcast-manager's own file deletion happens on a later, independent
+fetch-scheduler tick — not synchronously with the played-state
+detection. That gap is exactly the window this hit: an episode
+discovered as newly-played by this run's own device read-back, whose
+local file (and art-less on-device track) hadn't been cleaned up yet,
+is simultaneously a real removal candidate and a real artwork-backfill
+candidate. Both proposals are individually correct given their own
+inputs; nothing reconciled them against each other before finalizing
+the plan.
+
+Fix: new `podcast_artwork_backfill.exclude_conflicting_with_removal()`
+— filters artwork_items (and the matching matched_pc_paths) down to
+exclude anything whose db_track_id is also in removal_items, called
+right before either list gets merged into the plan in `sync.py`.
+Removal always wins on a genuine conflict — a track on its way off the
+device has no reason to also get its artwork rewritten first. Kept as
+its own small, independently unit-tested function (mirroring this
+codebase's existing pattern of small single-purpose podcast-plan
+modules) rather than teaching `build_podcast_artwork_backfill_items`
+itself about played/unsubscribed state, which would duplicate matching
+logic `build_podcast_removal_items` already owns.
+
+**Verified**: 3 new unit tests for `exclude_conflicting_with_removal`
+(overlap dropped, no-overlap unchanged, no-removals unchanged); full
+sync-orchestrator suite (189 passed) and root workspace suite (541
+passed). **Verified live**: a real resync for `john` right after this
+landed succeeded (`activity` log: added 1, removed 7 tracks, including
+the previously-conflicting episodes) — the two prior attempts at this
+exact state had both failed with `update_conflicts_with_remove`.
+
+## 2026-09-03: `config/profiles/john-copy.yaml` removed (user action, not a bug)
+
+`services/common/tests/test_config.py::test_example_profiles_load`
+started failing after this real, gitignored profile was deliberately
+deleted from disk by the user (unrelated to any code change this
+session — confirmed nothing in this session's work touched
+`config/profiles/`). Removed `"john-copy"` from the test's hardcoded
+subset-check set; the other three tracked-in-spirit names
+(`alice`/`bob`/`john`) are untouched.

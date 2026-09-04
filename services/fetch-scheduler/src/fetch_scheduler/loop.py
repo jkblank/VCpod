@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from common.activity import prune_activity
 from common.backups import RetentionPolicy, prune_and_gc_backups, resolve_retention_map
 from common.config import load_all_profiles, load_global_config
 from common.lock import FileLock, LockTimeoutError
@@ -218,6 +219,15 @@ def _process_maintenance(
                 dry_run=dry_run,
             ),
         ),
+        (
+            "activity_prune",
+            global_config.activity.prune_enabled,
+            lambda: _run_activity_prune(
+                state_root=state_root,
+                keep_last_days=global_config.activity.keep_last_days,
+                dry_run=dry_run,
+            ),
+        ),
     )
 
     enabled_tasks = [(task_id, runner) for task_id, enabled, runner in tasks if enabled]
@@ -307,3 +317,12 @@ def _run_backup_prune(
         f"{verb} {deleted_snapshot_count} snapshot(s) and {prune_result.deleted_blob_count} "
         f"blob(s) ({prune_result.deleted_blob_bytes} bytes)"
     )
+
+
+def _run_activity_prune(*, state_root: Path, keep_last_days: int, dry_run: bool) -> str:
+    # prune_activity has no read-only mode -- same "don't call the
+    # mutating function" convention library_dedup above uses.
+    if dry_run:
+        return f"would prune activity entries older than {keep_last_days} days"
+    deleted = prune_activity(state_root, older_than_days=keep_last_days)
+    return f"pruned {deleted} activity entr{'y' if deleted == 1 else 'ies'} older than {keep_last_days} days"

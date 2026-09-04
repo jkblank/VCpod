@@ -425,3 +425,38 @@ def test_fetch_runs_scoped_independently_by_target_type_and_id(tmp_path: Path):
 
         assert db.get_last_fetched("podcast_show", "Chill") is None
         assert db.get_last_fetched("playlist", "Elevate") is None
+
+
+# --- count_tracks / count_episodes ---------------------------------------
+
+
+def test_count_tracks_zero_when_empty(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        assert db.count_tracks() == 0
+
+
+def test_count_tracks_counts_all_rows(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_track(_record("1"))
+        db.record_track(_record("2"))
+        db.record_track(_record("3"))
+        assert db.count_tracks() == 3
+
+
+def test_count_episodes_excludes_unsubscribed(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode("ep-1"))
+        db.record_episode(_episode("ep-2"))
+        db.mark_unsubscribed("ep-2")
+
+        assert db.count_episodes() == 1
+
+
+def test_count_episodes_unplayed_only_excludes_played(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode("ep-1"))
+        db.record_episode(_episode("ep-2"))
+        db.update_play_state("ep-2", played=True, played_up_to=100)
+
+        assert db.count_episodes(unplayed_only=False) == 2
+        assert db.count_episodes(unplayed_only=True) == 1

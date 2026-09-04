@@ -49,12 +49,62 @@ class YtMusicSource(StrictModel):
     # CDN download, which YouTube's bot-check gates independently of
     # ytmusicapi's own session. See notes.md.
     cookies_file: str
+    # JSON {"client_id", "client_secret"} for the Google OAuth client
+    # oauth_file's token was minted with. ytmusicapi has no default
+    # client of its own -- every user creates their own via Google
+    # Cloud Console -- and the *same* client_id/secret must be supplied
+    # again on every use for token refresh to work, not just at capture
+    # time (a bare oauth_file with no matching client raises
+    # YTMusicUserError the moment the token expires). Optional: absent
+    # (empty string) means oauth_file, if present, will work until it
+    # expires and then need re-capturing instead of auto-refreshing.
+    oauth_client_file: str = ""
+    # yt-dlp's PO-token companion service (services/fetcher-ytmusic/
+    # pot-provider/) -- every YouTube Music download needs it reachable
+    # or it fails. Configurable rather than hardcoded so the web GUI's
+    # alerts check (a short-timeout connect) works against a non-default
+    # port/host too. Default matches the companion service's own
+    # documented default (127.0.0.1:4416).
+    pot_provider_url: str = "http://127.0.0.1:4416"
 
 
 class SourcesConfig(StrictModel):
     apple_music: AppleMusicSource
     spotify: SpotifySource
     ytmusic: YtMusicSource
+
+
+class ProfileAppleMusicOverride(StrictModel):
+    cookies_file: str
+
+
+class ProfileYtMusicOverride(StrictModel):
+    # Each independently optional -- a profile might override just
+    # cookies_file (its own YouTube account for downloads) while still
+    # relying on the household's shared oauth_file, or vice versa.
+    cookies_file: str | None = None
+    oauth_file: str | None = None
+    oauth_client_file: str | None = None
+
+
+class ProfileSpotifySource(StrictModel):
+    credentials_file: str
+
+
+class ProfileSourcesConfig(StrictModel):
+    # Per-profile override of global.yaml's shared sources -- every
+    # field here is optional; an unset source (or unset field within
+    # ytmusic) means "use the household's shared global.yaml
+    # credential," today's only behavior before this existed. Never
+    # assumed/populated automatically -- a profile only gets an entry
+    # here via an explicit "set up separate credentials" or "import
+    # from another profile" action in the web GUI (or a hand-edited
+    # profile YAML). See common.config's resolve_apple_music_cookies/
+    # resolve_ytmusic_*/resolve_spotify_credentials, the one place this
+    # override-or-global fallback is actually resolved.
+    apple_music: ProfileAppleMusicOverride | None = None
+    ytmusic: ProfileYtMusicOverride | None = None
+    spotify: ProfileSpotifySource | None = None
 
 
 class PocketCastsGlobalConfig(StrictModel):
@@ -100,12 +150,35 @@ class BackupMaintenanceConfig(StrictModel):
     default_max_age_days: int = Field(default=14, gt=0)
 
 
+class ActivityMaintenanceConfig(StrictModel):
+    # Same shape/reasoning as BackupMaintenanceConfig above -- runs as a
+    # fetch-scheduler maintenance post-step, no schedule of its own.
+    # False = the activity log just grows unbounded until turned on.
+    prune_enabled: bool = False
+    keep_last_days: int = Field(default=30, gt=0)
+
+
+class AudiobookManagerConfig(StrictModel):
+    # Where raw, not-yet-processed audiobook source folders land (e.g.
+    # Libby DevTools-captured MP3 parts, one subfolder per book — see
+    # services/audiobook-manager/README.md's manual-acquisition
+    # workflow). Global, not per-profile: library/audiobooks itself is
+    # one shared pool synced from (same reasoning as library/music), so
+    # "where do raw captures sit before processing" isn't a per-profile
+    # question either. A real host path, used directly like
+    # ExternalLibraryConfig.path -- never /config/...-container-style.
+    # Optional: empty means discover has nowhere configured to scan yet.
+    discover_root: str = ""
+
+
 class GlobalConfig(StrictModel):
     paths: Paths
     sources: SourcesConfig
     podcasts: PodcastsGlobalConfig
     library_manager: LibraryManagerConfig = Field(default_factory=LibraryManagerConfig)
     backups: BackupMaintenanceConfig = Field(default_factory=BackupMaintenanceConfig)
+    audiobook_manager: AudiobookManagerConfig = Field(default_factory=AudiobookManagerConfig)
+    activity: ActivityMaintenanceConfig = Field(default_factory=ActivityMaintenanceConfig)
 
 
 class DeviceMatch(StrictModel):
@@ -386,3 +459,4 @@ class ProfileConfig(StrictModel):
     music: MusicLibraryConfig | None = None
     fetch: FetchSettings = Field(default_factory=FetchSettings)
     backups: ProfileBackupRetention | None = None
+    sources: ProfileSourcesConfig | None = None

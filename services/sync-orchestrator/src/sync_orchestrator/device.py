@@ -9,6 +9,7 @@ connection and mounting it is M9's job ("automation"), not this one.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -205,6 +206,26 @@ class ConnectedDeviceInfo:
     generation: str
     model_number: str
     capacity: str
+    # Real filesystem usage (shutil.disk_usage on the mount path) --
+    # additive fields alongside `capacity` (a formatted-string total
+    # from iopenpod's own DeviceInfo), not a replacement, so existing
+    # `identify-device` JSON consumers are unaffected. Used by the web
+    # GUI's Overview dashboard for a real "118.4 of 149.2 GB" figure
+    # instead of a guessed/cached one.
+    used_bytes: int
+    free_bytes: int
+
+
+def _disk_usage(mount_point: str) -> tuple[int, int]:
+    """(used_bytes, free_bytes) for the filesystem at mount_point.
+    Best-effort: a device that's disappeared between being listed and
+    this call (rare, but real -- a fast eject/replug) shouldn't crash
+    the whole identify-device response over one now-stale entry."""
+    try:
+        usage = shutil.disk_usage(mount_point)
+        return usage.used, usage.free
+    except OSError:
+        return 0, 0
 
 
 def iter_connected_devices() -> list[ConnectedDeviceInfo]:
@@ -224,6 +245,7 @@ def iter_connected_devices() -> list[ConnectedDeviceInfo]:
             continue
         info = DeviceInfo(path=mount_point)
         enrich(info)
+        used_bytes, free_bytes = _disk_usage(mount_point)
         devices.append(
             ConnectedDeviceInfo(
                 path=mount_point,
@@ -234,6 +256,8 @@ def iter_connected_devices() -> list[ConnectedDeviceInfo]:
                 generation=info.generation,
                 model_number=info.model_number,
                 capacity=info.capacity,
+                used_bytes=used_bytes,
+                free_bytes=free_bytes,
             )
         )
     return devices

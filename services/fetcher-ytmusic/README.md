@@ -57,3 +57,12 @@ cookies file. `--oauth-path` (`list-playlists` only, optional on
 account's own private library listing; public playlists resolve fine
 without it (`ytmusicapi.get_playlist()` works fully unauthenticated,
 confirmed live).
+
+`--oauth-client-id`/`--oauth-client-secret` are optional on both
+commands — the Google OAuth client (created via Google Cloud Console;
+`ytmusicapi` has no shared/default one) that `--oauth-path`'s token was
+minted with. Without these, `--oauth-path` works until the token
+expires and then breaks (`YTMusicUserError` on refresh) instead of
+auto-refreshing — see `notes.md`'s 2026-09-03 ytmusic-oauth entry. The
+web GUI's OAuth capture flow (`services/web-gui-backend`) sets these up
+together and saves both.

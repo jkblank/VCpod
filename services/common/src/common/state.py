@@ -170,6 +170,15 @@ class StateDB:
         )
         self._conn.commit()
 
+    def count_tracks(self) -> int:
+        """How many tracks this profile's state db believes are on the
+        device -- the same "believed synced" bookkeeping the sync
+        pipeline itself already relies on, not a fresh device scan.
+        Used by the web GUI's Overview dashboard for a real per-profile
+        track count."""
+        (count,) = self._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()
+        return count
+
     _EPISODE_COLUMNS = (
         "episode_uuid, podcast_uuid, show_name, local_path, played, "
         "played_up_to, downloaded_at, title, audio_url, duration_seconds, "
@@ -208,6 +217,16 @@ class StateDB:
     def list_episodes(self) -> list[EpisodeRecord]:
         rows = self._conn.execute(f"SELECT {self._EPISODE_COLUMNS} FROM episodes").fetchall()
         return [self._episode_from_row(row) for row in rows]
+
+    def count_episodes(self, *, unplayed_only: bool = False) -> int:
+        """How many episodes this profile's state db believes are on the
+        device -- always excludes unsubscribed (podcast-manager's own
+        cleanup already treats those as gone), optionally also excludes
+        already-played ones. Same "believed synced" bookkeeping
+        count_tracks() uses, not a fresh device scan."""
+        where = "unsubscribed = 0" + (" AND played = 0" if unplayed_only else "")
+        (count,) = self._conn.execute(f"SELECT COUNT(*) FROM episodes WHERE {where}").fetchone()
+        return count
 
     def record_episode(self, record: EpisodeRecord) -> None:
         # unsubscribed is always written as 0 here, regardless of

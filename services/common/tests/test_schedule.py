@@ -16,8 +16,10 @@ from common.schedule import (
     is_due_within,
     iter_fetch_targets,
     next_fetch_time,
+    next_profile_fetch_time,
     resolve_fetch_scope,
 )
+from common.state import StateDB
 
 NOW = datetime(2026, 7, 25, 12, 17, tzinfo=timezone.utc)
 HOURLY = "0 * * * *"
@@ -199,3 +201,49 @@ def test_resolve_fetch_scope_all_sentinel_produces_none_show_names():
 def test_resolve_fetch_scope_empty_targets_is_all_none():
     scope = resolve_fetch_scope([])
     assert scope == ResolvedFetchScope(sources=set(), playlist_names=None, show_names=None)
+
+
+# --- next_profile_fetch_time --------------------------------------------
+
+
+def test_next_profile_fetch_time_no_schedule_anywhere_is_none(tmp_path):
+    profile = _profile(playlists=[])  # no playlists, no podcasts schedule, no default
+    with StateDB(tmp_path / "state.sqlite") as db:
+        assert next_profile_fetch_time(profile, db, NOW) is None
+
+
+def test_next_profile_fetch_time_picks_the_soonest_target(tmp_path):
+    profile = _profile(
+        playlists=[
+            PlaylistEntry(name="Chill", source="apple_music", source_id="pl1", fetch_schedule=DAILY_AT_3AM),
+            PlaylistEntry(name="Elevate", source="ytmusic", source_id="pl2", fetch_schedule=HOURLY),
+        ]
+    )
+    with StateDB(tmp_path / "state.sqlite") as db:
+        # Elevate (hourly) was just fetched -> next fire in under an hour.
+        # Chill (daily) was fetched a week ago -> next fire is today 03:00,
+        # already past NOW, so it's "due now" (== NOW) -- still later than
+        # Elevate's next real fire time only if Elevate isn't also overdue.
+        db.record_fetch("playlist", "Chill", NOW - timedelta(days=7))
+        db.record_fetch("playlist", "Elevate", NOW - timedelta(minutes=5))
+
+        soonest = next_profile_fetch_time(profile, db, NOW)
+
+    # Chill's cron next-fire from 7 days ago is far in the past relative
+    # to NOW, so next_fetch_time still returns *a* past-due datetime
+    # (croniter's actual next fire after last_fetched_at, not "now") --
+    # assert against the real croniter computation for each, whichever
+    # is chronologically soonest.
+    from croniter import croniter
+
+    chill_next = croniter(DAILY_AT_3AM, NOW - timedelta(days=7)).get_next(datetime)
+    elevate_next = croniter(HOURLY, NOW - timedelta(minutes=5)).get_next(datetime)
+    assert soonest == min(chill_next, elevate_next)
+
+
+def test_next_profile_fetch_time_never_fetched_target_is_due_now(tmp_path):
+    profile = _profile(
+        playlists=[PlaylistEntry(name="Chill", source="apple_music", source_id="pl1", fetch_schedule=HOURLY)]
+    )
+    with StateDB(tmp_path / "state.sqlite") as db:
+        assert next_profile_fetch_time(profile, db, NOW) == NOW

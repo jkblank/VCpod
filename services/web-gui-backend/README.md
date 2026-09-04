@@ -15,13 +15,58 @@ uv run web-gui-backend --config-root config
 
 - `--config-root` (default `config`) — same convention every other
   service's `--config-root` uses.
+- `--library-root` (default: sibling `library` next to `--config-root`,
+  same convention every other CLI here uses) — where `library/
+  audiobooks` actually is, for the Audiobooks browse route.
+- `--state-root` (default: sibling `state` next to `--config-root`,
+  same convention) — where `audiobook-manager`'s beets db and discover
+  state (`state/audiobooks/discovered_state.json`) live, for the
+  audiobook-discover routes below.
 - `--sync-orchestrator-dir` (default: sibling `services/sync-orchestrator`,
   derived from this package's own install location) — where to find
   `sync-orchestrator identify-device` to shell out to.
+- `--frontend-dist` (default: sibling `services/web-gui-frontend/dist`) —
+  when this directory exists (i.e. `npm run build` has been run over
+  there), this one process serves the built SPA *and* the JSON API
+  together on `--port`, no separate `npm run dev`/static server needed.
+  When it doesn't exist yet, this is a no-op — the backend just serves
+  the API as before. See "Running it as one process" below.
 - `--host` (default `127.0.0.1`) — **only widen this deliberately.**
   This service has no login system (see "Security posture" below); it's
   meant to stay on localhost or your own LAN, never the open internet.
 - `--port` (default `8420`)
+- `--reload` (dev only) — auto-restarts on code changes under this
+  package's `src/web_gui_backend/`, so a route/handler edit is picked
+  up without manually killing and restarting the process. Confirmed
+  live: without this, a long-running process silently keeps serving
+  its old routes after a `git pull`/new commit — every newly-added
+  route 404s (not 500, not a validation error — genuinely "route not
+  found", since the running process never re-imports anything on its
+  own) until it's restarted. See `notes.md`'s 2026-09-03 entry.
+
+  ```bash
+  uv run web-gui-backend --config-root config --reload
+  ```
+
+## Running it as one process
+
+For everyday use (not frontend development, where the Vite dev server's
+hot reload is worth keeping — see `services/web-gui-frontend/README.md`),
+build the frontend once and just run the backend:
+
+```bash
+cd services/web-gui-frontend && npm run build && cd ../..
+uv run web-gui-backend --config-root config
+```
+
+Visit `http://127.0.0.1:8420/` — the backend serves the built SPA
+itself (`fastapi.staticfiles.StaticFiles`, mounted at `/` *after* every
+`/api/...` route, so API routes always take priority) alongside the
+JSON API on the same port. No CORS setup needed since it's all one
+origin. This is "one thing to run" for setup purposes; see notes.md's
+"package the web GUI as one thing to run" entry for the heavier
+options (a single Docker image, an installer, ...) still being
+weighed for later.
 
 ## API
 
@@ -37,6 +82,34 @@ separate React SPA, not server-rendered.
 | GET | `/api/global-config` | `config/global.yaml` |
 | PUT | `/api/global-config` | Overwrites `config/global.yaml` |
 | GET | `/api/device/identify` | Shells out to `sync-orchestrator identify-device`, returns `{"devices": [...]}` |
+| GET | `/api/sources/apple-music/playlists` | Lists the Apple Music account's playlists (`fetcher_apple.api.list_playlists`) |
+| GET | `/api/sources/ytmusic/playlists` | Lists the YouTube Music account's playlists |
+| GET | `/api/sources/ytmusic/resolve?url=...` | Resolves a public playlist by share link or bare id — works unauthenticated, for playlists not saved to your own account |
+| PUT | `/api/sources/apple-music/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format + `media-user-token` present), written atomically |
+| PUT | `/api/sources/ytmusic/cookies` | Body `{"cookies_txt": "..."}` — validated (Netscape format), written atomically |
+| GET | `/api/sources/status` | Per-source status — `updated_at` is the credential file's real mtime, not a guessed expiry. `apple_music`/`spotify`: `{enabled, exists, updated_at}`. `ytmusic`: `{enabled, cookies: {...}, oauth: {...}, oauth_client: {...}}` — three independent credentials reported separately (cookies for every download, oauth for private-playlist listing, oauth_client is the Google OAuth client the oauth token needs for auto-refresh) |
+| PUT | `/api/sources/ytmusic/oauth-client` | Body `{"client_id", "client_secret"}` — the user's own Google OAuth client (ytmusicapi has no shared/default one), written atomically. Prerequisite for the device-code flow below, and also read back on every playlist-listing call so a captured token can auto-refresh instead of breaking on expiry |
+| POST | `/api/sources/ytmusic/oauth/start` | Starts the RFC 8628 device-code flow — returns `{device_code, user_code, verification_url, expires_in, interval}`. 422 if no OAuth client saved yet |
+| POST | `/api/sources/ytmusic/oauth/poll` | Body `{"device_code"}` — `{"status": "pending"}` while the user hasn't finished the browser step yet (poll again after `interval` seconds), `{"status": "ok"}` and `oauth_file` written atomically on success, 502 on a real failure (expired code, denied, bad client) |
+| GET | `/api/profiles/{name}/sources/status` | Per-profile override layer on top of the rows above (`routers/profile_sources.py`) — for `apple_music` and each of ytmusic's `cookies`/`oauth`/`oauth_client`: `{"using": "global"\|"override", "exists", "updated_at"}`. `exists`/`updated_at` describe whichever file is actually in effect. Never populated automatically — see `common.models.ProfileSourcesConfig`'s docstring |
+| GET | `/api/profiles/{name}/sources/apple-music/playlists` (and `ytmusic/playlists`) | Same as the global routes above, but resolved override-or-global for this profile first — a profile with its own account sees its own playlists |
+| PUT | `/api/profiles/{name}/sources/apple-music/cookies` (and `ytmusic/cookies`, `ytmusic/oauth-client`) | Same validation as the global routes, but writes to a new per-profile file (`config/secrets/{name}/...`) and sets that profile's override field — the shared global file is never touched |
+| POST | `/api/profiles/{name}/sources/ytmusic/oauth/start` \| `/poll` | Per-profile device-code flow. The OAuth *client* still falls back to the shared global one if this profile has none of its own (which account you sign into is independent of which client app is asking) — but a successful poll always writes this profile's *own* `oauth_file`, never global's |
+| POST | `/api/profiles/{name}/sources/{apple_music\|ytmusic}/import` | Body `{"from_profile"}` — points this profile's override at the *exact same file* the named profile currently uses (its own override if it has one, else the shared global path) — a pointer, not a byte copy; editing/re-exporting later affects both |
+| DELETE | `/api/profiles/{name}/sources/{apple_music\|ytmusic}` | Clears the override, reverting to the shared global login. Doesn't delete the underlying file |
+| GET | `/api/profiles/{name}/pocketcasts-status` | `{exists, updated_at}` for that profile's saved Pocket Casts credentials |
+| GET | `/api/profiles/{name}/pocketcasts/subscriptions` | That profile's real Pocket Casts subscriptions (requires credentials already saved) |
+| PUT | `/api/profiles/{name}/pocketcasts-credentials` | Body `{"email", "password"}` — validated via a real Pocket Casts login *before* writing anything |
+| GET | `/api/external-library/browse?root=...&subpath=...` | Lists one directory under an arbitrary, user-supplied root (`ExternalLibraryConfig.path`) — the one route that reads a filesystem location this project doesn't otherwise manage, so every listing is confined to `root` (see `browse.py`) |
+| GET | `/api/audiobooks/browse?subpath=...` | Lists one directory under `library_root/audiobooks` (resolved internally, never client-supplied) |
+| GET | `/api/audiobooks/discover` | Scans `global.yaml`'s `audiobook_manager.discover_root` for raw, not-yet-processed parts-dirs (`audiobook_manager.discover.discover_audiobooks`), flagging which ones a previous import already handled. `{"root": "", "books": []}` when `discover_root` isn't set yet — not an error |
+| POST | `/api/audiobooks/discover/import` | Body `{"name"}` — runs the real merge+tag pipeline (`audiobook_manager.pipeline.run_import_audiobook`, the same code `audiobook-manager import-audiobook` uses) against `{discover_root}/{name}`. 502 on a real failure (no ffmpeg, beets crashing); 422 if beets-audible couldn't confidently match the book (not a failure — the merged file is left in place for a manual `metadata.yml` retry, see `services/audiobook-manager/README.md`); `{"status": "ok", "imported_paths": [...]}` on success |
+| POST | `/api/sync/plan` | Body `{"profile", "skip_backup"?, "skip_podcasts"?}` — **Server-Sent Events**, not plain JSON: streams `sync-orchestrator sync --json`'s progress as `event: progress` frames, then one `event: result` frame carrying the computed plan (`sync_orchestrator.plan_json.plan_summary`'s shape), or `event: error` on any failure (device not found, unresolved selection, ...). Never passes `--execute` — nothing is written |
+| POST | `/api/sync/execute` | Same SSE shape as `/api/sync/plan`, body adds `allow_removals` (default `false`) — always passes `--execute`, passes `--allow-removals` only when the body says so. **Deliberately independent of `/api/sync/plan`** — no prior plan call is required server-side, same trust model the CLI already has; `sync-orchestrator`'s own hard gate (refuses removals without `--allow-removals`) is what actually backstops this |
+| GET | `/api/auto-sync/setup` | Generates the systemd unit + udev rule for unattended auto-sync-on-connect, filled in with this install's real paths, written to `state/generated/` (a location this process can already write to) — returns their content, the exact `sudo cp`/`daemon-reload`/`udevadm control --reload-rules` commands to install them, and `{"systemd_installed", "udev_rule_installed"}` (real `Path.is_file()` checks against `/etc/...`). Never installs anything itself |
+| GET | `/api/activity?limit=50` | The shared `state/activity.sqlite` job-history log (`common.activity.list_activity`) written to by fetch-scheduler and sync-orchestrator, newest first |
+| GET | `/api/alerts` | Aggregated, real alerts: missing/stale credential files (reusing the exact status logic the `/api/sources/status` family already exposes, so this can't drift from what those screens show) and PO-token companion-service reachability (a real short-timeout TCP connect against `GlobalConfig.sources.ytmusic.pot_provider_url`). Spotify excluded — shelved, not real signal |
+| GET | `/api/overview` | Assembles the Overview dashboard: one card per profile (connected-device identity + real used/free bytes when connected via `sync-orchestrator identify-device`, else "not connected"; `StateDB.count_tracks`/`count_episodes`; the last real sync from `common.activity`'s marker; the next scheduled fetch from `common.schedule.next_profile_fetch_time`), the same alerts as above, a whole-library track count, and the 5 most recent activity entries |
 
 A validation failure (bad enum value, missing required field, a
 profile named the reserved `"global"`, a duplicate profile name across
@@ -46,40 +119,85 @@ the same `(path, errors)` shape `common.config.ConfigError` already
 carries everywhere else in this project, so a frontend can map each
 message onto a form field by splitting on `.`.
 
-A failed `identify-device` subprocess call (uv/sync-orchestrator not
-set up, etc.) returns **502** with a plain string detail, not a crash.
+A failed `identify-device`/playlist-listing/subscription-listing call
+(source not authenticated, network error, etc.) returns **502** with a
+plain string detail, not a crash — these all reach out to a real
+external system whose failure modes aren't enumerable up front.
+
+Cookie/credential writes never echo content back — a successful `PUT`
+just returns `{"status": "ok"}`. A bad cookie paste or a rejected
+Pocket Casts login never touches the real file/never gets written at
+all (validated first; cookie writes go through a temp-file-then-rename
+so a working file is never left corrupted mid-write, same pattern
+`podcast_manager/download.py::_download_enclosure` already uses).
 
 ## Architecture
 
-- **Root workspace member**, not standalone — imports `common` directly
-  (in-process) for config load/save. This will grow to import
-  `fetcher-apple`/`fetcher-ytmusic`/`podcast-manager`/`music-stack-cli`/
-  `fetch-scheduler`/`library-manager` too as M12-M14 add playlist/show
-  picking, but nothing beyond `common` is needed yet.
+- **Root workspace member**, not standalone — imports `common`,
+  `fetcher-apple`, `fetcher-ytmusic`, `podcast-manager`,
+  `audiobook-manager` directly (in-process); `audiobook-manager` being a
+  root-workspace member itself (unlike `sync-orchestrator`/
+  `fetcher-spotify`) is exactly why this is safe — beets-audible is
+  already installed in this venv, not a new isolated dependency tree.
+  `music-stack-cli`/`fetch-scheduler`/`library-manager` aren't needed
+  yet (M14 territory).
 - **`sync-orchestrator` stays a subprocess call** (`device.py`,
-  `identify_connected_devices`), same reasoning
-  `sync-orchestrator`'s own `_build_music_stack_fetch_cmd` already
-  documents for the reverse direction: it's a standalone `uv` project
-  specifically so its `iopenpod`/PyQt6 dependency tree never merges
-  with this (or any other root-workspace) service's.
+  `identify_connected_devices`; `sync_runner.py`,
+  `stream_sync`), same reasoning `sync-orchestrator`'s own
+  `_build_music_stack_fetch_cmd` already documents for the reverse
+  direction: it's a standalone `uv` project specifically so its
+  `iopenpod`/PyQt6 dependency tree never merges with this (or any other
+  root-workspace) service's. `sync_runner.py` is the first *streaming*
+  subprocess in this service (`asyncio.create_subprocess_exec`,
+  reading stdout/stderr as they arrive) — everywhere else either
+  imports in-process or uses `subprocess.run`'s buffer-until-exit,
+  fine for something that finishes in milliseconds but wrong for a
+  real device sync that can run 20-50+ minutes (see
+  `sync-orchestrator/README.md`'s own progress-reporting rationale).
 - **Config is the only source of truth** — no database, no cached
   copy. Every route reads/writes through `common.config`'s
   `load_*`/`save_*` functions, the same ones every CLI tool already
-  uses.
+  uses. Global-config credential paths (`/config/...`-container-style)
+  resolve through `common.config.resolve_config_path` — the same
+  resolver `music-stack-cli`'s own fetch pipeline uses.
+- **One router module per resource** (`routers/profiles.py`,
+  `global_config.py`, `device.py`, `sources.py`, `profile_sources.py`,
+  `podcasts.py`) — `app.py` is just the `create_app()` factory that
+  wires `config_root`/`sync_orchestrator_dir` into `app.state` and
+  mounts each router. Shared error-response helpers live in
+  `errors.py`, the shared atomic-write helper in `atomic.py`.
+  `sources.py` and `profile_sources.py` are deliberately separate
+  files even though they both concern the same three sources — the
+  former edits/lists the shared global default, the latter is the
+  per-profile override layer on top, and both call the same
+  `common.config.resolve_apple_music_cookies`/`resolve_ytmusic_*`
+  functions so the override-or-global fallback logic can't drift
+  between the GUI and `music-stack-cli`'s own fetch pipeline.
 
-## Security posture (deliberate, see `notes.md`'s 2026-09-02 entry)
+## Security posture (deliberate, see `notes.md`'s 2026-09-02 entries)
 
 - No login system — access control is "don't expose this beyond
   localhost/your LAN," not app-level auth. Appropriate for a
   single-user personal tool; revisit if that ever changes.
-- Credentials this service will eventually accept (Pocket Casts
-  email/password, Apple Music/YouTube cookies — not yet built, see
-  M12) stay plaintext under `config/secrets/`, same posture as every
-  CLI tool today. Not encrypted at rest.
-- Nothing here executes privileged commands. Auto-sync setup (planned,
-  M14) will generate the filled-in systemd unit/udev rule files and
-  display the exact `sudo` commands for a human to run — never attempt
-  to run them itself.
+- Credentials (Pocket Casts email/password, Apple Music/YouTube
+  cookies, YouTube Music's OAuth client secret and captured token) stay
+  plaintext under `config/secrets/`, same posture as every CLI tool
+  today. Not encrypted at rest — a deliberate, separate,
+  not-yet-scheduled follow-up if it ever happens.
+- Nothing here executes privileged commands. `/api/auto-sync/setup`
+  generates the filled-in systemd unit/udev rule files and displays
+  the exact `sudo` commands for a human to run — it never attempts to
+  run them itself.
+- `/api/sync/execute` genuinely can write to and delete tracks from a
+  real device, unlike every other route in this service (which only
+  ever edits YAML or lists/validates things) — this is intentional
+  (M14's whole point: trigger a manual sync from the browser), backed
+  by the same safety gates `sync-orchestrator sync` already has
+  (`--execute` alone refuses on any removal; `--allow-removals` is a
+  separate, explicit opt-in). There is no request-level guard beyond
+  that — see `routers/sync.py`'s docstring for why (confirmed with the
+  user: the frontend's "dangerous mode" toggle is a deliberate way to
+  skip the plan-review step, not a bug).
 
 ## Tests
 
@@ -87,8 +205,12 @@ set up, etc.) returns **502** with a plain string detail, not a crash.
 uv run pytest services/web-gui-backend
 ```
 
-`tests/test_profiles.py` uses FastAPI's `TestClient` against a real
+Every test file uses FastAPI's `TestClient` against a real
 `create_app(config_root=tmp_path)` — no mocking of `common.config`,
-real YAML files written and read back. `tests/test_device.py` mocks
-`subprocess.run` only (never actually shells out to
-`sync-orchestrator` in tests).
+real YAML files written and read back. External-system calls (Apple
+Music/YouTube Music/Pocket Casts APIs, `sync-orchestrator`'s
+subprocess) are mocked at the module boundary
+(`monkeypatch.setattr(routers.sources, "list_apple_music_playlists",
+...)` etc.) — but cookie *validation* itself is exercised for real
+against small synthetic Netscape-format fixture strings, not mocked,
+since that's exactly the logic most worth catching a regression in.

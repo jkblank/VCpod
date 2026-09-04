@@ -197,6 +197,8 @@ def fetch_playlist(
     playlists_root: Path | str,
     state_db_path: Path | str,
     oauth_path: Path | str | None = None,
+    oauth_client_id: str | None = None,
+    oauth_client_secret: str | None = None,
     lock_path: Path | str | None = None,
     lock_timeout: float = 1800,
     sync_mode: str = "absolute",
@@ -215,7 +217,10 @@ def fetch_playlist(
         lock_path = Path(state_db_path).parent / ".ytmusic.lock"
 
     tracks_meta = get_playlist_tracks(
-        playlist_source_id, oauth_path=str(oauth_path) if oauth_path else None
+        playlist_source_id,
+        oauth_path=str(oauth_path) if oauth_path else None,
+        oauth_client_id=oauth_client_id,
+        oauth_client_secret=oauth_client_secret,
     )
 
     with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
@@ -250,6 +255,8 @@ def fetch_playlists(
     playlists_root: Path | str,
     state_db_path: Path | str,
     oauth_path: Path | str | None = None,
+    oauth_client_id: str | None = None,
+    oauth_client_secret: str | None = None,
     lock_path: Path | str | None = None,
     lock_timeout: float = 1800,
 ) -> list[PlaylistSyncOutcome]:
@@ -268,6 +275,8 @@ def fetch_playlists(
                 playlists_root=playlists_root,
                 state_db_path=state_db_path,
                 oauth_path=oauth_path,
+                oauth_client_id=oauth_client_id,
+                oauth_client_secret=oauth_client_secret,
                 lock_path=lock_path,
                 lock_timeout=lock_timeout,
                 sync_mode=entry.sync_mode,

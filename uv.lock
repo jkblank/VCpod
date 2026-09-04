@@ -1651,16 +1651,24 @@ name = "web-gui-backend"
 version = "0.1.0"
 source = { editable = "services/web-gui-backend" }
 dependencies = [
+    { name = "audiobook-manager" },
     { name = "common" },
     { name = "fastapi" },
+    { name = "fetcher-apple" },
+    { name = "fetcher-ytmusic" },
+    { name = "podcast-manager" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "audiobook-manager", editable = "services/audiobook-manager" },
     { name = "common", editable = "services/common" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "fetcher-apple", editable = "services/fetcher-apple" },
+    { name = "fetcher-ytmusic", editable = "services/fetcher-ytmusic" },
+    { name = "podcast-manager", editable = "services/podcast-manager" },
     { name = "python-multipart", specifier = ">=0.0.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]

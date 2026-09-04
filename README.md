@@ -49,7 +49,9 @@ service) — see "Running it" below.
 | M9 | Automation: scheduled fetch, udev-triggered device sync, multi-profile matching | Done, live-verified — [`services/fetch-scheduler/README.md`](services/fetch-scheduler/README.md) (fetch scheduling, plus automatic library dedup/cleanup and device backup retention) and [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md) (`auto-sync` + udev/systemd) |
 | M10 | Hardening: secrets review, auth-expiry/API-failure alerting, docs | Secrets handling reviewed (consistent gitignore convention across every credential type); alerting not built yet (`fetch-scheduler`'s per-tick errors are logged, nothing pages anyone); docs — this pass |
 | M11 | Web GUI backend + frontend scaffold | Done — [`services/web-gui-backend`](services/web-gui-backend/README.md) (FastAPI, reads/writes profiles + global config through the shared `common/config.py` loader, validation errors surface to the caller as `{path, errors}`) + [`services/web-gui-frontend`](services/web-gui-frontend/) (React/Vite; Overview + Profiles screens working end to end against a real backend, including live device-identify — see `notes.md`) |
-| M12–M14 | Web GUI: playlists/podcasts/sources, credential capture, auto-sync setup, sync visibility | Not started |
+| M12 | Web GUI: playlist/podcast picking, credential capture | Done — Music sources picker (Apple Music/YouTube Music playlists, including adding any public YouTube playlist by share link, not just ones saved to your account), Podcasts picker (Pocket Casts subscriptions), credential capture forms (Apple Music/YouTube cookie paste, Pocket Casts login validated against a real login attempt before saving) with the big plaintext-storage warning shown above every input, cron-free schedule builder, External library + Audiobooks screens (browse a real directory tree and tick what to sync) — see `notes.md` for the full "M12a"/"M12b" build log |
+| M13 | Web GUI: full podcast settings (fill_modes/episode_filter/schedule), Sources & credentials status screen, `ytmusic_oauth.json` device-code capture, one-process serving | Done — see `notes.md`'s three 2026-09-03 M13 entries for the full build log |
+| M14 | Web GUI: sync visibility, auto-sync setup (generate systemd/udev files, never run them) | Done — compute/review/execute a real device sync from the browser (`/api/sync/plan`, `/api/sync/execute`, streamed live via Server-Sent Events) plus a "Dangerous mode" that skips straight to executing with removals allowed; auto-sync setup card generates the filled-in systemd unit + udev rule and the exact `sudo` commands, never runs them itself — see `notes.md` |
 | M15 | Audiobooks via Libby/OverDrive | Acquisition is manual (Libby's automated auth paths are confirmed dead upstream, see `notes.md`) — but the merge/tag/sync pipeline from manually-downloaded MP3 parts to a real device is done, see [`services/audiobook-manager/README.md`](services/audiobook-manager/README.md) |
 
 ## Known issues
@@ -293,7 +295,12 @@ uv run audiobook-manager import-audiobook \
     --library-root library/audiobooks --state-root state
 ```
 
-Full details: [`services/audiobook-manager/README.md`](services/audiobook-manager/README.md).
+`audiobook-manager discover --root <drop-zone> --state-root state` scans
+a folder of raw, not-yet-processed parts folders and flags which ones
+still need the `import-audiobook` step above — the web GUI's Audiobooks
+screen wraps the same thing (a "Discover new audiobooks" card that can
+kick off processing without leaving the browser). Full details:
+[`services/audiobook-manager/README.md`](services/audiobook-manager/README.md).
 
 ---
 
@@ -315,7 +322,7 @@ Pocket Casts, running dedup on demand, plan-only device syncs, etc.):
 | [`sync-orchestrator`](services/sync-orchestrator/README.md) | Device sync engine (bare metal) + `auto-sync`/udev automation + `full-sync` (interactive fetch+device in one command) |
 | [`audiobook-manager`](services/audiobook-manager/README.md) | Merges manually-acquired MP3 parts into a tagged, chaptered `.m4b` (ffmpeg + beets-audible) |
 | [`web-gui-backend`](services/web-gui-backend/README.md) | FastAPI service for the web GUI (M11) — reads/writes `config/` through the same loader every CLI tool uses |
-| [`web-gui-frontend`](services/web-gui-frontend/README.md) | React/Vite SPA for the web GUI — Overview + Profiles screens so far, M12-M14 not started |
+| [`web-gui-frontend`](services/web-gui-frontend/README.md) | React/Vite SPA for the web GUI — Overview, Profiles, Music sources, Podcasts screens + credential capture forms so far |
 
 Device sync (`sync-orchestrator`) needs the iPod connected/mounted and
 must run on bare metal, not through Docker (see Architecture below) —

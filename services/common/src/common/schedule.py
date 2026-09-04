@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from croniter import croniter
 
 from common.models import ProfileConfig, ShowOverride
+
+if TYPE_CHECKING:
+    from common.state import StateDB
 
 
 def next_fetch_time(
@@ -141,3 +144,23 @@ def resolve_fetch_scope(targets: list[FetchTarget]) -> ResolvedFetchScope:
         playlist_names=playlist_names or None,
         show_names=show_names,
     )
+
+
+def next_profile_fetch_time(
+    profile: ProfileConfig, state_db: StateDB, now: datetime
+) -> datetime | None:
+    """The soonest upcoming scheduled fetch across every playlist/show in
+    a profile -- the earliest of next_fetch_time() applied to each of
+    iter_fetch_targets()'s targets, using that target's own last-fetched
+    time from state_db. None if nothing in the profile has a schedule
+    at all (manual-only). Used by the web GUI's Overview dashboard for
+    a real "next fetch" figure per profile, the same computation
+    fetch-scheduler's own tick already does per-target, just reduced to
+    one soonest value for display."""
+    soonest: datetime | None = None
+    for target in iter_fetch_targets(profile):
+        last_fetched_at = state_db.get_last_fetched(target.target_type, target.target_id)
+        candidate = next_fetch_time(target.schedule, last_fetched_at, now)
+        if candidate is not None and (soonest is None or candidate < soonest):
+            soonest = candidate
+    return soonest
