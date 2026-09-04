@@ -21,6 +21,7 @@ from sync_orchestrator.device import (
     find_matching_profile,
     is_ipod_mount,
     iter_candidate_mounts,
+    iter_connected_devices,
     mount_candidate_devices,
 )
 
@@ -200,6 +201,51 @@ def test_find_matching_device_skips_non_ipod_vfat_mounts(monkeypatch, tmp_path):
     match = DeviceMatch(match_by="volume_label", match_value="JOHN'S IPOD")
     with pytest.raises(DeviceNotFoundError):
         find_matching_device(match)
+
+
+def test_iter_connected_devices_returns_identity_for_each_mounted_ipod(monkeypatch, tmp_path):
+    ipod_mount = _make_ipod_mount(tmp_path, "ipod")
+    other_mount = tmp_path / "boot_efi"
+    other_mount.mkdir()
+
+    monkeypatch.setattr(
+        device_module,
+        "iter_candidate_mounts",
+        lambda: [
+            ("/dev/sda1", str(other_mount), "vfat"),
+            ("/dev/sdb2", str(ipod_mount), "vfat"),
+        ],
+    )
+    monkeypatch.setattr(
+        device_module,
+        "read_volume_label",
+        lambda block_device: {"/dev/sdb2": "JOHN'S IPOD"}.get(block_device, ""),
+    )
+    monkeypatch.setattr(
+        device_module,
+        "DeviceInfo",
+        lambda path: _FakeDeviceInfo(path, serial="AA11BB22"),
+    )
+    monkeypatch.setattr(device_module, "enrich", lambda info: None)
+
+    devices = iter_connected_devices()
+
+    # The unrelated boot_efi vfat mount must never appear -- same
+    # is_ipod_mount gate find_matching_device uses.
+    assert len(devices) == 1
+    device = devices[0]
+    assert device.path == str(ipod_mount)
+    assert device.volume_label == "JOHN'S IPOD"
+    assert device.serial == "AA11BB22"
+    assert device.model_family == "iPod Video"
+    assert device.generation == "5.5th Gen"
+    assert device.capacity == "160GB"
+
+
+def test_iter_connected_devices_returns_empty_list_when_nothing_connected(monkeypatch):
+    monkeypatch.setattr(device_module, "iter_candidate_mounts", lambda: [])
+
+    assert iter_connected_devices() == []
 
 
 class _FakeDeviceInfoForEject:

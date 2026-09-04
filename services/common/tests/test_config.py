@@ -8,10 +8,35 @@ from common.config import (
     load_global_config,
     load_profile_config,
     resolve_profile_path,
+    save_global_config,
+    save_profile_config,
+)
+from common.models import (
+    DeviceMatch,
+    ProfileConfig,
+    ProfilePocketCastsConfig,
+    ProfilePodcastsConfig,
+    SyncSettings,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def _minimal_profile(name: str) -> ProfileConfig:
+    return ProfileConfig(
+        profile=name,
+        device=DeviceMatch(match_by="serial", match_value="ABC123"),
+        playlists=[],
+        podcasts=ProfilePodcastsConfig(
+            pocketcasts=ProfilePocketCastsConfig(
+                credentials_file=f"/config/secrets/pocketcasts/{name}.json"
+            ),
+            sync_unplayed_only=True,
+            max_episodes_per_show=5,
+        ),
+        sync=SyncSettings(trigger="manual", transcode_format="alac", push_play_status_back=False),
+    )
 
 
 def test_global_config_loads():
@@ -117,3 +142,61 @@ def test_resolve_profile_path_unknown_name_lists_available():
     assert "nonexistent-profile" in message
     assert "john" in message
     assert "alice" in message
+
+
+def test_save_profile_config_round_trips(tmp_path):
+    original = load_profile_config(REPO_ROOT / "config" / "profiles" / "alice.yaml")
+    path = tmp_path / "alice.yaml"
+
+    save_profile_config(original, path)
+    reloaded = load_profile_config(path)
+
+    assert reloaded == original
+
+
+def test_save_profile_config_omits_unset_optional_sections(tmp_path):
+    # external_library/audiobooks/music left unset (None) must not appear
+    # in the written YAML at all -- their presence, even as `null`, means
+    # something different from absence (see MusicLibraryConfig's own
+    # opt-in-to-curation semantics).
+    path = tmp_path / "new.yaml"
+
+    save_profile_config(_minimal_profile("new"), path)
+
+    written = path.read_text()
+    assert "external_library" not in written
+    assert "audiobooks" not in written
+    assert "music" not in written
+
+
+def test_save_profile_config_rejects_reserved_name(tmp_path):
+    with pytest.raises(ConfigError, match="reserved"):
+        save_profile_config(_minimal_profile("global"), tmp_path / "global.yaml")
+
+
+def test_save_profile_config_rejects_duplicate_name(tmp_path):
+    save_profile_config(_minimal_profile("dupe"), tmp_path / "first.yaml")
+
+    with pytest.raises(ConfigError, match="duplicate profile name"):
+        save_profile_config(_minimal_profile("dupe"), tmp_path / "second.yaml")
+
+
+def test_save_profile_config_overwriting_same_path_is_allowed(tmp_path):
+    path = tmp_path / "existing.yaml"
+    save_profile_config(_minimal_profile("existing"), path)
+
+    # Re-saving the same profile (e.g. an edit) to its own existing path
+    # must not trip the duplicate-name check against itself.
+    save_profile_config(_minimal_profile("existing"), path)
+
+    assert load_profile_config(path).profile == "existing"
+
+
+def test_save_global_config_round_trips(tmp_path):
+    original = load_global_config(REPO_ROOT / "config" / "global.yaml")
+    path = tmp_path / "global.yaml"
+
+    save_global_config(original, path)
+    reloaded = load_global_config(path)
+
+    assert reloaded == original

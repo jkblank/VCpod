@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import subprocess
 import sys
 import time
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from sync_orchestrator.device import (
     eject_device,
     find_matching_device,
     find_matching_profile,
+    iter_connected_devices,
     mount_candidate_devices,
 )
 from sync_orchestrator.rockbox_sync import RockboxSyncError, execute_rockbox_sync, plan_rockbox_sync
@@ -808,6 +811,30 @@ def _cmd_auto_sync(args: argparse.Namespace) -> int:
         return _fail(str(e))
 
 
+def _cmd_identify_device(args: argparse.Namespace) -> int:
+    """Prints every currently-connected iPod's identity as JSON --
+    exists for callers that need to *discover* a device's serial/
+    volume_label rather than match against one already known (e.g. the
+    web UI's profile-setup flow: "connect your iPod and we'll fill in
+    device.match_value for you"). No profile/config-root needed, unlike
+    every other command here.
+
+    Best-effort auto-mounts first, same as sync/full-sync/auto-sync --
+    skip with --no-mount for a pure read-only check.
+
+    Progress goes to stderr, not stdout -- unlike every other command
+    here, stdout is meant to be machine-parsed (the web backend shells
+    out to this and reads exactly one JSON line back), so it must never
+    carry anything but the JSON payload."""
+    if not args.no_mount:
+        for block_device in mount_candidate_devices():
+            print(f"  auto-mounted {block_device}", file=sys.stderr)
+
+    devices = [asdict(d) for d in iter_connected_devices()]
+    print(json.dumps({"devices": devices}))
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sync-orchestrator")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1031,6 +1058,21 @@ def main() -> None:
     auto_sync_parser.add_argument("--skip-podcasts", action="store_true")
     auto_sync_parser.add_argument("--lock-timeout", type=float, default=1800)
     auto_sync_parser.set_defaults(func=_cmd_auto_sync)
+
+    identify_device_parser = subparsers.add_parser(
+        "identify-device",
+        help="Print every currently-connected iPod's serial/volume_label/"
+        "model as JSON on stdout -- for discovering a device's identity "
+        "(e.g. to fill in a new profile's device.match_value), not for "
+        "matching against an existing profile.",
+    )
+    identify_device_parser.add_argument(
+        "--no-mount",
+        action="store_true",
+        help="Skip the best-effort auto-mount step -- report only what's "
+        "already mounted.",
+    )
+    identify_device_parser.set_defaults(func=_cmd_identify_device)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

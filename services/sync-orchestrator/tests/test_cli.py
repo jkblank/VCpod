@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +19,11 @@ from common.models import (
 )
 from common.state import EpisodeRecord, StateDB
 from sync_orchestrator import cli as cli_module
-from sync_orchestrator.device import AmbiguousDeviceMatchError, DeviceNotFoundError
+from sync_orchestrator.device import (
+    AmbiguousDeviceMatchError,
+    ConnectedDeviceInfo,
+    DeviceNotFoundError,
+)
 
 NOW = datetime(2026, 7, 25, 22, 0, tzinfo=timezone.utc)
 
@@ -1060,5 +1065,80 @@ def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(mo
     result = cli_module._run_rockbox_sync(
         args, profile, profile_path=Path("p"), config_root=Path("c")
     )
+
+    assert result == 0
+
+
+def _connected_device(**overrides) -> ConnectedDeviceInfo:
+    base = dict(
+        path="/mnt/ipod",
+        volume_label="JOHN'S IPOD",
+        serial="AA11BB22",
+        firewire_guid="",
+        model_family="iPod Video",
+        generation="5.5th Gen",
+        model_number="MA450",
+        capacity="80GB",
+    )
+    base.update(overrides)
+    return ConnectedDeviceInfo(**base)
+
+
+def test_identify_device_prints_devices_as_json_on_stdout(monkeypatch, capsys):
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(cli_module, "iter_connected_devices", lambda: [_connected_device()])
+
+    result = cli_module._cmd_identify_device(argparse.Namespace(no_mount=False))
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "devices": [
+            {
+                "path": "/mnt/ipod",
+                "volume_label": "JOHN'S IPOD",
+                "serial": "AA11BB22",
+                "firewire_guid": "",
+                "model_family": "iPod Video",
+                "generation": "5.5th Gen",
+                "model_number": "MA450",
+                "capacity": "80GB",
+            }
+        ]
+    }
+
+
+def test_identify_device_prints_empty_list_when_nothing_connected(monkeypatch, capsys):
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(cli_module, "iter_connected_devices", lambda: [])
+
+    result = cli_module._cmd_identify_device(argparse.Namespace(no_mount=False))
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == {"devices": []}
+
+
+def test_identify_device_auto_mount_progress_goes_to_stderr_not_stdout(monkeypatch, capsys):
+    # stdout must stay pure JSON -- callers (the web backend) parse it
+    # directly; auto-mount progress is human-facing only.
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: ["/dev/sdb1"])
+    monkeypatch.setattr(cli_module, "iter_connected_devices", lambda: [])
+
+    cli_module._cmd_identify_device(argparse.Namespace(no_mount=False))
+
+    captured = capsys.readouterr()
+    assert "auto-mounted /dev/sdb1" in captured.err
+    assert "auto-mounted" not in captured.out
+    assert json.loads(captured.out) == {"devices": []}
+
+
+def test_identify_device_skips_auto_mount_when_no_mount_flag_set(monkeypatch, capsys):
+    def _fail_if_called():
+        raise AssertionError("should not auto-mount when --no-mount is set")
+
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", _fail_if_called)
+    monkeypatch.setattr(cli_module, "iter_connected_devices", lambda: [])
+
+    result = cli_module._cmd_identify_device(argparse.Namespace(no_mount=True))
 
     assert result == 0
