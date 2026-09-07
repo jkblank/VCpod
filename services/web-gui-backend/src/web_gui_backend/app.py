@@ -28,6 +28,7 @@ from web_gui_backend.routers import (
     device,
     external_library,
     global_config,
+    homepage,
     overview,
     podcasts,
     profile_sources,
@@ -94,6 +95,7 @@ def create_app(
         alerts,
         overview,
         activity,
+        homepage,
     ):
         app.include_router(router_module.router)
 

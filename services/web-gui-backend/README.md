@@ -68,6 +68,58 @@ origin. This is "one thing to run" for setup purposes; see notes.md's
 options (a single Docker image, an installer, ...) still being
 weighed for later.
 
+## Homepage widget
+
+`GET /api/homepage/status` returns one flat status object meant for a
+[gethomepage.dev](https://gethomepage.dev) `customapi` widget tile —
+Homepage's dashboard fetches it itself (not from the viewer's browser),
+so no CORS setup is needed for it, unlike the frontend dev server's
+own origin above.
+
+```json
+{
+  "status": "ok",
+  "sync_running": false,
+  "profiles_count": 2,
+  "devices_connected": 1,
+  "alerts_count": 0,
+  "last_sync_at": "2026-09-06T16:17:14.061590+00:00",
+  "last_sync_profile": "john",
+  "last_sync_result": "ok",
+  "last_sync_description": "Sync completed:\n  Added 1 tracks\n  Removed 7 tracks"
+}
+```
+
+`status` is `"syncing"` while any profile's sync lock is held (see
+`sync_status.py`), else `"error"` if the most recent `sync-orchestrator`
+activity entry failed, else `"attention"` if `/api/alerts` has
+anything, else `"ok"`. Add to Homepage's `services.yaml`:
+
+```yaml
+- VCpod:
+    icon: si-ipod
+    href: http://<this-host>:8420/
+    widget:
+      type: customapi
+      url: http://<this-host>:8420/api/homepage/status
+      refreshInterval: 30000
+      mappings:
+        - field: status
+          label: Status
+        - field: sync_running
+          label: Syncing
+        - field: alerts_count
+          label: Alerts
+        - field: last_sync_result
+          label: Last sync
+```
+
+`<this-host>` must be reachable from wherever Homepage itself runs
+(its own container/host, not necessarily the browser viewing it) —
+`--host 127.0.0.1` (the default, see above) won't be reachable from a
+separate Homepage container; widen it to the LAN interface if Homepage
+runs elsewhere, same "only widen deliberately" caveat as above.
+
 ## API
 
 All JSON, no HTML — the frontend (`services/web-gui-frontend`) is a
@@ -110,6 +162,7 @@ separate React SPA, not server-rendered.
 | GET | `/api/activity?limit=50` | The shared `state/activity.sqlite` job-history log (`common.activity.list_activity`) written to by fetch-scheduler and sync-orchestrator, newest first |
 | GET | `/api/alerts` | Aggregated, real alerts: missing/stale credential files (reusing the exact status logic the `/api/sources/status` family already exposes, so this can't drift from what those screens show) and PO-token companion-service reachability (a real short-timeout TCP connect against `GlobalConfig.sources.ytmusic.pot_provider_url`). Spotify excluded — shelved, not real signal |
 | GET | `/api/overview` | Assembles the Overview dashboard: one card per profile (connected-device identity + real used/free bytes when connected via `sync-orchestrator identify-device`, else "not connected"; `StateDB.count_tracks`/`count_episodes`; the last real sync from `common.activity`'s marker; the next scheduled fetch from `common.schedule.next_profile_fetch_time`), the same alerts as above, a whole-library track count, and the 5 most recent activity entries |
+| GET | `/api/homepage/status` | One flat JSON object for a [gethomepage.dev](https://gethomepage.dev) `customapi` widget tile — see "Homepage widget" below. Same real signals as `/api/overview`/`/api/alerts`, just flattened for that consumer |
 
 A validation failure (bad enum value, missing required field, a
 profile named the reserved `"global"`, a duplicate profile name across
