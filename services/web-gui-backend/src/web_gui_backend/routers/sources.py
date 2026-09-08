@@ -1,0 +1,326 @@
+"""Music source playlist browsing + credential capture (Apple Music,
+YouTube Music). Spotify has no route here at all -- shelved, blocked on
+a Premium API requirement outside this project's control, same as every
+other place in the codebase that touches it.
+
+Cookie capture is deliberately manual paste/upload of an already-
+exported cookies.txt, not automated capture -- real cross-origin cookie
+reading from a browser is impossible (same-origin policy), and the only
+way to actually automate it (a Playwright-driven separate browser
+instance) is real, substantial extra scope kept explicitly out of this
+build. See notes.md's 2026-09-02 entry."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import tempfile
+from http.cookiejar import LoadError, MozillaCookieJar
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from fastapi import APIRouter, HTTPException, Request
+
+from common.config import ConfigError, load_global_config, resolve_config_path
+
+from fetcher_apple.api import list_playlists as list_apple_music_playlists
+from fetcher_ytmusic.api import (
+    get_playlist_summary as get_ytmusic_playlist_summary,
+    list_playlists as list_ytmusic_playlists,
+)
+from fetcher_ytmusic.oauth import (
+    OAuthFlowError,
+    OAuthPending,
+    poll_device_flow,
+    start_device_flow,
+)
+
+from web_gui_backend.atomic import write_text_atomic
+from web_gui_backend.errors import config_error_response
+
+router = APIRouter()
+
+# The one cookie gamdl's own AppleMusicApi.create_from_netscape_cookies
+# actually checks (media-user-token on .music.apple.com) -- validating
+# for it here catches a wrong/incomplete paste before it ever reaches a
+# real fetch attempt. Domain matches gamdl's own APPLE_MUSIC_COOKIE_DOMAIN
+# constant; hardcoded rather than imported to avoid reaching into gamdl's
+# internal module layout for one stable string.
+_APPLE_MUSIC_COOKIE_DOMAIN = ".music.apple.com"
+_APPLE_MUSIC_REQUIRED_COOKIE = "media-user-token"
+
+
+def _global_config(request: Request):
+    try:
+        return load_global_config(request.app.state.config_root / "global.yaml")
+    except ConfigError as e:
+        raise config_error_response(e) from e
+
+
+def _validate_cookies_txt(content: str, *, require_apple_token: bool) -> None:
+    """Raises ValueError (caller turns this into a 422) if content isn't
+    a usable Netscape-format cookie jar. Loads from a real temp file --
+    MozillaCookieJar.load() takes a filename, not a string -- so this
+    never touches the real target path unless validation passes."""
+    if not content.strip():
+        raise ValueError("cookies file is empty")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+        f.write(content)
+        tmp_path = Path(f.name)
+    try:
+        jar = MozillaCookieJar(str(tmp_path))
+        try:
+            jar.load(ignore_discard=True, ignore_expires=True)
+        except (LoadError, OSError) as e:
+            raise ValueError(f"not a valid Netscape-format cookies file: {e}") from e
+        if len(jar) == 0:
+            raise ValueError("no cookies found in file")
+        if require_apple_token:
+            has_token = any(
+                c.name == _APPLE_MUSIC_REQUIRED_COOKIE and c.domain == _APPLE_MUSIC_COOKIE_DOMAIN
+                for c in jar
+            )
+            if not has_token:
+                raise ValueError(
+                    f"no {_APPLE_MUSIC_REQUIRED_COOKIE!r} cookie found for "
+                    f"{_APPLE_MUSIC_COOKIE_DOMAIN} — make sure this was exported "
+                    "from a real, logged-in music.apple.com session"
+                )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@router.get("/api/sources/apple-music/playlists")
+def apple_music_playlists(request: Request) -> list[dict]:
+    config = _global_config(request)
+    cookies_path = resolve_config_path(
+        config.sources.apple_music.cookies_file, request.app.state.config_root
+    )
+    try:
+        playlists = list_apple_music_playlists(str(cookies_path))
+    except Exception as e:
+        # Deliberately broad: this reaches out to gamdl/Apple's real API,
+        # whose failure modes (missing file, expired cookies, network,
+        # Apple-side errors) aren't enumerable up front -- a clean 502
+        # beats a raw 500 leaking a stack trace to the frontend.
+        raise HTTPException(
+            status_code=502, detail=f"could not list Apple Music playlists: {e}"
+        ) from e
+    return [dataclasses.asdict(p) for p in playlists]
+
+
+@router.get("/api/sources/ytmusic/playlists")
+def ytmusic_playlists(request: Request) -> list[dict]:
+    config = _global_config(request)
+    oauth_path = resolve_config_path(
+        config.sources.ytmusic.oauth_file, request.app.state.config_root
+    )
+    # oauth_client is optional -- when it hasn't been saved yet, this
+    # falls back to the old behavior (token works until it expires,
+    # then needs re-capturing) rather than blocking listing on it.
+    client_id = client_secret = None
+    try:
+        client_id, client_secret = _load_ytmusic_oauth_client(request)
+    except HTTPException:
+        pass
+    try:
+        playlists = list_ytmusic_playlists(
+            str(oauth_path), oauth_client_id=client_id, oauth_client_secret=client_secret
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502, detail=f"could not list YouTube Music playlists: {e}"
+        ) from e
+    return [dataclasses.asdict(p) for p in playlists]
+
+
+def _parse_ytmusic_playlist_id(value: str) -> str:
+    """A pasted value is either a bare playlist id already, or a public
+    share link (music.youtube.com/playlist?list=... or the plain
+    youtube.com/playlist?list=... form -- both real, both seen live) --
+    extract the id either way. Playlists shared with you but never
+    saved to your own account library can't appear in list_playlists
+    (that call only ever sees the authenticated account's own
+    playlists) -- this is the fallback music-stack-planning.md already
+    calls for: "the GUI ... accepts a pasted URL, and each fetcher's
+    URL parser resolves it to a source_id.\""""
+    value = value.strip()
+    if not value:
+        raise ValueError("paste a playlist URL or ID")
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        list_id = parse_qs(parsed.query).get("list", [None])[0]
+        if not list_id:
+            raise ValueError("no ?list=... playlist id found in that URL")
+        return list_id
+    return value
+
+
+@router.get("/api/sources/ytmusic/resolve")
+def resolve_ytmusic_playlist(url: str) -> dict:
+    try:
+        playlist_id = _parse_ytmusic_playlist_id(url)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    try:
+        # oauth_path=None deliberately -- this is specifically for
+        # playlists NOT in your own account (those are already covered
+        # by the /playlists route above), so it must work the same way
+        # for a public playlist as it would for any other visitor: no
+        # session at all.
+        summary = get_ytmusic_playlist_summary(playlist_id, oauth_path=None)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"could not resolve playlist: {e}") from e
+    return dataclasses.asdict(summary)
+
+
+@router.put("/api/sources/apple-music/cookies")
+def put_apple_music_cookies(body: dict, request: Request) -> dict:
+    content = body.get("cookies_txt", "")
+    try:
+        _validate_cookies_txt(content, require_apple_token=True)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    config = _global_config(request)
+    target = resolve_config_path(
+        config.sources.apple_music.cookies_file, request.app.state.config_root
+    )
+    write_text_atomic(content, target)
+    return {"status": "ok"}
+
+
+@router.put("/api/sources/ytmusic/cookies")
+def put_ytmusic_cookies(body: dict, request: Request) -> dict:
+    content = body.get("cookies_txt", "")
+    try:
+        _validate_cookies_txt(content, require_apple_token=False)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    config = _global_config(request)
+    target = resolve_config_path(
+        config.sources.ytmusic.cookies_file, request.app.state.config_root
+    )
+    write_text_atomic(content, target)
+    return {"status": "ok"}
+
+
+def _ytmusic_oauth_client_path(request: Request) -> Path:
+    config = _global_config(request)
+    client_file = config.sources.ytmusic.oauth_client_file
+    if not client_file:
+        raise HTTPException(
+            status_code=422,
+            detail="no oauth_client_file configured for ytmusic in global.yaml",
+        )
+    return resolve_config_path(client_file, request.app.state.config_root)
+
+
+def _load_ytmusic_oauth_client(request: Request) -> tuple[str, str]:
+    path = _ytmusic_oauth_client_path(request)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=422,
+            detail="no YouTube Music OAuth client saved yet -- set one up first",
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data["client_id"], data["client_secret"]
+    except (json.JSONDecodeError, KeyError) as e:
+        raise HTTPException(
+            status_code=422, detail=f"saved OAuth client file is unreadable: {e}"
+        ) from e
+
+
+@router.put("/api/sources/ytmusic/oauth-client")
+def put_ytmusic_oauth_client(body: dict, request: Request) -> dict:
+    """Saves the Google OAuth client (client_id/client_secret) the user
+    creates themselves via Google Cloud Console -- ytmusicapi has no
+    default/shared client of its own. This is a prerequisite for the
+    device-code flow below, and is also read back on every ytmusic
+    playlist listing call so an already-captured token can auto-refresh
+    (see fetcher_ytmusic.api._oauth_credentials)."""
+    client_id = (body.get("client_id") or "").strip()
+    client_secret = (body.get("client_secret") or "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=422, detail="client_id and client_secret are both required")
+    config = _global_config(request)
+    client_file = config.sources.ytmusic.oauth_client_file
+    if not client_file:
+        raise HTTPException(
+            status_code=422,
+            detail="no oauth_client_file configured for ytmusic in global.yaml",
+        )
+    target = resolve_config_path(client_file, request.app.state.config_root)
+    write_text_atomic(json.dumps({"client_id": client_id, "client_secret": client_secret}), target)
+    return {"status": "ok"}
+
+
+@router.post("/api/sources/ytmusic/oauth/start")
+def start_ytmusic_oauth(request: Request) -> dict:
+    client_id, client_secret = _load_ytmusic_oauth_client(request)
+    try:
+        code = start_device_flow(client_id, client_secret)
+    except OAuthFlowError as e:
+        raise HTTPException(status_code=502, detail=f"could not start OAuth flow: {e}") from e
+    return dataclasses.asdict(code)
+
+
+@router.post("/api/sources/ytmusic/oauth/poll")
+def poll_ytmusic_oauth(body: dict, request: Request) -> dict:
+    device_code = body.get("device_code", "")
+    if not device_code:
+        raise HTTPException(status_code=422, detail="device_code is required")
+    client_id, client_secret = _load_ytmusic_oauth_client(request)
+    try:
+        token = poll_device_flow(client_id, client_secret, device_code)
+    except OAuthPending:
+        return {"status": "pending"}
+    except OAuthFlowError as e:
+        raise HTTPException(status_code=502, detail=f"OAuth flow failed: {e}") from e
+
+    config = _global_config(request)
+    target = resolve_config_path(
+        config.sources.ytmusic.oauth_file, request.app.state.config_root
+    )
+    write_text_atomic(json.dumps(token), target)
+    return {"status": "ok"}
+
+
+@router.get("/api/sources/status")
+def sources_status(request: Request) -> dict:
+    config = _global_config(request)
+    config_root = request.app.state.config_root
+
+    def _file_status(container_path: str) -> dict:
+        path = resolve_config_path(container_path, config_root)
+        if not path.is_file():
+            return {"exists": False, "updated_at": None}
+        return {"exists": True, "updated_at": path.stat().st_mtime}
+
+    return {
+        "apple_music": {
+            "enabled": config.sources.apple_music.enabled,
+            **_file_status(config.sources.apple_music.cookies_file),
+        },
+        # Unlike apple_music/spotify, ytmusic has two independent
+        # credentials: cookies_file (yt-dlp, needed for every real
+        # download) and oauth_file (ytmusicapi, only needed to list the
+        # account's own private library -- public playlists resolve
+        # fine without it). Reporting only one used to silently hide
+        # whether the other was ever set up at all.
+        "ytmusic": {
+            "enabled": config.sources.ytmusic.enabled,
+            "cookies": _file_status(config.sources.ytmusic.cookies_file),
+            "oauth": _file_status(config.sources.ytmusic.oauth_file),
+            # Whether a Google OAuth client (client_id/secret) has been
+            # saved -- a prerequisite for the device-code flow, and also
+            # what lets an already-captured oauth token auto-refresh
+            # instead of silently breaking once it expires.
+            "oauth_client": _file_status(config.sources.ytmusic.oauth_client_file),
+        },
+        "spotify": {
+            "enabled": config.sources.spotify.enabled,
+            **_file_status(config.sources.spotify.credentials_file),
+        },
+    }

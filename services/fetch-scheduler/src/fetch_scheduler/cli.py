@@ -6,6 +6,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from common.activity import ActivityEntry, record_activity
+
 from fetch_scheduler.loop import TickResult, run_tick
 
 
@@ -32,7 +34,70 @@ def _print_tick_result(result: TickResult) -> None:
         print("nothing due")
 
 
+def _record_tick_activity(state_root: Path, result: TickResult, duration_seconds: float) -> None:
+    # No per-profile/per-task timing exists inside TickResult -- the whole
+    # tick's wall time is recorded against every entry from it, a coarse
+    # but honest approximation rather than a fabricated per-item split.
+    started_at = datetime.now(timezone.utc)
+
+    active_profiles = set(result.errors) | set(result.source_errors)
+    active_profiles |= {profile for profile, ids in result.fetched.items() if ids}
+
+    for profile in active_profiles:
+        if profile in result.errors:
+            description = "fetch tick — unexpected error, see log"
+            outcome = "error"
+        else:
+            parts = []
+            fetched_ids = result.fetched.get(profile) or []
+            if fetched_ids:
+                parts.append(f"fetched: {', '.join(fetched_ids)}")
+            source_errors = result.source_errors.get(profile) or []
+            if source_errors:
+                parts.append(f"errors: {'; '.join(source_errors)}")
+            description = "fetch tick — " + "; ".join(parts)
+            outcome = "error" if source_errors else "ok"
+
+        record_activity(
+            state_root,
+            ActivityEntry(
+                started_at=started_at,
+                service="fetch-scheduler",
+                profile=profile,
+                description=description,
+                duration_seconds=duration_seconds,
+                result=outcome,
+            ),
+        )
+
+    for task_id, summary in result.maintenance.items():
+        record_activity(
+            state_root,
+            ActivityEntry(
+                started_at=started_at,
+                service="fetch-scheduler",
+                profile="all",
+                description=f"maintenance:{task_id} — {summary}",
+                duration_seconds=duration_seconds,
+                result="ok",
+            ),
+        )
+    for task_id in result.maintenance_errors:
+        record_activity(
+            state_root,
+            ActivityEntry(
+                started_at=started_at,
+                service="fetch-scheduler",
+                profile="all",
+                description=f"maintenance:{task_id} — task failed, see log",
+                duration_seconds=duration_seconds,
+                result="error",
+            ),
+        )
+
+
 def _run_once(args: argparse.Namespace) -> int:
+    tick_started = time.monotonic()
     result = run_tick(
         config_root=args.config_root,
         library_root=args.library_root,
@@ -42,6 +107,10 @@ def _run_once(args: argparse.Namespace) -> int:
         lock_timeout=args.lock_timeout,
     )
     _print_tick_result(result)
+    # dry_run's `result.fetched` lists what *would* be fetched, not real
+    # activity -- recording it as a real entry would be a fabricated log.
+    if not args.dry_run:
+        _record_tick_activity(args.state_root, result, time.monotonic() - tick_started)
     return 1 if (result.errors or result.maintenance_errors) else 0
 
 

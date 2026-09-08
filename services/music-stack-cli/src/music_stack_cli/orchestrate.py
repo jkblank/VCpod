@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import httpx
 
+from common.config import (
+    resolve_apple_music_cookies,
+    resolve_config_path,
+    resolve_ytmusic_cookies,
+    resolve_ytmusic_oauth,
+    resolve_ytmusic_oauth_client,
+)
 from common.models import GlobalConfig, PlaylistEntry, ProfileConfig
 from common.playlist import prune_removed_playlists
 from common.state import EpisodeRecord
@@ -31,20 +39,6 @@ SUPPORTED_SOURCES = ("apple_music", "ytmusic", "podcasts")
 UNSUPPORTED_SOURCES = ("spotify",)
 
 
-def resolve_config_path(container_path: str, config_root: Path) -> Path:
-    """global.yaml / profile YAML credential paths are always written as
-    /config/... container paths, per the ./config:/config:ro mount in
-    docker-compose.yml. Re-root them under config_root so the same YAML
-    values work unmodified when run bare-metal. Falls back to the literal
-    path if it isn't /config-rooted (e.g. someone already wrote a real host
-    path there)."""
-    posix_path = PurePosixPath(container_path)
-    try:
-        return config_root / posix_path.relative_to("/config")
-    except ValueError:
-        return Path(container_path)
-
-
 @dataclass
 class Roots:
     music_library_root: Path
@@ -60,6 +54,20 @@ def resolve_roots(library_root: Path, state_root: Path, profile_name: str) -> Ro
         podcasts_library_root=library_root / "podcasts",
         state_db_path=state_root / f"{profile_name}.sqlite",
     )
+
+
+def _load_ytmusic_oauth_client(path: Path) -> tuple[str | None, str | None]:
+    """path is already resolved (see resolve_ytmusic_oauth_client) and
+    may not exist -- absent or unreadable just means ytmusic_oauth.json,
+    if present, works until it expires instead of auto-refreshing. See
+    common.models.YtMusicSource.oauth_client_file and notes.md."""
+    if not path.is_file():
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data["client_id"], data["client_secret"]
+    except (json.JSONDecodeError, KeyError, OSError):
+        return None, None
 
 
 def select_playlists(
@@ -143,9 +151,7 @@ def run_fetch(
 
         apple_entries = [p for p in selected if p.source == "apple_music"]
         if apple_entries:
-            cookies_path = resolve_config_path(
-                global_config.sources.apple_music.cookies_file, config_root
-            )
+            cookies_path = resolve_apple_music_cookies(profile, global_config, config_root)
             try:
                 result.apple_outcomes = fetch_apple_playlists(
                     apple_entries,
@@ -162,9 +168,7 @@ def run_fetch(
 
         ytmusic_entries = [p for p in selected if p.source == "ytmusic"]
         if ytmusic_entries:
-            cookies_path = resolve_config_path(
-                global_config.sources.ytmusic.cookies_file, config_root
-            )
+            cookies_path = resolve_ytmusic_cookies(profile, global_config, config_root)
             # oauth is genuinely optional (get_playlist_tracks works fine
             # unauthenticated against public playlists — see
             # fetcher_ytmusic/api.py) — only pass a path that actually
@@ -173,10 +177,11 @@ def run_fetch(
             # YTMusicUserError instead of just skipping auth. Confirmed
             # live: this crashed a real sync when no oauth file had ever
             # been exported.
-            candidate_oauth_path = resolve_config_path(
-                global_config.sources.ytmusic.oauth_file, config_root
-            )
+            candidate_oauth_path = resolve_ytmusic_oauth(profile, global_config, config_root)
             oauth_path = candidate_oauth_path if candidate_oauth_path.is_file() else None
+            oauth_client_id, oauth_client_secret = _load_ytmusic_oauth_client(
+                resolve_ytmusic_oauth_client(profile, global_config, config_root)
+            )
             try:
                 result.ytmusic_outcomes = fetch_ytmusic_playlists(
                     ytmusic_entries,
@@ -186,6 +191,8 @@ def run_fetch(
                     playlists_root=roots.playlists_root,
                     state_db_path=roots.state_db_path,
                     oauth_path=oauth_path,
+                    oauth_client_id=oauth_client_id,
+                    oauth_client_secret=oauth_client_secret,
                     lock_timeout=lock_timeout,
                 )
             except (YtDownloadError, OSError, ValueError) as e:

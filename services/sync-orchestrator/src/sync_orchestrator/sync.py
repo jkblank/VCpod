@@ -78,7 +78,10 @@ from iopenpod.sync.mapping import MappingManager
 from iopenpod.sync.transcoder import TranscodeOptions
 
 from sync_orchestrator.playstate import resolve_played_states
-from sync_orchestrator.podcast_artwork_backfill import build_podcast_artwork_backfill_items
+from sync_orchestrator.podcast_artwork_backfill import (
+    build_podcast_artwork_backfill_items,
+    exclude_conflicting_with_removal,
+)
 from sync_orchestrator.podcast_removal import build_podcast_removal_items
 from sync_orchestrator.selection import (
     build_media_folders,
@@ -864,9 +867,6 @@ def plan_sync(
             artwork_items, artwork_pc_paths = build_podcast_artwork_backfill_items(
                 feeds, before_tracks
             )
-            if artwork_items:
-                plan.to_update_artwork.extend(artwork_items)
-                plan.matched_pc_paths.update(artwork_pc_paths)
 
             # Deliberately keyed off known_episodes (the state db's played
             # flag), not _load_podcast_feeds' downloaded_path filter above —
@@ -876,6 +876,20 @@ def plan_sync(
             # the same --allow-removals gate as any other to_remove, in
             # cli.py.
             removal_items = build_podcast_removal_items(known_episodes, before_tracks)
+
+            # See exclude_conflicting_with_removal's docstring: an episode
+            # discovered as newly-played by this exact run can otherwise
+            # end up proposed for both an artwork update and a removal at
+            # once, which iopenpod's plan validator correctly refuses to
+            # execute. Removal always wins.
+            artwork_items, artwork_pc_paths = exclude_conflicting_with_removal(
+                artwork_items, artwork_pc_paths, removal_items
+            )
+
+            if artwork_items:
+                plan.to_update_artwork.extend(artwork_items)
+                plan.matched_pc_paths.update(artwork_pc_paths)
+
             if removal_items:
                 plan.to_remove.extend(removal_items)
                 plan.storage.bytes_to_remove += sum(

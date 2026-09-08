@@ -1,7 +1,11 @@
 from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
+from iopenpod.sync.contracts import SyncAction, SyncItem
 
 from sync_orchestrator import podcast_artwork_backfill as backfill_module
-from sync_orchestrator.podcast_artwork_backfill import build_podcast_artwork_backfill_items
+from sync_orchestrator.podcast_artwork_backfill import (
+    build_podcast_artwork_backfill_items,
+    exclude_conflicting_with_removal,
+)
 
 
 def _episode(
@@ -177,3 +181,57 @@ def test_track_missing_db_track_id_is_skipped(monkeypatch):
 
     assert items == []
     assert matched_pc_paths == {}
+
+
+# --- exclude_conflicting_with_removal --------------------------------------
+
+
+def _artwork_item(db_track_id: int) -> SyncItem:
+    return SyncItem(action=SyncAction.UPDATE_ARTWORK, db_track_id=db_track_id)
+
+
+def _removal_item(db_track_id: int) -> SyncItem:
+    return SyncItem(action=SyncAction.REMOVE_FROM_IPOD, db_track_id=db_track_id)
+
+
+def test_exclude_conflicting_with_removal_drops_overlapping_track_id():
+    # Regression: a played episode discovered by this exact sync run,
+    # before podcast-manager's next fetch tick deletes its local file,
+    # used to get proposed for both an artwork update AND a removal --
+    # iopenpod's plan validator correctly refused to execute that,
+    # failing the whole sync. See notes.md's 2026-09-03 entry.
+    artwork_items = [_artwork_item(1), _artwork_item(2)]
+    matched_pc_paths = {1: "/library/podcasts/Show/A.mp3", 2: "/library/podcasts/Show/B.mp3"}
+    removal_items = [_removal_item(2)]
+
+    filtered_items, filtered_paths = exclude_conflicting_with_removal(
+        artwork_items, matched_pc_paths, removal_items
+    )
+
+    assert [item.db_track_id for item in filtered_items] == [1]
+    assert filtered_paths == {1: "/library/podcasts/Show/A.mp3"}
+
+
+def test_exclude_conflicting_with_removal_no_overlap_is_unchanged():
+    artwork_items = [_artwork_item(1)]
+    matched_pc_paths = {1: "/library/podcasts/Show/A.mp3"}
+    removal_items = [_removal_item(99)]
+
+    filtered_items, filtered_paths = exclude_conflicting_with_removal(
+        artwork_items, matched_pc_paths, removal_items
+    )
+
+    assert filtered_items == artwork_items
+    assert filtered_paths == matched_pc_paths
+
+
+def test_exclude_conflicting_with_removal_no_removals_is_unchanged():
+    artwork_items = [_artwork_item(1), _artwork_item(2)]
+    matched_pc_paths = {1: "a", 2: "b"}
+
+    filtered_items, filtered_paths = exclude_conflicting_with_removal(
+        artwork_items, matched_pc_paths, []
+    )
+
+    assert filtered_items == artwork_items
+    assert filtered_paths == matched_pc_paths

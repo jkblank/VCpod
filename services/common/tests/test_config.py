@@ -7,15 +7,25 @@ from common.config import (
     load_all_profiles,
     load_global_config,
     load_profile_config,
+    resolve_apple_music_cookies,
+    resolve_config_path,
     resolve_profile_path,
+    resolve_spotify_credentials,
+    resolve_ytmusic_cookies,
+    resolve_ytmusic_oauth,
+    resolve_ytmusic_oauth_client,
     save_global_config,
     save_profile_config,
 )
 from common.models import (
     DeviceMatch,
+    ProfileAppleMusicOverride,
     ProfileConfig,
     ProfilePocketCastsConfig,
     ProfilePodcastsConfig,
+    ProfileSourcesConfig,
+    ProfileSpotifySource,
+    ProfileYtMusicOverride,
     SyncSettings,
 )
 
@@ -51,10 +61,10 @@ def test_global_config_loads():
 def test_example_profiles_load():
     profiles = load_all_profiles(REPO_ROOT / "config" / "profiles")
     # Subset, not equality: config/profiles/ can (and on a real dev
-    # machine, does) hold real gitignored profiles beyond these four
+    # machine, does) hold real gitignored profiles beyond these three
     # tracked examples -- this only needs to confirm the tracked ones
     # still load correctly, not enumerate every profile on disk.
-    assert {"alice", "bob", "john", "john-copy"} <= set(profiles)
+    assert {"alice", "bob", "john"} <= set(profiles)
     assert profiles["alice"].device.match_by == "serial"
     assert profiles["bob"].device.match_by == "volume_label"
     assert profiles["john"].device.match_by == "serial"
@@ -69,8 +79,12 @@ def test_example_profiles_load():
     assert profiles["bob"].fetch.schedule is None
     assert profiles["alice"].audiobooks is None
     assert profiles["bob"].audiobooks is None
-    assert profiles["john"].audiobooks.mode == "include"
-    assert profiles["john"].audiobooks.selections == []
+    # john.yaml's audiobooks: block is user-editable live via the web GUI
+    # (Audiobooks screen) and gets toggled during real testing sessions --
+    # only assert it parses to the right type, not an exact mode/selections
+    # value, which has already gone stale here more than once. See notes.md.
+    assert profiles["john"].audiobooks is not None
+    assert profiles["john"].audiobooks.mode in ("include", "exclude")
 
 
 def test_missing_file_raises():
@@ -167,6 +181,7 @@ def test_save_profile_config_omits_unset_optional_sections(tmp_path):
     assert "external_library" not in written
     assert "audiobooks" not in written
     assert "music" not in written
+    assert "sources" not in written
 
 
 def test_save_profile_config_rejects_reserved_name(tmp_path):
@@ -200,3 +215,115 @@ def test_save_global_config_round_trips(tmp_path):
     reloaded = load_global_config(path)
 
     assert reloaded == original
+
+
+def test_resolve_config_path_rewrites_config_container_prefix(tmp_path):
+    resolved = resolve_config_path("/config/secrets/apple_music_cookies.txt", tmp_path)
+    assert resolved == tmp_path / "secrets" / "apple_music_cookies.txt"
+
+
+def test_resolve_config_path_falls_back_to_literal_path_when_not_config_rooted(tmp_path):
+    resolved = resolve_config_path("/somewhere/else/creds.json", tmp_path)
+    assert resolved == Path("/somewhere/else/creds.json")
+
+
+# --- Per-profile source credential overrides --------------------------------
+
+
+def _global_config_for_resolvers():
+    return load_global_config(REPO_ROOT / "config" / "global.yaml")
+
+
+def test_resolve_apple_music_cookies_falls_back_to_global_when_no_override(tmp_path):
+    profile = _minimal_profile("sam")
+    global_config = _global_config_for_resolvers()
+
+    resolved = resolve_apple_music_cookies(profile, global_config, tmp_path)
+
+    expected = resolve_config_path(global_config.sources.apple_music.cookies_file, tmp_path)
+    assert resolved == expected
+
+
+def test_resolve_apple_music_cookies_uses_override_when_set(tmp_path):
+    profile = _minimal_profile("sam").model_copy(
+        update={
+            "sources": ProfileSourcesConfig(
+                apple_music=ProfileAppleMusicOverride(
+                    cookies_file="/config/secrets/sam/apple_music_cookies.txt"
+                )
+            )
+        }
+    )
+    global_config = _global_config_for_resolvers()
+
+    resolved = resolve_apple_music_cookies(profile, global_config, tmp_path)
+
+    assert resolved == tmp_path / "secrets" / "sam" / "apple_music_cookies.txt"
+
+
+def test_resolve_ytmusic_fields_fall_back_independently(tmp_path):
+    # Only cookies_file overridden -- oauth_file/oauth_client_file must
+    # still fall back to global.yaml's, not silently break.
+    profile = _minimal_profile("sam").model_copy(
+        update={
+            "sources": ProfileSourcesConfig(
+                ytmusic=ProfileYtMusicOverride(
+                    cookies_file="/config/secrets/sam/youtube_cookies.txt"
+                )
+            )
+        }
+    )
+    global_config = _global_config_for_resolvers()
+
+    assert resolve_ytmusic_cookies(profile, global_config, tmp_path) == (
+        tmp_path / "secrets" / "sam" / "youtube_cookies.txt"
+    )
+    assert resolve_ytmusic_oauth(profile, global_config, tmp_path) == resolve_config_path(
+        global_config.sources.ytmusic.oauth_file, tmp_path
+    )
+    assert resolve_ytmusic_oauth_client(profile, global_config, tmp_path) == resolve_config_path(
+        global_config.sources.ytmusic.oauth_client_file, tmp_path
+    )
+
+
+def test_resolve_spotify_credentials_uses_override_when_set(tmp_path):
+    profile = _minimal_profile("sam").model_copy(
+        update={
+            "sources": ProfileSourcesConfig(
+                spotify=ProfileSpotifySource(
+                    credentials_file="/config/secrets/sam/spotify_credentials.json"
+                )
+            )
+        }
+    )
+    global_config = _global_config_for_resolvers()
+
+    resolved = resolve_spotify_credentials(profile, global_config, tmp_path)
+
+    assert resolved == tmp_path / "secrets" / "sam" / "spotify_credentials.json"
+
+
+def test_profile_sources_round_trips_through_save_and_load(tmp_path):
+    profile = _minimal_profile("sam").model_copy(
+        update={
+            "sources": ProfileSourcesConfig(
+                apple_music=ProfileAppleMusicOverride(
+                    cookies_file="/config/secrets/sam/apple_music_cookies.txt"
+                ),
+                ytmusic=ProfileYtMusicOverride(
+                    oauth_file="/config/secrets/sam/ytmusic_oauth.json"
+                ),
+            )
+        }
+    )
+    path = tmp_path / "sam.yaml"
+
+    save_profile_config(profile, path)
+    reloaded = load_profile_config(path)
+
+    assert reloaded.sources.apple_music.cookies_file == (
+        "/config/secrets/sam/apple_music_cookies.txt"
+    )
+    assert reloaded.sources.ytmusic.oauth_file == "/config/secrets/sam/ytmusic_oauth.json"
+    assert reloaded.sources.ytmusic.cookies_file is None
+    assert reloaded.sources.spotify is None

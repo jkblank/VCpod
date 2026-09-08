@@ -95,3 +95,27 @@ def build_podcast_artwork_backfill_items(
             matched_pc_paths[db_track_id] = episode.downloaded_path
 
     return items, matched_pc_paths
+
+
+def exclude_conflicting_with_removal(
+    artwork_items: list[SyncItem],
+    matched_pc_paths: dict[int, str],
+    removal_items: list[SyncItem],
+) -> tuple[list[SyncItem], dict[int, str]]:
+    """Drops any artwork_items entry whose db_track_id is also in
+    removal_items -- this function has no notion of played/unsubscribed
+    state (by design, see build_podcast_artwork_backfill_items' own
+    docstring), so an episode discovered as newly-played by this exact
+    sync run (before podcast-manager's next fetch tick deletes its local
+    file) can otherwise show up here too: still locally present, still
+    art-less on-device. iopenpod's own plan validator correctly refuses
+    to execute a plan proposing both an update and a removal for the
+    same db_track_id rather than silently picking one, so removal always
+    wins here -- a track on its way off the device has no reason to also
+    get its artwork rewritten first. Confirmed live 2026-09-03: a real
+    --execute run hit exactly this for 6 just-played episodes across 4
+    shows, failing the whole sync with zero writes. See notes.md."""
+    removed_track_ids = {item.db_track_id for item in removal_items}
+    filtered_items = [item for item in artwork_items if item.db_track_id not in removed_track_ids]
+    filtered_paths = {k: v for k, v in matched_pc_paths.items() if k not in removed_track_ids}
+    return filtered_items, filtered_paths

@@ -483,7 +483,13 @@ def _fake_plan(**overrides) -> SimpleNamespace:
         playlists_to_add=[],
         playlists_to_edit=[],
         playlists_to_remove=[],
-        storage=SimpleNamespace(format=lambda: "0 B"),
+        storage=SimpleNamespace(
+            format=lambda: "0 B",
+            bytes_to_add=0,
+            bytes_to_remove=0,
+            bytes_to_update=0,
+            net_change=0,
+        ),
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -638,7 +644,7 @@ def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
     )
 
     result = cli_module._run_sync(
-        _run_sync_args(allow_removals=True),
+        _run_sync_args(allow_removals=True, state_root=str(tmp_path)),
         profile,
         profile_path=Path("/config/profiles/john.yaml"),
         config_root=Path("/config"),
@@ -685,6 +691,139 @@ def test_run_sync_auto_mounts_before_finding_device(monkeypatch, capsys):
     assert result == 0
     assert call_order == ["mount", "find"]
     assert "auto-mounted /dev/sdb1" in capsys.readouterr().out
+
+
+# --- _run_sync --json mode -------------------------------------------------
+
+
+def _json_device(monkeypatch):
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: ["/dev/sdb1"])
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: SimpleNamespace(
+            path="/mnt/ipod", model_family="iPod", generation="5.5th Gen",
+            model_number="MA450", capacity="80GB",
+        ),
+    )
+
+
+def test_run_sync_json_mode_plan_only_prints_single_json_line_on_stdout(
+    monkeypatch, capsys
+):
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="volume_label", match_value="TEST")
+    )
+    _json_device(monkeypatch)
+    planned = _fake_planned(plan=_fake_plan(to_add=[SimpleNamespace(display_label="A - B")]))
+    monkeypatch.setattr(cli_module, "plan_sync", lambda **kwargs: planned)
+
+    result = cli_module._run_sync(
+        _run_sync_args(execute=False, json=True),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 0
+    captured = capsys.readouterr()
+    # stdout must be exactly one line, parseable as JSON -- a caller
+    # (web-gui-backend) parses it directly, same contract identify-device
+    # already established.
+    lines = captured.out.strip().splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["to_add_count"] == 1
+    assert payload["to_add_sample"] == ["A - B"]
+    assert payload["to_remove_count"] == 0
+    # Progress ("Finding device", auto-mounted, model info) is human-facing
+    # only under --json -- must never leak onto stdout.
+    assert "auto-mounted /dev/sdb1" in captured.err
+    assert "Finding device" in captured.err
+    assert "auto-mounted" not in captured.out
+
+
+def test_run_sync_json_mode_execute_prints_result_json(monkeypatch, capsys, tmp_path):
+    profile = SimpleNamespace(
+        profile="john",
+        device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+        sync=SimpleNamespace(push_play_status_back=False),
+    )
+    _json_device(monkeypatch)
+    planned = _fake_planned(plan=_fake_plan(), snapshot=SimpleNamespace(id="snap-1"))
+    monkeypatch.setattr(cli_module, "plan_sync", lambda **kwargs: planned)
+    monkeypatch.setattr(
+        cli_module, "execute_sync",
+        lambda *a, **k: (SimpleNamespace(summary="done", tracks_added=3), {"mhlt": [1, 2, 3]}),
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(
+            execute=True, allow_removals=False, skip_eject=True, json=True,
+            state_root=str(tmp_path),
+        ),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 0
+    captured = capsys.readouterr()
+    lines = captured.out.strip().splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload == {
+        "summary": "done",
+        "tracks_added": 3,
+        "after_track_count": 3,
+        "before_track_count": 0,
+        "snapshot_id": "snap-1",
+        "ejected": False,
+    }
+    assert "Executing" in captured.err
+
+
+def test_run_sync_json_mode_failure_reports_via_fail_not_broken_json(monkeypatch, capsys):
+    # A real failure (device not found) must still exit non-zero with a
+    # plain FAIL message on stdout -- the caller treats any non-zero exit
+    # as an error regardless of whether stdout parses as JSON, so this
+    # never needs its own JSON error envelope.
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: (_ for _ in ()).throw(DeviceNotFoundError("no device")),
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(execute=False, json=True),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 1
+    out = capsys.readouterr().out
+    assert out.strip() == "FAIL: no device"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(out)
+
+
+def test_run_rockbox_sync_rejects_json_mode(monkeypatch, capsys):
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="volume_label", match_value="TEST")
+    )
+
+    result = cli_module._run_rockbox_sync(
+        _run_sync_args(execute=False, json=True),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 1
+    assert "not yet supported in Rockbox mode" in capsys.readouterr().out
 
 
 def test_run_rockbox_sync_auto_mounts_before_finding_device(monkeypatch, capsys):
@@ -1031,7 +1170,9 @@ def test_run_rockbox_sync_refuses_execute_when_removal_proposed_without_allow_re
     assert "FAIL" in capsys.readouterr().out
 
 
-def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(monkeypatch):
+def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(
+    monkeypatch, tmp_path
+):
     from sync_orchestrator.rockbox_sync import PlannedRockboxSync, RockboxSyncPlan
 
     profile = _dispatch_profile(mode="rockbox")
@@ -1055,7 +1196,7 @@ def test_run_rockbox_sync_allows_execute_with_removal_when_allow_removals_set(mo
     args = argparse.Namespace(
         pc_folders=None,
         library_root="/lib",
-        state_root="/state",
+        state_root=str(tmp_path),
         skip_backup=False,
         skip_podcasts=False,
         execute=True,
@@ -1079,6 +1220,8 @@ def _connected_device(**overrides) -> ConnectedDeviceInfo:
         generation="5.5th Gen",
         model_number="MA450",
         capacity="80GB",
+        used_bytes=118_400_000_000,
+        free_bytes=30_800_000_000,
     )
     base.update(overrides)
     return ConnectedDeviceInfo(**base)
@@ -1103,6 +1246,8 @@ def test_identify_device_prints_devices_as_json_on_stdout(monkeypatch, capsys):
                 "generation": "5.5th Gen",
                 "model_number": "MA450",
                 "capacity": "80GB",
+                "used_bytes": 118_400_000_000,
+                "free_bytes": 30_800_000_000,
             }
         ]
     }

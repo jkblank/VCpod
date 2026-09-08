@@ -157,6 +157,14 @@ uv run sync-orchestrator sync \
     --execute
 ```
 
+`--json` (only on `sync`, iTunes mode) routes every progress line to
+stderr and prints exactly one JSON object (the computed plan, or the
+executed result) as the only line on stdout — for a driving process
+like `web-gui-backend` to parse, not for interactive use. Every safety
+gate (unresolved-selection refusal, `--allow-removals`) is unchanged;
+this only changes how the outcome is reported. See
+`sync_orchestrator/plan_json.py`.
+
 `--library-root`/`--state-root` are real host paths, not global.yaml's
 `paths.library_root`/`paths.state_root` — those are Docker-container
 paths (`/data/library`, `/data/state`) that don't exist on the bare-metal

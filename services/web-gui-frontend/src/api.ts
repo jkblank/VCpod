@@ -20,17 +20,47 @@ export type FetchSettings = {
   schedule: string | null
 }
 
-// Profile/GlobalConfig carry several more nested sections (playlists,
-// podcasts, external_library, audiobooks, music, sources, ...) --
-// passed through as unknown here rather than typed, since M11 only
-// reads/writes the fields above and must never drop the rest of the
-// payload on a round-trip (the backend's StrictModel would reject a
-// write missing a required field the UI doesn't otherwise touch).
+export type PlaylistEntry = {
+  name: string
+  source: 'apple_music' | 'spotify' | 'ytmusic'
+  source_id: string
+  sync_mode: 'absolute' | 'additive'
+  fetch_schedule: string | null
+}
+
+export type PodcastsConfig = {
+  pocketcasts: { credentials_file: string }
+  sync_unplayed_only: boolean
+  max_episodes_per_show: number
+  shows: 'all' | (string | { name: string; fetch_schedule?: string | null })[]
+  fetch_schedule: string | null
+  episode_filter: 'played' | 'archived'
+  fill_modes: Record<string, 'newest' | 'next'>
+  delete_played_episodes: boolean
+}
+
+export type SelectionConfig = {
+  mode: 'include' | 'exclude'
+  selections: string[]
+}
+
+export type ExternalLibraryConfig = SelectionConfig & { path: string }
+export type AudiobooksConfig = SelectionConfig
+
+// Profile carries one more nested section (music, the general-library
+// scoping) -- passed through untyped via the index signature, since
+// this pass doesn't edit it and must never drop it on a round-trip
+// (the backend's StrictModel would reject a write missing a required
+// field the UI doesn't otherwise touch).
 export type Profile = {
   profile: string
   device: DeviceMatch
   sync: SyncSettings
   fetch: FetchSettings
+  playlists: PlaylistEntry[]
+  podcasts: PodcastsConfig
+  external_library?: ExternalLibraryConfig | null
+  audiobooks?: AudiobooksConfig | null
   [key: string]: unknown
 }
 
@@ -39,8 +69,14 @@ export type GlobalConfig = {
   sources: {
     apple_music: { enabled: boolean; cookies_file: string }
     spotify: { enabled: boolean; credentials_file: string }
-    ytmusic: { enabled: boolean; oauth_file: string; cookies_file: string }
+    ytmusic: {
+      enabled: boolean
+      oauth_file: string
+      cookies_file: string
+      oauth_client_file: string
+    }
   }
+  audiobook_manager: { discover_root: string }
   [key: string]: unknown
 }
 
@@ -54,6 +90,157 @@ export type ConnectedDevice = {
   model_number: string
   capacity: string
 }
+
+export type PlaylistSummary = {
+  source_id: string
+  name: string
+  track_count: number
+  owner: string | null
+}
+
+export type PodcastSubscription = {
+  uuid: string
+  title: string
+  author: string
+}
+
+export type CredentialFileStatus = {
+  exists: boolean
+  updated_at: number | null
+}
+
+export type SourceStatus = CredentialFileStatus & { enabled: boolean }
+
+export type YtmusicStatus = {
+  enabled: boolean
+  cookies: CredentialFileStatus
+  oauth: CredentialFileStatus
+  oauth_client: CredentialFileStatus
+}
+
+export type OAuthDeviceCode = {
+  device_code: string
+  user_code: string
+  verification_url: string
+  expires_in: number
+  interval: number
+}
+
+export type SourcesStatus = {
+  apple_music: SourceStatus
+  ytmusic: YtmusicStatus
+  spotify: SourceStatus
+}
+
+// Per-profile override layer on top of the global defaults above --
+// "using" tells you whether this profile has its own credentials or is
+// still on the shared household login (never assumed automatically,
+// only via an explicit action). See routers/profile_sources.py.
+export type ProfileCredentialStatus = CredentialFileStatus & { using: 'global' | 'override' }
+
+export type ProfileSourcesStatus = {
+  apple_music: ProfileCredentialStatus
+  ytmusic: {
+    cookies: ProfileCredentialStatus
+    oauth: ProfileCredentialStatus
+    oauth_client: ProfileCredentialStatus
+  }
+}
+
+export type DirEntry = { name: string; is_dir: boolean }
+export type BrowseResult = { subpath: string; entries: DirEntry[] }
+
+export type SyncPlanSummary = {
+  to_add_count: number
+  to_remove_count: number
+  to_update_metadata_count: number
+  to_update_file_count: number
+  to_update_artwork_count: number
+  to_add_sample: string[]
+  to_add_sample_more: number
+  to_remove_sample: string[]
+  to_remove_sample_more: number
+  metadata_field_changes: Record<string, number>
+  duplicates_count: number
+  playlists_to_add: string[]
+  playlists_to_edit: string[]
+  playlists_to_remove: string[]
+  storage: { bytes_to_add: number; bytes_to_remove: number; bytes_to_update: number; net_change: number }
+  unresolved_selections: string[]
+  unresolved_audiobook_selections: string[]
+  unresolved_music_selections: string[]
+  play_states_updated: number
+  before_track_count: number
+}
+
+export type SyncResultSummary = {
+  summary: string
+  tracks_added: number
+  after_track_count: number
+  before_track_count: number
+  snapshot_id: string | null
+  ejected: boolean
+}
+
+export type AutoSyncSetup = {
+  systemd_unit: string
+  udev_rule: string
+  install_commands: string[]
+  status: { systemd_installed: boolean; udev_rule_installed: boolean }
+}
+
+export type ActivityEntry = {
+  started_at: string
+  service: string
+  profile: string
+  description: string
+  duration_seconds: number
+  result: 'ok' | 'error'
+}
+
+export type Alert = {
+  kind: string
+  profile: string | null
+  severity: 'missing' | 'stale' | 'unreachable'
+  message: string
+}
+
+export type OverviewDeviceCard = {
+  profile: string
+  connected_device: ConnectedDevice & { used_bytes: number; free_bytes: number } | null
+  track_count: number
+  episode_count: number
+  unplayed_episode_count: number
+  last_sync: string | null
+  next_fetch: string | null
+}
+
+export type SyncStatus = {
+  running: boolean
+  // Best-effort tail of state/auto-sync.log -- only ever populated for a
+  // real headless auto-sync run (a GUI-triggered sync never writes to
+  // that file), and only when recent enough to plausibly describe what's
+  // running right now. null whenever there's nothing to show, including
+  // when a GUI-triggered sync is the one actually holding the lock.
+  log_tail: string[] | null
+}
+
+export type Overview = {
+  devices: OverviewDeviceCard[]
+  alerts: Alert[]
+  library: { track_count: number }
+  recent_activity: ActivityEntry[]
+}
+
+export type DiscoveredBook = {
+  name: string
+  path: string
+  audio_file_count: number
+  already_imported: boolean
+  imported_at: number | null
+  library_paths: string[]
+}
+export type DiscoverResult = { root: string; books: DiscoveredBook[] }
 
 // The backend's ConfigError shape: {"path": "...", "errors": ["dotted.field — message", ...]}
 export class ApiError extends Error {
@@ -84,6 +271,50 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return resp.json() as Promise<T>
 }
 
+export type SSEEvent = { event: 'progress' | 'result' | 'error'; data: string }
+
+// Native EventSource is GET-only and can't carry a JSON body, so a POST
+// that streams Server-Sent Events (sync-orchestrator's own progress +
+// final plan/result, see web_gui_backend/sync_runner.py) needs a manual
+// fetch() + ReadableStream reader instead -- the standard workaround,
+// not a new dependency.
+async function* streamSSE(path: string, body: unknown): AsyncGenerator<SSEEvent> {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok || !resp.body) {
+    const detail = await resp.json().catch(() => resp.statusText)
+    throw new ApiError(resp.status, (detail as { detail?: unknown })?.detail ?? detail)
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let sepIndex: number
+      while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, sepIndex)
+        buffer = buffer.slice(sepIndex + 2)
+        let event: SSEEvent['event'] = 'progress'
+        const dataLines: string[] = []
+        for (const line of rawEvent.split('\n')) {
+          if (line.startsWith('event: ')) event = line.slice(7) as SSEEvent['event']
+          else if (line.startsWith('data: ')) dataLines.push(line.slice(6))
+        }
+        if (dataLines.length) yield { event, data: dataLines.join('\n') }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 export const api = {
   listProfiles: () => request<Record<string, Profile>>('/api/profiles'),
   getProfile: (name: string) => request<Profile>(`/api/profiles/${encodeURIComponent(name)}`),
@@ -95,5 +326,132 @@ export const api = {
   deleteProfile: (name: string) =>
     request<void>(`/api/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   getGlobalConfig: () => request<GlobalConfig>('/api/global-config'),
+  putGlobalConfig: (config: GlobalConfig) =>
+    request<GlobalConfig>('/api/global-config', { method: 'PUT', body: JSON.stringify(config) }),
   identifyDevice: () => request<{ devices: ConnectedDevice[] }>('/api/device/identify'),
+
+  listAppleMusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/apple-music/playlists'),
+  listYtmusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/ytmusic/playlists'),
+  resolveYtmusicPlaylist: (url: string) =>
+    request<PlaylistSummary>(`/api/sources/ytmusic/resolve?url=${encodeURIComponent(url)}`),
+  putAppleMusicCookies: (cookiesTxt: string) =>
+    request<{ status: string }>('/api/sources/apple-music/cookies', {
+      method: 'PUT',
+      body: JSON.stringify({ cookies_txt: cookiesTxt }),
+    }),
+  putYtmusicCookies: (cookiesTxt: string) =>
+    request<{ status: string }>('/api/sources/ytmusic/cookies', {
+      method: 'PUT',
+      body: JSON.stringify({ cookies_txt: cookiesTxt }),
+    }),
+  getSourcesStatus: () => request<SourcesStatus>('/api/sources/status'),
+
+  putYtmusicOauthClient: (clientId: string, clientSecret: string) =>
+    request<{ status: string }>('/api/sources/ytmusic/oauth-client', {
+      method: 'PUT',
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    }),
+  startYtmusicOauth: () =>
+    request<OAuthDeviceCode>('/api/sources/ytmusic/oauth/start', { method: 'POST' }),
+  pollYtmusicOauth: (deviceCode: string) =>
+    request<{ status: 'ok' | 'pending' }>('/api/sources/ytmusic/oauth/poll', {
+      method: 'POST',
+      body: JSON.stringify({ device_code: deviceCode }),
+    }),
+
+  // Per-profile override layer -- see ProfileSourcesStatus's own comment.
+  getProfileSourcesStatus: (profileName: string) =>
+    request<ProfileSourcesStatus>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/status`,
+    ),
+  listProfileAppleMusicPlaylists: (profileName: string) =>
+    request<PlaylistSummary[]>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/apple-music/playlists`,
+    ),
+  listProfileYtmusicPlaylists: (profileName: string) =>
+    request<PlaylistSummary[]>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/playlists`,
+    ),
+  putProfileAppleMusicCookies: (profileName: string, cookiesTxt: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/apple-music/cookies`,
+      { method: 'PUT', body: JSON.stringify({ cookies_txt: cookiesTxt }) },
+    ),
+  putProfileYtmusicCookies: (profileName: string, cookiesTxt: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/cookies`,
+      { method: 'PUT', body: JSON.stringify({ cookies_txt: cookiesTxt }) },
+    ),
+  putProfileYtmusicOauthClient: (profileName: string, clientId: string, clientSecret: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/oauth-client`,
+      { method: 'PUT', body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }) },
+    ),
+  startProfileYtmusicOauth: (profileName: string) =>
+    request<OAuthDeviceCode>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/oauth/start`,
+      { method: 'POST' },
+    ),
+  pollProfileYtmusicOauth: (profileName: string, deviceCode: string) =>
+    request<{ status: 'ok' | 'pending' }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/oauth/poll`,
+      { method: 'POST', body: JSON.stringify({ device_code: deviceCode }) },
+    ),
+  importProfileSource: (profileName: string, source: 'apple_music' | 'ytmusic', fromProfile: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/${source}/import`,
+      { method: 'POST', body: JSON.stringify({ from_profile: fromProfile }) },
+    ),
+  deleteProfileSourceOverride: (profileName: string, source: 'apple_music' | 'ytmusic') =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/sources/${source}`,
+      { method: 'DELETE' },
+    ),
+
+  getPocketcastsStatus: (profileName: string) =>
+    request<CredentialFileStatus>(
+      `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts-status`,
+    ),
+  getPocketcastsSubscriptions: (profileName: string) =>
+    request<PodcastSubscription[]>(
+      `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts/subscriptions`,
+    ),
+  putPocketcastsCredentials: (profileName: string, email: string, password: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts-credentials`,
+      { method: 'PUT', body: JSON.stringify({ email, password }) },
+    ),
+
+  browseExternalLibrary: (root: string, subpath: string) =>
+    request<BrowseResult>(
+      `/api/external-library/browse?root=${encodeURIComponent(root)}&subpath=${encodeURIComponent(subpath)}`,
+    ),
+  browseAudiobooks: (subpath: string) =>
+    request<BrowseResult>(`/api/audiobooks/browse?subpath=${encodeURIComponent(subpath)}`),
+
+  discoverAudiobooks: () => request<DiscoverResult>('/api/audiobooks/discover'),
+  importDiscoveredAudiobook: (name: string) =>
+    request<{ status: string; imported_paths: string[] }>('/api/audiobooks/discover/import', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  getAutoSyncSetup: () => request<AutoSyncSetup>('/api/auto-sync/setup'),
+
+  getOverview: () => request<Overview>('/api/overview'),
+  getSyncStatus: (profile: string) =>
+    request<SyncStatus>(`/api/sync/status?profile=${encodeURIComponent(profile)}`),
+  getActivity: (limit = 50) => request<{ entries: ActivityEntry[] }>(`/api/activity?limit=${limit}`),
+  getAlerts: () => request<{ alerts: Alert[] }>('/api/alerts'),
+}
+
+export type SyncPlanBody = { profile: string; skip_backup?: boolean; skip_podcasts?: boolean }
+export type SyncExecuteBody = SyncPlanBody & { allow_removals?: boolean }
+
+export function streamSyncPlan(body: SyncPlanBody): AsyncGenerator<SSEEvent> {
+  return streamSSE('/api/sync/plan', body)
+}
+
+export function streamSyncExecute(body: SyncExecuteBody): AsyncGenerator<SSEEvent> {
+  return streamSSE('/api/sync/execute', body)
 }

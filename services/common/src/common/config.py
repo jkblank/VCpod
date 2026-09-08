@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 from pydantic import ValidationError
@@ -133,6 +133,93 @@ def save_global_config(config: GlobalConfig, path: Path | str) -> None:
     load_global_config reads -- no business rules beyond the schema
     itself apply to global.yaml, unlike profiles."""
     _dump_yaml(config.model_dump(mode="json", exclude_none=True), Path(path))
+
+
+def resolve_config_path(container_path: str, config_root: Path) -> Path:
+    """global.yaml / profile YAML credential paths are always written as
+    /config/... container paths, per the ./config:/config:ro mount in
+    docker-compose.yml. Re-root them under config_root so the same YAML
+    values work unmodified when run bare-metal. Falls back to the literal
+    path if it isn't /config-rooted (e.g. someone already wrote a real host
+    path there).
+
+    Moved here from music_stack_cli.orchestrate (its original home) once
+    web-gui-backend needed the exact same resolution for global-config
+    source credential paths -- a second real caller, not just
+    music-stack-cli's own fetch pipeline."""
+    posix_path = PurePosixPath(container_path)
+    try:
+        return config_root / posix_path.relative_to("/config")
+    except ValueError:
+        return Path(container_path)
+
+
+# --- Per-profile source credential overrides --------------------------------
+#
+# apple_music/ytmusic/spotify credentials are global.yaml's shared,
+# household-wide default (SourcesConfig) -- a profile only diverges from
+# that when it explicitly opts in via ProfileConfig.sources (see
+# models.py's ProfileSourcesConfig docstring: never populated
+# automatically, only via an explicit "set up separate credentials" or
+# "import from another profile" action). These five functions are the
+# one place that override-or-global fallback is actually resolved --
+# both music_stack_cli.orchestrate's fetch pipeline and
+# web_gui_backend's profile_sources router call them, so the two can't
+# drift apart.
+
+
+def resolve_apple_music_cookies(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.apple_music if profile.sources else None
+    container_path = override.cookies_file if override else global_config.sources.apple_music.cookies_file
+    return resolve_config_path(container_path, config_root)
+
+
+def resolve_ytmusic_cookies(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.ytmusic if profile.sources else None
+    container_path = (
+        override.cookies_file
+        if override and override.cookies_file
+        else global_config.sources.ytmusic.cookies_file
+    )
+    return resolve_config_path(container_path, config_root)
+
+
+def resolve_ytmusic_oauth(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.ytmusic if profile.sources else None
+    container_path = (
+        override.oauth_file
+        if override and override.oauth_file
+        else global_config.sources.ytmusic.oauth_file
+    )
+    return resolve_config_path(container_path, config_root)
+
+
+def resolve_ytmusic_oauth_client(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.ytmusic if profile.sources else None
+    container_path = (
+        override.oauth_client_file
+        if override and override.oauth_client_file
+        else global_config.sources.ytmusic.oauth_client_file
+    )
+    return resolve_config_path(container_path, config_root)
+
+
+def resolve_spotify_credentials(
+    profile: ProfileConfig, global_config: GlobalConfig, config_root: Path
+) -> Path:
+    override = profile.sources.spotify if profile.sources else None
+    container_path = (
+        override.credentials_file if override else global_config.sources.spotify.credentials_file
+    )
+    return resolve_config_path(container_path, config_root)
 
 
 def resolve_profile_path(value: Path | str, config_root: Path | str) -> Path:
