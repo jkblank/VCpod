@@ -68,6 +68,50 @@ origin. This is "one thing to run" for setup purposes; see notes.md's
 options (a single Docker image, an installer, ...) still being
 weighed for later.
 
+## Docker
+
+`Dockerfile` (repo-root build context — it needs sibling `services/`
+directories) builds this same "one thing to run" shape into an image:
+a `node` stage builds the frontend, then a `python:3.12-slim` stage
+installs this service via `uv sync --package web-gui-backend`, bakes
+the built frontend in at the same sibling path `default_frontend_dist()`
+already resolves on its own, and **also** vendors a complete, separate
+`sync-orchestrator` install (its own venv, its own `iopenpod` dependency
+tree — see that project's own README for why it's kept isolated) so
+the Sync screen's device buttons work by shelling out to it exactly
+like a bare-metal deployment would.
+
+That last part is why this is the one service in this repo whose
+container needs real, privileged host access — see the top-level
+`README.md`'s "Deploying on a homelab" section and the extensive
+comments on this service in `docker-compose.yml` for the full
+explanation of every mount (`/dev`, the host's D-Bus socket, the
+removable-media mount root) and an honest note on what's actually been
+live-verified versus built from reading the code. The plain `docker
+compose up -d web-gui-backend` from the repo root is the intended way
+to run this image; a manual `docker run` needs to reproduce every one
+of those mounts plus `--privileged` by hand to get working device
+access, e.g.:
+
+```bash
+docker build -t vcpod-web-gui -f services/web-gui-backend/Dockerfile .
+docker run -d --privileged \
+    -p 8420:8420 \
+    -v "$(pwd)/config:/config" \
+    -v "$(pwd)/library:/data/library" \
+    -v "$(pwd)/state:/data/state" \
+    -v /dev:/dev \
+    -v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket \
+    -v /run/media:/run/media \
+    vcpod-web-gui --host 0.0.0.0 --config-root /config \
+    --library-root /data/library --state-root /data/state
+```
+
+(without `--privileged`/the device mounts, the image still runs fine —
+every screen except the Sync screen's live device buttons works
+normally, degrading the same way a real `DeviceIdentifyError` already
+does elsewhere in this app: "not connected" rather than a crash.)
+
 ## Homepage widget
 
 `GET /api/homepage/status` returns one flat status object meant for a

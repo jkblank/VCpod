@@ -1,0 +1,23 @@
+# Every service's Dockerfile builds with `context: .` (repo root) but
+# only ever COPYs specific services/ subdirectories -- without this
+# file, `docker build`/`docker compose build` still tars up and uploads
+# everything else under the repo root as build context first, including
+# the real, potentially very large runtime data directories this same
+# repo root also holds (library/, state/ -- state/device_backups/ alone
+# was measured at 199GB live, see notes.md) and every credential file
+# under config/secrets/. None of that should ever leave the filesystem
+# as build context, whether for size or for secrecy.
+
+library/
+state/
+config/secrets/
+.env
+
+.git/
+**/node_modules/
+**/dist/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/

@@ -104,11 +104,20 @@ optional — skip whichever credential steps don't apply to you.
   works fine without one connected.
 - Only if you plan to use YouTube Music: [`deno`](https://deno.com/)
   (needed by both `yt-dlp` and the PO-token companion service — see
-  step 3).
+  step 4).
+- Only if you want the web GUI (step 2 — optional, everything through
+  step 8 also works by hand-editing YAML with none of this installed):
+  Node.js/npm, to build the frontend once.
 
-Arch example: `sudo pacman -S uv ffmpeg chromaprint deno` (drop `deno`
-if you're skipping YouTube Music). Package names are equivalent on
-other distros/Homebrew.
+Arch example: `sudo pacman -S uv ffmpeg chromaprint deno nodejs npm`
+(drop `deno`/`nodejs npm` for whichever of YouTube Music/the web GUI
+you're skipping). Package names are equivalent on other distros/Homebrew.
+
+**Deploying straight to a homelab instead?** Docker builds every
+dependency for you except the prerequisites above — you still need them
+installed on whichever machine the iPod itself plugs into, since that
+part always runs bare metal regardless of Docker (see "Deploying on a
+homelab" further down). Skip to there once you've done step 1 below.
 
 ### 1. Install and verify
 
@@ -124,7 +133,36 @@ separate, standalone `uv` projects (see "Running it" below) — their
 tests run with their own `uv run pytest`, inside their own directories,
 not picked up by the command above.
 
-### 2. Pick which sources you're using
+### 2. Start the web GUI (optional, but the easiest way to do steps 3–5)
+
+Steps 3 through 5 below (pick sources, enter credentials, create your
+profile) can all be done by hand-editing YAML, or by clicking through a
+browser instead — same underlying `config/` files either way, so you
+can freely mix both across steps, or come back and use the other
+approach later. Each of those steps calls out its web GUI equivalent.
+If you'd rather stick to plain YAML the whole way through, skip this
+step entirely and go straight to step 3.
+
+```bash
+cd services/web-gui-frontend && npm install && npm run build && cd ../..
+uv run web-gui-backend --config-root config
+```
+
+Visit `http://127.0.0.1:8420/` — one process serves both the API and
+the built frontend (see `services/web-gui-backend/README.md`'s "Running
+it as one process"). Leave it running in a terminal while you work
+through the steps below; `Ctrl-C` to stop it, no state is lost (it only
+ever reads/writes the same `config/`/`library/`/`state/` files the CLI
+commands below do).
+
+The Sync screen (step 7) additionally needs real access to the iPod's
+block device, so it only works when this process runs on the same
+machine the iPod is physically connected to — everything else (Sources,
+Credentials, Podcasts, Profiles) works from anywhere. Deploying this to
+a homelab instead of running it locally? See "Deploying on a homelab"
+further down — same web GUI, packaged as a Docker image.
+
+### 3. Pick which sources you're using
 
 Edit `config/global.yaml`'s `sources.*.enabled` flags — turn off
 whichever of Apple Music / Spotify / YouTube Music you don't plan to
@@ -132,9 +170,13 @@ use. **Spotify is currently blocked** on a Premium API requirement
 outside this project's control (see the Status table above); enabling
 it won't actually download anything today. Podcasts aren't gated here —
 each profile that wants them just sets its own Pocket Casts credentials
-(step 3) and `podcasts:` block (step 4).
+(step 4) and `podcasts:` block (step 5).
 
-### 3. Get credentials for each source you're using
+**Web GUI**: the "Sources & credentials" screen has the same enable
+toggle for each source, right above that source's credential form
+(step 4) — one screen for both.
+
+### 4. Get credentials for each source you're using
 
 All credential files are gitignored — only `config/global.yaml` and the
 example profiles are meant to be committed.
@@ -149,6 +191,11 @@ info` almost always means it's time to re-export, not a code problem.
 See `services/fetcher-apple/README.md` for a distinct, non-cookie
 failure mode you might also hit.
 
+*Web GUI*: paste the exported cookies straight into the "Sources &
+credentials" screen's Apple Music card instead of placing the file
+yourself — same destination path, same plaintext-on-disk caveat (shown
+above the input).
+
 **YouTube Music**:
 1. Export YouTube cookies the same way (browser extension, Netscape
    format) to `config/secrets/youtube_cookies.txt`.
@@ -162,16 +209,28 @@ failure mode you might also hit.
    `services/fetcher-ytmusic/README.md`; it needs to stay running for
    the whole time you're fetching.
 
+*Web GUI*: the same screen's YouTube Music card takes pasted cookies,
+and can drive the `ytmusicapi oauth` device-code flow for you (shows
+the code + a link, then polls until you approve it) instead of running
+that command yourself. The PO-token companion service (part 3 above)
+still needs to be started separately either way — nothing in the web
+GUI runs it for you.
+
 **Podcasts (Pocket Casts)**: create
 `config/secrets/pocketcasts/<you>.json`:
 ```json
 {"email": "you@example.com", "password": "your-pocketcasts-password"}
 ```
 
-**Spotify**: shelved — see step 2, nothing to configure until the
+*Web GUI*: enter the same email/password in the Podcasts screen once
+you've created a profile (step 5) — it's validated against a real login
+attempt before the file gets saved, so a typo is caught immediately
+instead of surfacing later as a confusing fetch failure.
+
+**Spotify**: shelved — see step 3, nothing to configure until the
 upstream Premium API requirement is resolved.
 
-### 4. Create your profile
+### 5. Create your profile
 
 ```bash
 cp config/profiles/alice.yaml config/profiles/<you>.yaml
@@ -179,11 +238,11 @@ cp config/profiles/alice.yaml config/profiles/<you>.yaml
 
 Edit it — `alice.yaml`/`bob.yaml` document every field inline as
 comments, so treat them as the reference. At minimum you'll set:
-- `device.match_by`/`match_value` — see step 6 for how to find these
+- `device.match_by`/`match_value` — see step 7 for how to find these
   once your iPod is connected.
 - `playlists:` — one entry per playlist you want fetched, per source.
 - `podcasts.pocketcasts.credentials_file` — pointing at the file from
-  step 3.
+  step 4.
 - `sync:` — transcode format, whether to push played state back to
   Pocket Casts, etc.
 
@@ -199,7 +258,16 @@ config/
 Real per-user profiles and everything under `config/secrets/` are
 gitignored — only the example profiles are meant to be committed.
 
-### 5. First fetch
+**Web GUI**: the Profiles screen's "New profile" does the copy for you,
+then the same screen edits `sync:` and `device.match_by`/`match_value`
+— with the iPod already connected to the machine running the backend,
+there's a "Detected device" shortcut that fills both device fields in
+from a live scan instead of you running `lsblk` yourself (step 7's
+manual version). The Sources and Podcasts screens are where
+`playlists:`/`podcasts:` actually get ticked, once this profile exists
+to tick them for.
+
+### 6. First fetch
 
 ```bash
 uv run music-stack fetch --profile config/profiles/<you>.yaml
@@ -209,10 +277,15 @@ Downloads every playlist across every enabled source, plus podcasts,
 into `library/`. Safe to re-run any time — already-downloaded
 tracks/episodes are skipped, not re-fetched.
 
-### 6. First device sync
+*No web GUI equivalent yet* — the GUI configures schedules and
+credentials, and shows fetch results after the fact (Overview/Activity
+screens), but there's no "fetch now" button; run this by hand, or wait
+for step 8's scheduled fetching once that's set up.
+
+### 7. First device sync
 
 Connect your iPod. If you don't already know its `device.match_value`
-for step 4, the simplest option is `match_by: volume_label` — find it
+for step 5, the simplest option is `match_by: volume_label` — find it
 with:
 
 ```bash
@@ -244,11 +317,24 @@ see `services/sync-orchestrator/README.md` for the full flag reference,
 matching by serial instead of volume label, and the one-command
 `full-sync` (fetch + device sync together).
 
-### 7. Automate it (optional)
+**Web GUI**: the Sync screen does the same plan-review-execute flow
+from the browser — "Compute plan" (read-only), review it (same
+`to_remove` list), then "Execute sync" (asks to confirm before removals
+are actually allowed). Only reachable if you started the GUI (step 2)
+on this same machine, or via the privileged Docker container described
+in "Deploying on a homelab."
+
+### 8. Automate it (optional)
 
 Once the above works end to end by hand, see "Running it" below for
 scheduled unattended fetching and fully-automatic sync-on-connect —
 neither is required, both build on exactly the commands above.
+
+**Web GUI**: the Sync screen's "Set up auto-sync" card generates the
+exact, filled-in systemd unit + udev rule text and the `sudo` commands
+to install them (matching "Running it" option 3 below) — it never runs
+those commands itself, so you still copy/paste and run them by hand
+once, same one-time install either path.
 
 ### Running it
 
@@ -321,7 +407,7 @@ Pocket Casts, running dedup on demand, plan-only device syncs, etc.):
 | [`fetch-scheduler`](services/fetch-scheduler/README.md) | Cron-scheduled fetching + automatic library/backup maintenance |
 | [`sync-orchestrator`](services/sync-orchestrator/README.md) | Device sync engine (bare metal) + `auto-sync`/udev automation + `full-sync` (interactive fetch+device in one command) |
 | [`audiobook-manager`](services/audiobook-manager/README.md) | Merges manually-acquired MP3 parts into a tagged, chaptered `.m4b` (ffmpeg + beets-audible) |
-| [`web-gui-backend`](services/web-gui-backend/README.md) | FastAPI service for the web GUI (M11) — reads/writes `config/` through the same loader every CLI tool uses |
+| [`web-gui-backend`](services/web-gui-backend/README.md) | FastAPI service for the web GUI (M11) — reads/writes `config/` through the same loader every CLI tool uses; also the one Docker service built with real (`--privileged`) device access, for its Sync screen |
 | [`web-gui-frontend`](services/web-gui-frontend/README.md) | React/Vite SPA for the web GUI — Overview, Profiles, Music sources, Podcasts screens + credential capture forms so far |
 
 Device sync (`sync-orchestrator`) needs the iPod connected/mounted and
@@ -400,17 +486,84 @@ itself, so keep the two in sync by hand — enabling a source there
 without also enabling its profile here just means that fetcher's
 container never runs.
 
+`web-gui-backend` is the one Compose service that runs `--privileged`
+— its Sync screen needs real access to the iPod's block device (see
+"Deploying on a homelab" below for the full explanation):
+
+```bash
+docker compose up -d web-gui-backend
+```
+
+### Deploying on a homelab
+
+The whole stack minus the bare-metal auto-sync piece (see below) is one
+`docker compose up -d --build` on a homelab server with the iPod plugged
+directly into it:
+
+1. Clone this repo onto the server, set up `config/global.yaml` +
+   `config/profiles/<you>.yaml` (see Setup above), copy `.env.example`
+   to `.env` and fill in `COMPOSE_PROFILES` for the sources you use.
+2. In `.env`, set `HOST_MEDIA_ROOT` to wherever this host auto-mounts
+   removable media if it isn't the default `/run/media` — check with
+   `lsblk -o NAME,LABEL,MOUNTPOINT` after plugging the iPod in once.
+   Set `WEB_GUI_PORT` if `8420` is already taken.
+3. `docker compose up -d --build fetch-scheduler web-gui-backend` (add
+   `--profile apple`/etc. for whichever fetcher sources you use — see
+   above). `--build` matters here: unlike a typical self-hosted app,
+   there's no prebuilt image on a registry to pull, every service here
+   builds from this repo's own Dockerfiles.
+4. Visit `http://<server>:8420/` — configure profiles/sources/podcasts
+   from the browser, same as running it locally.
+5. For **unattended** sync-on-connect (not just the Sync screen's manual
+   buttons), install the bare-metal systemd unit + udev rule the Sync
+   screen's "Set up auto-sync" card generates (`GET /api/auto-sync/
+   setup`) — this part is deliberately *not* containerized (see
+   `services/sync-orchestrator/README.md`'s automation section and
+   `notes.md`'s "Distribution: why sync-orchestrator isn't containerized
+   too"), and keeps working independently of whether the container
+   stack is even up.
+
+**`web-gui-backend`'s `--privileged` mode, honestly**: its image vendors
+a full second `sync-orchestrator` install (own venv, own `iopenpod`
+dependency tree — see `services/web-gui-backend/Dockerfile`) so the Sync
+screen's "identify device"/"compute plan"/"execute" buttons work by
+shelling out to it, exactly like the bare-metal CLI does. That needs
+real block-device + mount access, which is why the Compose service runs
+`--privileged` with `/dev`, the host's D-Bus socket, and its
+removable-media mount root all bound in — see the extensive comments on
+that service in `docker-compose.yml` for exactly what each mount is for.
+**This whole path (a container reaching a real iPod through the host's
+udisks2/D-Bus stack) was built and documented from reading the actual
+code, but not live-verified against a running homelab deployment** — no
+Docker daemon was available to build/run it in the environment this was
+built in. If "identify device" doesn't find a connected iPod after
+deploying, the CLI's own `docker compose exec web-gui-backend uv run
+--project services/sync-orchestrator sync-orchestrator identify-device`
+is the first thing to try directly, to see the real error past the web
+GUI's "not connected" degradation (`overview.py`/`sync.py` both swallow
+`DeviceIdentifyError` into that message rather than surfacing it) — most
+likely culprits are `HOST_MEDIA_ROOT` not matching your distro, or
+`/run/dbus/system_bus_socket` not existing at that exact path on the
+host. The reliable fallback either way is the bare-metal auto-sync from
+step 5, which doesn't depend on any of this container-specific plumbing
+— that path is the one actually live-verified this session (see
+`notes.md`'s 2026-09-03/2026-09-08 entries).
+
 ## Architecture
 
 - **Docker vs. bare metal split**: acquisition/processing services
   (fetchers, library-manager, podcast-manager, fetch-scheduler) only read
   config and write to shared volumes, so they containerize cleanly. The
-  iPod sync step (`sync-orchestrator`) needs real USB device access and
-  runs on bare metal — udev + a systemd service trigger it automatically
-  on connect (see `services/sync-orchestrator/README.md`), rather than
-  trying to replicate udev hotplug handling inside a container (would
-  need `--privileged` + host `/dev` sharing, mostly erasing the point of
-  containerizing it — see `notes.md`).
+  *unattended*, udev-triggered auto-sync-on-connect stays bare metal
+  (see `services/sync-orchestrator/README.md`) rather than trying to
+  replicate udev hotplug handling inside a container — see `notes.md`'s
+  "Distribution: why sync-orchestrator isn't containerized too" for why
+  that specifically wasn't worth it for a background daemon. The web
+  GUI's on-demand Sync screen is the one exception that does run
+  containerized with real device access anyway (`--privileged`, see
+  "Deploying on a homelab" above) — a good enough tradeoff for a button a
+  human clicks, worse for what would otherwise be sync-orchestrator's own
+  always-on hotplug listener.
 - **Config is the only source of truth** — no database of settings, no
   hidden state beyond what's in `config/` and the per-profile `state/*.sqlite`
   (source-ID-to-local-file maps and sync history, not configuration).
