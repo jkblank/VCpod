@@ -47,6 +47,28 @@ services:
       - ./library:/data/library
       - ./state:/data/state
 
+  # The Docker equivalent of `uv run music-stack fetch --profile ...`
+  # (see the top-level README's Setup) — fetches every playlist across
+  # every enabled source, plus podcasts, for one profile in one call.
+  # No profile gate and no restart: policy — it's a one-shot command,
+  # not a long-running service, meant to be run with `docker compose
+  # run --rm music-stack fetch --profile /config/profiles/<you>.yaml`,
+  # not `up`. --library-root/--state-root are passed explicitly because
+  # this image's own --config-root/--library-root sibling-directory
+  # default (services/music-stack-cli/README.md) resolves relative to
+  # /config, not /data — same reasoning fetch-scheduler's command:
+  # below already needs this for.
+  music-stack:
+    build:
+      context: .
+      dockerfile: services/music-stack-cli/Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - ./library:/data/library
+      - ./state:/data/state
+    entrypoint: ["uv", "run", "music-stack", "fetch", "--global-config", "/config/global.yaml", "--library-root", "/data/library", "--state-root", "/data/state"]
+
   library-manager:
     build:
       context: .

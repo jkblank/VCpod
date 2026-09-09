@@ -83,8 +83,9 @@ like a bare-metal deployment would.
 
 That last part is why this is the one service in this repo whose
 container needs real, privileged host access — see the top-level
-`README.md`'s "Deploying on a homelab" section and the extensive
-comments on this service in `docker-compose.yml` for the full
+`README.md`'s "Docker (recommended)" setup path and "Why the sync step
+needs privileged Docker access" section, plus the extensive
+comments on this service in `docker-compose.yml`, for the full
 explanation of every mount (`/dev`, the host's D-Bus socket, the
 removable-media mount root) and an honest note on what's actually been
 live-verified versus built from reading the code. The plain `docker

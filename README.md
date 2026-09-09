@@ -32,7 +32,7 @@ marked **Breaking**.
 It can run entirely hands-off once set up: a scheduler keeps `library/`
 fresh on each playlist's/show's own cron schedule, and plugging in the
 iPod triggers a real device sync automatically (udev → a systemd
-service) — see "Running it" below.
+service) — see "Setup" below, Docker or manual.
 
 ## Status
 
@@ -87,9 +87,169 @@ service) — see "Running it" below.
 
 ## Setup
 
-A step-by-step path from a fresh clone to your first real device sync.
+Two ways to run this — pick one:
+
+- **Docker (recommended)**, below — one `docker compose up`, then
+  configure everything from a browser. No local Python/Node toolchain
+  needed, and it's the faster path to a first working setup. The one
+  thing that stays outside a container either way is the actual device
+  sync, for reasons explained inline below.
+- **[Manual / local dev install](#manual--local-dev-install)**, further
+  down — everything via `uv`/`npm` directly, no Docker at all. Slower to
+  a first working setup, but no container layer between you and what's
+  actually running; use this if you're developing on this codebase, or
+  would just rather not use Docker.
+
 Every source (Apple Music, YouTube Music, podcasts) is independently
-optional — skip whichever credential steps don't apply to you.
+optional in both paths — skip whichever credential steps don't apply to
+you.
+
+### Docker (recommended)
+
+#### 1. Prerequisites
+
+- [Docker](https://docs.docker.com/engine/install/) with the Compose
+  plugin (`docker compose version` to check — bundled with any current
+  Docker install).
+- A real click-wheel iPod (6th/7th-gen iPod Classic or 5.5th-gen iPod
+  Video), connected to whichever machine you'll run `docker compose`
+  on — needed for step 6 (device sync), not for anything before it.
+- Only if you also want fully **unattended** sync-on-connect (step 7,
+  optional): `uv`, `ffmpeg`, and `chromaprint` installed on that same
+  machine too. That one piece stays bare metal no matter what — see
+  "Why the sync step needs privileged Docker access" below for why.
+
+#### 2. Clone and configure the environment
+
+```bash
+git clone <this repo's URL>
+cd music-stack
+cp .env.example .env
+```
+
+Edit `.env`: set `COMPOSE_PROFILES` for the sources you use (`apple`,
+`ytmusic`, `spotify` — see the comments in `.env.example`), and, if
+this is a headless server rather than your own desktop, `HOST_MEDIA_ROOT`
+(wherever this host auto-mounts removable media) and `WEB_GUI_PORT` if
+`8420` is already taken.
+
+#### 3. Bring up the stack
+
+```bash
+docker compose up -d --build web-gui-backend fetch-scheduler
+```
+
+`--build` matters here: unlike a typical self-hosted app, there's no
+prebuilt image on a registry to pull — every service in this repo
+builds from its own Dockerfile, so the first run takes a few minutes.
+`fetch-scheduler` starts keeping `library/` fresh on each playlist's/
+show's own schedule immediately; `web-gui-backend` serves both the API
+and the browser UI on one port.
+
+#### 4. Configure everything from the browser
+
+Visit `http://<this machine>:8420/` (`http://127.0.0.1:8420/` if
+running locally) — no YAML editing needed:
+
+- **Profiles** screen — "New profile"; with the iPod already connected,
+  a "Detected device" shortcut fills in `device.match_by`/`match_value`
+  from a live scan instead of you looking it up by hand.
+- **Sources & credentials** screen — enable whichever of Apple
+  Music/YouTube Music you use and paste in their credentials.
+- **Music sources** screen — tick which playlists to actually sync,
+  per source.
+- **Podcasts** screen — enter your Pocket Casts login (validated
+  against a real login attempt before it's saved) and tick which shows
+  to sync.
+
+What to actually export/paste for each source is identical either way
+you set this up — see the manual install's ["Get
+credentials"](#4-get-credentials-for-each-source-youre-using) step
+below for the exact, per-source instructions (cookie export, YouTube
+OAuth, Pocket Casts). Everything there applies here too; only *where*
+it ends up (a form field vs. a file you place yourself) differs.
+
+#### 5. First fetch
+
+```bash
+docker compose run --rm music-stack --profile /config/profiles/<you>.yaml
+```
+
+Downloads everything the profile you just created asks for, into
+`library/`. Safe to re-run any time — already-downloaded tracks/
+episodes are skipped. `fetch-scheduler` (already running since step 3)
+keeps doing this automatically from here on, so this manual run is
+just for a first look.
+
+#### 6. First device sync
+
+With the iPod connected to the same machine `docker compose` is
+running on, open the **Sync** screen: "Compute plan" (read-only —
+review the `to_remove` list especially), then "Execute sync".
+
+This works because `web-gui-backend`'s container runs `--privileged`
+with real access to the iPod's block device — see "Why the sync step
+needs privileged Docker access" below for how, and what to check if it
+can't find a connected device.
+
+#### 7. Automate it (optional)
+
+Fetching is already automatic (`fetch-scheduler`, since step 3). For
+**unattended sync-on-connect** too — plugging the iPod in triggers a
+real sync with no browser involved at all — the Sync screen's "Set up
+auto-sync" card generates a systemd unit + udev rule with this
+install's real paths already filled in, plus the exact `sudo` commands
+to install them (it never runs those commands itself). This one piece
+runs bare metal on whichever machine the iPod plugs into, which is why
+step 1 above flagged `uv`/`ffmpeg`/`chromaprint` as needed there for
+this optional step specifically.
+
+### Why the sync step needs privileged Docker access
+
+`web-gui-backend`'s image vendors a full second `sync-orchestrator`
+install (own venv, own `iopenpod` dependency tree — see
+`services/web-gui-backend/Dockerfile`) so the Sync screen's "identify
+device"/"compute plan"/"execute" buttons work by shelling out to it,
+exactly like a bare-metal CLI install does. That needs real
+block-device + mount access, which is why its Compose service runs
+`--privileged` with `/dev`, the host's D-Bus socket, and its
+removable-media mount root all bound in — see the extensive comments on
+that service in `docker-compose.yml` for exactly what each mount is
+for. Everything *except* this one screen runs as a normal, unprivileged
+container (`fetch-scheduler` and the individual fetcher containers
+never touch the device at all).
+
+The *unattended*, udev-triggered auto-sync-on-connect (step 7 above)
+is deliberately kept outside Docker entirely, rather than trying to
+replicate udev hotplug handling inside a privileged container that
+polls continuously — see `notes.md`'s "Distribution: why
+sync-orchestrator isn't containerized too" for the full reasoning. A
+button a human clicks tolerates `--privileged` fine; an always-on
+background daemon was judged not worth it.
+
+**Honestly**: the container-to-real-iPod path above (reaching a real
+device through the host's udisks2/D-Bus stack from inside a container)
+was built and documented from reading the actual code, not
+live-verified against a running deployment — no Docker daemon was
+available to build/run it in the environment this was built in. If
+"identify device" doesn't find a connected iPod, `docker compose exec
+web-gui-backend uv run --project services/sync-orchestrator
+sync-orchestrator identify-device` is the first thing to try directly,
+to see the real error past the web GUI's "not connected" degradation
+(`overview.py`/`sync.py` both swallow `DeviceIdentifyError` into that
+message rather than surfacing it) — most likely culprits are
+`HOST_MEDIA_ROOT` not matching your distro, or
+`/run/dbus/system_bus_socket` not existing at that exact path on the
+host. The reliable fallback either way is step 7's bare-metal auto-sync,
+which doesn't depend on any of this container-specific plumbing — that
+path *is* live-verified (see `notes.md`'s 2026-09-03/2026-09-08
+entries).
+
+## Manual / local dev install
+
+Running this directly with `uv`/`npm` instead of Docker — for local
+development on this codebase, or if you'd rather not use Docker at all.
+A step-by-step path from a fresh clone to your first real device sync.
 
 ### 0. Prerequisites
 
@@ -113,11 +273,11 @@ Arch example: `sudo pacman -S uv ffmpeg chromaprint deno nodejs npm`
 (drop `deno`/`nodejs npm` for whichever of YouTube Music/the web GUI
 you're skipping). Package names are equivalent on other distros/Homebrew.
 
-**Deploying straight to a homelab instead?** Docker builds every
-dependency for you except the prerequisites above — you still need them
-installed on whichever machine the iPod itself plugs into, since that
-part always runs bare metal regardless of Docker (see "Deploying on a
-homelab" further down). Skip to there once you've done step 1 below.
+**Would rather use Docker?** See the ["Docker
+(recommended)"](#docker-recommended) section above instead — it builds
+every dependency below for you except on whichever machine the iPod
+itself plugs into, since the actual device sync always runs bare metal
+regardless of Docker.
 
 ### 1. Install and verify
 
@@ -129,9 +289,9 @@ uv run pytest   # root workspace tests, should all pass
 ```
 
 `services/fetcher-spotify` and `services/sync-orchestrator` are
-separate, standalone `uv` projects (see "Running it" below) — their
-tests run with their own `uv run pytest`, inside their own directories,
-not picked up by the command above.
+separate, standalone `uv` projects — their tests run with their own
+`uv run pytest`, inside their own directories, not picked up by the
+command above.
 
 ### 2. Start the web GUI (optional, but the easiest way to do steps 3–5)
 
@@ -158,9 +318,9 @@ commands below do).
 The Sync screen (step 7) additionally needs real access to the iPod's
 block device, so it only works when this process runs on the same
 machine the iPod is physically connected to — everything else (Sources,
-Credentials, Podcasts, Profiles) works from anywhere. Deploying this to
-a homelab instead of running it locally? See "Deploying on a homelab"
-further down — same web GUI, packaged as a Docker image.
+Credentials, Podcasts, Profiles) works from anywhere. This is also
+exactly what the [Docker path](#docker-recommended) above packages up
+as one container, if you'd rather not run it bare metal at all.
 
 ### 3. Pick which sources you're using
 
@@ -321,76 +481,31 @@ matching by serial instead of volume label, and the one-command
 from the browser — "Compute plan" (read-only), review it (same
 `to_remove` list), then "Execute sync" (asks to confirm before removals
 are actually allowed). Only reachable if you started the GUI (step 2)
-on this same machine, or via the privileged Docker container described
-in "Deploying on a homelab."
+on this same machine, or via the [Docker path](#docker-recommended)'s
+privileged container.
 
 ### 8. Automate it (optional)
 
-Once the above works end to end by hand, see "Running it" below for
-scheduled unattended fetching and fully-automatic sync-on-connect —
-neither is required, both build on exactly the commands above.
+Once the above works end to end by hand: scheduled, unattended fetching
+is `uv run --project services/fetch-scheduler fetch-scheduler
+--config-root config` (continuous, or `--once` under cron/a systemd
+timer — full details in
+[`services/fetch-scheduler/README.md`](services/fetch-scheduler/README.md)).
+Fully-automatic device sync on connect needs a one-time manual install
+(`sudo`, touches system udev/systemd config — deliberately not
+automated):
+[`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#automation-m9-auto-sync--udev).
+Neither is required, both build on exactly the commands above.
 
 **Web GUI**: the Sync screen's "Set up auto-sync" card generates the
 exact, filled-in systemd unit + udev rule text and the `sudo` commands
-to install them (matching "Running it" option 3 below) — it never runs
-those commands itself, so you still copy/paste and run them by hand
-once, same one-time install either path.
+for that same fully-automatic install — it never runs those commands
+itself, so you still copy/paste and run them by hand once, same
+one-time install either path.
 
-### Running it
+### Reference: running individual pieces
 
-Three ways to run this, roughly in order of "how hands-off do you want
-it to be." All examples assume you're at the repo root with a real
-profile at `config/profiles/<you>.yaml` (see Setup above).
-
-**1. One-shot manual fetch** — fetches every playlist across every
-source, plus podcasts, for a profile in one call:
-
-```bash
-uv run music-stack fetch --profile config/profiles/<you>.yaml
-```
-
-Full flag reference: [`services/music-stack-cli/README.md`](services/music-stack-cli/README.md).
-
-**2. Scheduled, unattended fetching** — runs continuously (or via
-cron/systemd timer with `--once`), fetching whatever's due per each
-playlist's/show's own `fetch_schedule` (a cron expression in profile
-config), independent of whether any device is connected. Also runs
-library dedup/cleanup and device backup retention automatically, if
-enabled:
-
-```bash
-uv run --project services/fetch-scheduler fetch-scheduler --config-root config
-```
-
-Full details, config schema, and the maintenance-task flags:
-[`services/fetch-scheduler/README.md`](services/fetch-scheduler/README.md).
-
-**3. Fully automatic device sync on connect** — plugging the iPod in
-triggers a real sync with no manual command at all, via a udev rule →
-systemd service. Requires a one-time manual install (`sudo`, touches
-system udev/systemd config — deliberately not automated):
-[`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#automation-m9-auto-sync--udev).
-
-**Audiobooks** — manual, one-off per book (no automated acquisition
-exists, see M15 above): merge a folder of MP3 parts into one tagged,
-chaptered `.m4b`, then sync it like anything else via `--pc-folder`:
-
-```bash
-uv run audiobook-manager import-audiobook \
-    --parts-dir "path/to/Author - Title" \
-    --library-root library/audiobooks --state-root state
-```
-
-`audiobook-manager discover --root <drop-zone> --state-root state` scans
-a folder of raw, not-yet-processed parts folders and flags which ones
-still need the `import-audiobook` step above — the web GUI's Audiobooks
-screen wraps the same thing (a "Discover new audiobooks" card that can
-kick off processing without leaving the browser). Full details:
-[`services/audiobook-manager/README.md`](services/audiobook-manager/README.md).
-
----
-
-Each of the above composes smaller, independently-usable services — see
+Every step above composes smaller, independently-usable services — see
 their own READMEs for manual/advanced usage (single-playlist fetches,
 listing an account's playlists, pushing podcast play-state back to
 Pocket Casts, running dedup on demand, plan-only device syncs, etc.):
@@ -403,59 +518,37 @@ Pocket Casts, running dedup on demand, plan-only device syncs, etc.):
 | [`fetcher-spotify`](services/fetcher-spotify/README.md) | Spotify playlist downloader (`zotify`) — shelved, blocked on a Premium requirement |
 | [`library-manager`](services/library-manager/README.md) | Cross-source dedup + quarantine cleanup |
 | [`podcast-manager`](services/podcast-manager/README.md) | Pocket Casts client, episode downloader, play-state push-back |
-| [`music-stack-cli`](services/music-stack-cli/README.md) | The unified `music-stack fetch` command |
+| [`music-stack-cli`](services/music-stack-cli/README.md) | The unified `music-stack fetch` command — also a Docker service (`music-stack`), see the Docker setup path above |
 | [`fetch-scheduler`](services/fetch-scheduler/README.md) | Cron-scheduled fetching + automatic library/backup maintenance |
 | [`sync-orchestrator`](services/sync-orchestrator/README.md) | Device sync engine (bare metal) + `auto-sync`/udev automation + `full-sync` (interactive fetch+device in one command) |
 | [`audiobook-manager`](services/audiobook-manager/README.md) | Merges manually-acquired MP3 parts into a tagged, chaptered `.m4b` (ffmpeg + beets-audible) |
 | [`web-gui-backend`](services/web-gui-backend/README.md) | FastAPI service for the web GUI (M11) — reads/writes `config/` through the same loader every CLI tool uses; also the one Docker service built with real (`--privileged`) device access, for its Sync screen |
 | [`web-gui-frontend`](services/web-gui-frontend/README.md) | React/Vite SPA for the web GUI — Overview, Profiles, Music sources, Podcasts screens + credential capture forms so far |
 
-Device sync (`sync-orchestrator`) needs the iPod connected/mounted and
-must run on bare metal, not through Docker (see Architecture below) —
-plan-only first, review the plan (especially `to_remove`), then
-`--execute`:
+Bare-metal device sync (this section's own step 7 above) needs the
+iPod connected/mounted and can't run through Docker the way every
+other CLI command in this section can — see "Why the sync step needs
+privileged Docker access" up in the Docker section for the full
+reasoning (the Docker path's own Sync screen works around this with a
+`--privileged` container instead).
 
-```bash
-cd services/sync-orchestrator
-uv run sync-orchestrator sync \
-    --profile ../../config/profiles/<you>.yaml \
-    --library-root ../../library \
-    --state-root ../../state
-# review the plan, then:
-uv run sync-orchestrator sync \
-    --profile ../../config/profiles/<you>.yaml \
-    --library-root ../../library \
-    --state-root ../../state \
-    --execute
-```
-
-For fetch + device sync in one interactive command instead (bare
-profile name, no other paths needed) see `full-sync` in
+For fetch + device sync in one bare-metal command instead of the two
+separate steps this section's step 6/7 use (same `cd
+services/sync-orchestrator` as above, bare profile name, no other
+paths needed) — see `full-sync` in
 [`services/sync-orchestrator/README.md`](services/sync-orchestrator/README.md#one-command-fetch--device-full-sync):
 
 ```bash
 uv run sync-orchestrator full-sync --profile <you> --config-root ../../config
 ```
 
-### Running with Docker
-
-`fetch-scheduler` is the one long-running Compose service — `restart:
-unless-stopped`, no profile gate, always included:
-
-```bash
-docker compose up -d fetch-scheduler
-```
-
-That's the containerized equivalent of "Running it" option 2 above
-(scheduled fetching + automatic maintenance) — it reads the same
-`config/global.yaml`/`config/profiles/*.yaml` and bind-mounts the same
-`library/`/`state/` directories a bare-metal run would use.
-
-Individual fetcher containers are one-shot and gated behind Compose
-profiles instead, one per music source (`apple`, `spotify`, `ytmusic`),
-matching `global.yaml`'s `sources.*.enabled` flags — useful for a manual
-run without invoking `uv` directly. `library-manager` and
-`podcast-manager` have no profile and always run when invoked.
+**Docker, one source/task at a time** — beyond the `music-stack`/
+`fetch-scheduler`/`web-gui-backend` services already covered in the
+Docker section above, individual fetcher containers are also one-shot
+and gated behind Compose profiles, one per music source (`apple`,
+`spotify`, `ytmusic`), matching `global.yaml`'s `sources.*.enabled`
+flags — useful to fetch just one source without touching `.env`'s
+`COMPOSE_PROFILES`:
 
 ```bash
 docker compose --profile apple up
@@ -468,11 +561,10 @@ reachable before `fetcher-ytmusic` can actually download anything (not
 just an optional nicety — every download fails without it). See
 `services/fetcher-ytmusic/README.md` for setup.
 
-`audiobook-manager` is also gated behind its own profile, but for a
-different reason than the fetchers — it's a manual, one-book-at-a-time
-CLI tool (not tied to any `global.yaml` flag), and it pulls in beets'
-real dependency weight (`numpy`/`scipy`/`numba`/`llvmlite`), so it isn't
-built by default:
+`audiobook-manager` is a manual, one-book-at-a-time CLI tool (not tied
+to any `global.yaml` flag, and pulling in beets' real dependency weight
+— `numpy`/`scipy`/`numba`/`llvmlite`), so it's gated behind its own
+profile and isn't built by default either way:
 
 ```bash
 docker compose --profile audiobooks run --rm audiobook-manager \
@@ -480,74 +572,16 @@ docker compose --profile audiobooks run --rm audiobook-manager \
     --library-root /data/library/audiobooks --state-root /data/state
 ```
 
-Or set `COMPOSE_PROFILES` in `.env` once instead of passing `--profile`
-every time (see `.env.example`). Compose doesn't read `global.yaml`
-itself, so keep the two in sync by hand — enabling a source there
-without also enabling its profile here just means that fetcher's
-container never runs.
-
-`web-gui-backend` is the one Compose service that runs `--privileged`
-— its Sync screen needs real access to the iPod's block device (see
-"Deploying on a homelab" below for the full explanation):
-
-```bash
-docker compose up -d web-gui-backend
-```
-
-### Deploying on a homelab
-
-The whole stack minus the bare-metal auto-sync piece (see below) is one
-`docker compose up -d --build` on a homelab server with the iPod plugged
-directly into it:
-
-1. Clone this repo onto the server, set up `config/global.yaml` +
-   `config/profiles/<you>.yaml` (see Setup above), copy `.env.example`
-   to `.env` and fill in `COMPOSE_PROFILES` for the sources you use.
-2. In `.env`, set `HOST_MEDIA_ROOT` to wherever this host auto-mounts
-   removable media if it isn't the default `/run/media` — check with
-   `lsblk -o NAME,LABEL,MOUNTPOINT` after plugging the iPod in once.
-   Set `WEB_GUI_PORT` if `8420` is already taken.
-3. `docker compose up -d --build fetch-scheduler web-gui-backend` (add
-   `--profile apple`/etc. for whichever fetcher sources you use — see
-   above). `--build` matters here: unlike a typical self-hosted app,
-   there's no prebuilt image on a registry to pull, every service here
-   builds from this repo's own Dockerfiles.
-4. Visit `http://<server>:8420/` — configure profiles/sources/podcasts
-   from the browser, same as running it locally.
-5. For **unattended** sync-on-connect (not just the Sync screen's manual
-   buttons), install the bare-metal systemd unit + udev rule the Sync
-   screen's "Set up auto-sync" card generates (`GET /api/auto-sync/
-   setup`) — this part is deliberately *not* containerized (see
-   `services/sync-orchestrator/README.md`'s automation section and
-   `notes.md`'s "Distribution: why sync-orchestrator isn't containerized
-   too"), and keeps working independently of whether the container
-   stack is even up.
-
-**`web-gui-backend`'s `--privileged` mode, honestly**: its image vendors
-a full second `sync-orchestrator` install (own venv, own `iopenpod`
-dependency tree — see `services/web-gui-backend/Dockerfile`) so the Sync
-screen's "identify device"/"compute plan"/"execute" buttons work by
-shelling out to it, exactly like the bare-metal CLI does. That needs
-real block-device + mount access, which is why the Compose service runs
-`--privileged` with `/dev`, the host's D-Bus socket, and its
-removable-media mount root all bound in — see the extensive comments on
-that service in `docker-compose.yml` for exactly what each mount is for.
-**This whole path (a container reaching a real iPod through the host's
-udisks2/D-Bus stack) was built and documented from reading the actual
-code, but not live-verified against a running homelab deployment** — no
-Docker daemon was available to build/run it in the environment this was
-built in. If "identify device" doesn't find a connected iPod after
-deploying, the CLI's own `docker compose exec web-gui-backend uv run
---project services/sync-orchestrator sync-orchestrator identify-device`
-is the first thing to try directly, to see the real error past the web
-GUI's "not connected" degradation (`overview.py`/`sync.py` both swallow
-`DeviceIdentifyError` into that message rather than surfacing it) — most
-likely culprits are `HOST_MEDIA_ROOT` not matching your distro, or
-`/run/dbus/system_bus_socket` not existing at that exact path on the
-host. The reliable fallback either way is the bare-metal auto-sync from
-step 5, which doesn't depend on any of this container-specific plumbing
-— that path is the one actually live-verified this session (see
-`notes.md`'s 2026-09-03/2026-09-08 entries).
+(bare metal: `uv run audiobook-manager import-audiobook --parts-dir
+"path/to/Author - Title" --library-root library/audiobooks --state-root
+state`.) `audiobook-manager discover --root <drop-zone> --state-root
+state` (add the `--profile audiobooks run --rm audiobook-manager` shape
+above for the Docker equivalent) scans a folder of raw, not-yet-
+processed parts folders and flags which ones still need the
+`import-audiobook` step above — the web GUI's Audiobooks screen wraps
+the same thing (a "Discover new audiobooks" card that can kick off
+processing without leaving the browser). Full details:
+[`services/audiobook-manager/README.md`](services/audiobook-manager/README.md).
 
 ## Architecture
 
@@ -561,7 +595,8 @@ step 5, which doesn't depend on any of this container-specific plumbing
   that specifically wasn't worth it for a background daemon. The web
   GUI's on-demand Sync screen is the one exception that does run
   containerized with real device access anyway (`--privileged`, see
-  "Deploying on a homelab" above) — a good enough tradeoff for a button a
+  "Why the sync step needs privileged Docker access" above) — a good
+  enough tradeoff for a button a
   human clicks, worse for what would otherwise be sync-orchestrator's own
   always-on hotplug listener.
 - **Config is the only source of truth** — no database of settings, no
