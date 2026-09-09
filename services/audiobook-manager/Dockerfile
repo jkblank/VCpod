@@ -13,4 +13,8 @@ COPY services/audiobook-manager /app/services/audiobook-manager
 
 RUN uv sync --frozen --no-dev --package audiobook-manager
 
-ENTRYPOINT ["uv", "run", "audiobook-manager"]
+# --frozen --no-dev: see services/fetcher-apple/Dockerfile's ENTRYPOINT
+# comment -- without these, a bare `uv run` re-checks the full project
+# on every invocation/restart and crash-loops against this image's
+# necessarily-partial services/ COPY.
+ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "audiobook-manager"]

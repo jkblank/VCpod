@@ -67,7 +67,7 @@ services:
       - ./config:/config:ro
       - ./library:/data/library
       - ./state:/data/state
-    entrypoint: ["uv", "run", "music-stack", "fetch", "--global-config", "/config/global.yaml", "--library-root", "/data/library", "--state-root", "/data/state"]
+    entrypoint: ["uv", "run", "--frozen", "--no-dev", "music-stack", "fetch", "--global-config", "/config/global.yaml", "--library-root", "/data/library", "--state-root", "/data/state"]
 
   library-manager:
     build:
@@ -178,11 +178,46 @@ services:
       # freshly-plugged-in iPod to be found without a container restart).
       # Adjust HOST_MEDIA_ROOT in .env if your distro doesn't auto-mount
       # under /run/media (Debian/Ubuntu typically use /media/$USER).
+      # create_host_path: a bare bind mount fails outright ("bind source
+      # path does not exist") on a fresh headless server where nothing's
+      # ever been auto-mounted yet -- confirmed live on a real homelab
+      # deploy, /run/media didn't exist until something was actually
+      # plugged in. This creates it empty instead, same as udisks2 would
+      # lazily create it on first real mount.
       - type: bind
         source: ${HOST_MEDIA_ROOT:-/run/media}
         target: ${HOST_MEDIA_ROOT:-/run/media}
         bind:
           propagation: rslave
+          create_host_path: true
+      # ExternalLibraryConfig.path / AudiobookManagerConfig.discover_root
+      # (common/models.py) are real host paths used AS-IS -- unlike
+      # config/library/state above, they're never remapped to a fixed
+      # container-internal path (sync-orchestrator, which reads them
+      # bare metal, needs the exact same real path either way). So the
+      # only way this container's browse/discover routes
+      # (routers/external_library.py, routers/audiobooks_discover.py)
+      # can see them is an identity mount: same absolute path on both
+      # sides. Set EXTERNAL_LIBRARY_PATH/AUDIOBOOK_DISCOVER_ROOT in .env
+      # to your real absolute path(s) if you use either feature --
+      # unset, these default to two harmless, independent placeholders
+      # (the container-side default MUST be a fixed absolute path
+      # either way -- Docker rejects a relative mount target -- so it
+      # doesn't/can't match the host-side default, which is fine: unset
+      # means unused, so nothing needs them to agree). A setup with
+      # several profiles pointing at *different* external_library paths
+      # needs one such mount line per path -- add more by hand following
+      # this same pattern.
+      - type: bind
+        source: ${EXTERNAL_LIBRARY_PATH:-./state/unused-external-library}
+        target: ${EXTERNAL_LIBRARY_PATH:-/mnt/unused-external-library}
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${AUDIOBOOK_DISCOVER_ROOT:-./state/unused-audiobook-discover-root}
+        target: ${AUDIOBOOK_DISCOVER_ROOT:-/mnt/unused-audiobook-discover-root}
+        bind:
+          create_host_path: true
 
 # sync-orchestrator itself is intentionally not its own top-level service
 # here — it needs direct USB access to the iPod and runs bare metal (its

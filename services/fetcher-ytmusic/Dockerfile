@@ -13,4 +13,8 @@ COPY services/fetcher-ytmusic /app/services/fetcher-ytmusic
 
 RUN uv sync --frozen --no-dev --package fetcher-ytmusic
 
-ENTRYPOINT ["uv", "run", "fetcher-ytmusic"]
+# --frozen --no-dev: see services/fetcher-apple/Dockerfile's ENTRYPOINT
+# comment -- without these, a bare `uv run` re-checks the full project
+# on every invocation/restart and crash-loops against this image's
+# necessarily-partial services/ COPY.
+ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "fetcher-ytmusic"]
