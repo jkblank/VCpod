@@ -25,4 +25,12 @@ COPY services/fetch-scheduler /app/services/fetch-scheduler
 
 RUN uv sync --frozen --no-dev --package fetch-scheduler
 
-ENTRYPOINT ["uv", "run", "fetch-scheduler"]
+# --frozen --no-dev: see services/fetcher-apple/Dockerfile's ENTRYPOINT
+# comment -- without these, a bare `uv run` re-checks the full project
+# (incl. every *other* workspace member the dev group lists, e.g.
+# audiobook-manager/web-gui-backend, neither COPY'd above since this
+# service doesn't need them) on every invocation/restart and
+# crash-loops. Confirmed live: the RUN line above already succeeds
+# fine either way -- this crash was 100% at container startup, not
+# build.
+ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "fetch-scheduler"]

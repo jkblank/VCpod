@@ -9,4 +9,8 @@ COPY services/podcast-manager /app/services/podcast-manager
 
 RUN uv sync --frozen --no-dev --package podcast-manager
 
-ENTRYPOINT ["uv", "run", "podcast-manager"]
+# --frozen --no-dev: see services/fetcher-apple/Dockerfile's ENTRYPOINT
+# comment -- without these, a bare `uv run` re-checks the full project
+# on every invocation/restart and crash-loops against this image's
+# necessarily-partial services/ COPY.
+ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "podcast-manager"]

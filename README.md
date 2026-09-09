@@ -169,6 +169,13 @@ below for the exact, per-source instructions (cookie export, YouTube
 OAuth, Pocket Casts). Everything there applies here too; only *where*
 it ends up (a form field vs. a file you place yourself) differs.
 
+Using the **External library** screen (an existing music collection
+elsewhere on disk) or the Audiobooks screen's **discover** drop-zone?
+Those point at a real host path used as-is, unlike everything above —
+set `EXTERNAL_LIBRARY_PATH`/`AUDIOBOOK_DISCOVER_ROOT` in `.env` to that
+same path first (see the comments in `.env.example`), or the browser
+won't be able to see it.
+
 #### 5. First fetch
 
 ```bash

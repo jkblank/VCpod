@@ -75,4 +75,9 @@ RUN uv sync --project services/sync-orchestrator --frozen --no-dev
 COPY --from=frontend-build /app/dist /app/services/web-gui-frontend/dist
 
 EXPOSE 8420
-ENTRYPOINT ["uv", "run", "web-gui-backend"]
+# --frozen --no-dev: see services/fetcher-apple/Dockerfile's ENTRYPOINT
+# comment -- without these, a bare `uv run` re-checks the full root
+# workspace project (incl. members not needed/COPY'd here, e.g.
+# library-manager/fetch-scheduler/music-stack-cli) on every invocation/
+# restart and crash-loops.
+ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "web-gui-backend"]

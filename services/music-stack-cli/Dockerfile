@@ -19,4 +19,10 @@ COPY services/music-stack-cli /app/services/music-stack-cli
 
 RUN uv sync --frozen --no-dev --package music-stack-cli
 
-ENTRYPOINT ["uv", "run", "music-stack"]
+# --frozen --no-dev: see services/fetcher-apple/Dockerfile's ENTRYPOINT
+# comment -- without these, a bare `uv run` re-checks the full project
+# on every invocation/restart and crash-loops against this image's
+# necessarily-partial services/ COPY. docker-compose.yml's own
+# `entrypoint:` override for this service (not `command:`) replaces
+# this entirely, not appends to it -- keep both in sync.
+ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "music-stack"]
