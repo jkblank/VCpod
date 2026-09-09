@@ -178,18 +178,22 @@ services:
       # freshly-plugged-in iPod to be found without a container restart).
       # Adjust HOST_MEDIA_ROOT in .env if your distro doesn't auto-mount
       # under /run/media (Debian/Ubuntu typically use /media/$USER).
-      # create_host_path: a bare bind mount fails outright ("bind source
-      # path does not exist") on a fresh headless server where nothing's
-      # ever been auto-mounted yet -- confirmed live on a real homelab
-      # deploy, /run/media didn't exist until something was actually
-      # plugged in. This creates it empty instead, same as udisks2 would
-      # lazily create it on first real mount.
+      # MUST already exist on the host before your first `docker compose
+      # up`/`docker-compose up` -- a bind mount whose source doesn't
+      # exist yet fails outright ("bind source path does not exist"),
+      # confirmed live on a fresh homelab server where nothing had ever
+      # auto-mounted anything yet. bind.create_host_path (the Compose
+      # Specification's own fix for exactly this) was tried and reverted
+      # -- it isn't in docker-compose v1's (1.29.2) schema at all and
+      # broke the whole file outright there ("unsupported option:
+      # 'create_host_path'"), and this repo can't assume every deploy
+      # target is on the newer `docker compose` v2 plugin. Just:
+      #   sudo mkdir -p /run/media/<you>   # or your real HOST_MEDIA_ROOT
       - type: bind
         source: ${HOST_MEDIA_ROOT:-/run/media}
         target: ${HOST_MEDIA_ROOT:-/run/media}
         bind:
           propagation: rslave
-          create_host_path: true
       # ExternalLibraryConfig.path / AudiobookManagerConfig.discover_root
       # (common/models.py) are real host paths used AS-IS -- unlike
       # config/library/state above, they're never remapped to a fixed
@@ -199,25 +203,20 @@ services:
       # (routers/external_library.py, routers/audiobooks_discover.py)
       # can see them is an identity mount: same absolute path on both
       # sides. Set EXTERNAL_LIBRARY_PATH/AUDIOBOOK_DISCOVER_ROOT in .env
-      # to your real absolute path(s) if you use either feature --
-      # unset, these default to two harmless, independent placeholders
-      # (the container-side default MUST be a fixed absolute path
-      # either way -- Docker rejects a relative mount target -- so it
-      # doesn't/can't match the host-side default, which is fine: unset
-      # means unused, so nothing needs them to agree). A setup with
+      # to your real absolute path(s) if you use either feature -- each
+      # one MUST already exist on the host, same reasoning as
+      # HOST_MEDIA_ROOT just above. Unset, these default to this repo's
+      # own root (`.` -- guaranteed to already exist, no setup burden
+      # for the common case of not using either feature) mounted to a
+      # placeholder container path nothing ever reads. A setup with
       # several profiles pointing at *different* external_library paths
       # needs one such mount line per path -- add more by hand following
-      # this same pattern.
-      - type: bind
-        source: ${EXTERNAL_LIBRARY_PATH:-./state/unused-external-library}
-        target: ${EXTERNAL_LIBRARY_PATH:-/mnt/unused-external-library}
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ${AUDIOBOOK_DISCOVER_ROOT:-./state/unused-audiobook-discover-root}
-        target: ${AUDIOBOOK_DISCOVER_ROOT:-/mnt/unused-audiobook-discover-root}
-        bind:
-          create_host_path: true
+      # this same pattern. Plain short syntax here (no propagation
+      # needed, unlike HOST_MEDIA_ROOT) -- also sidesteps the long-syntax
+      # `bind:` object's schema differences across Compose versions
+      # entirely.
+      - ${EXTERNAL_LIBRARY_PATH:-.}:${EXTERNAL_LIBRARY_PATH:-/mnt/unused-external-library}
+      - ${AUDIOBOOK_DISCOVER_ROOT:-.}:${AUDIOBOOK_DISCOVER_ROOT:-/mnt/unused-audiobook-discover-root}
 
 # sync-orchestrator itself is intentionally not its own top-level service
 # here — it needs direct USB access to the iPod and runs bare metal (its
