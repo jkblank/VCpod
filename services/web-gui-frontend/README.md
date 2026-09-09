@@ -6,9 +6,13 @@ JSON REST API. Not part of the root `uv` workspace (this is a plain
 `npm` project) — see `services/web-gui-backend/README.md` for the
 Python side.
 
-Not yet packaged/documented as part of "Running it" in the root
-README — this is still an in-progress feature. See the root README's
-Status table and `notes.md` for where M11-M14 actually stand.
+Built and served by `web-gui-backend` itself for real use (`npm run
+build`, picked up automatically — see that service's README's "Running
+it as one process" and "Docker" sections) rather than run standalone;
+`npm run dev`/`vite preview` below are for frontend development only.
+See the root README's Setup section (Docker or manual) for the actual
+end-to-end path, and its Status table / `notes.md` for where M11-M15
+stand.
 
 ## Setup
 
