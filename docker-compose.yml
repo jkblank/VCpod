@@ -13,6 +13,21 @@
 # (`docker compose --profile audiobooks up`) — it's a manual, per-book CLI
 # tool, not something every profile needs by default, and it pulls in a
 # genuinely heavier dependency tree (beets).
+#
+# LIBRARY_ROOT/STATE_ROOT (.env, defaulting to the repo-relative
+# ./library, ./state every service below mounts) let library/ and
+# state/ live on a different filesystem than this checkout entirely --
+# set either to an absolute path (e.g. a RAID array mount point) if the
+# drive this repo lives on is too small for real acquired-music/backup
+# volume. Confirmed live: the default lands everything on whatever
+# drive `docker compose`/`docker-compose` is run from, with no warning,
+# which filled a real host's main drive fast enough to matter (a single
+# device's pre-sync backup snapshots alone were measured at 199GB, see
+# notes.md). Move any data that already landed in the old location
+# first (`mv library state /path/on/your/raid/`), THEN set these and
+# bring the stack back up -- Compose has no idea prior data existed
+# somewhere else, it just mounts whatever's at the new path, empty or
+# not.
 services:
   fetcher-apple:
     profiles: ["apple"]
@@ -22,8 +37,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   fetcher-spotify:
     profiles: ["spotify"]
@@ -33,8 +48,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   fetcher-ytmusic:
     profiles: ["ytmusic"]
@@ -44,8 +59,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   # The Docker equivalent of `uv run music-stack fetch --profile ...`
   # (see the top-level README's Setup) — fetches every playlist across
@@ -65,8 +80,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "music-stack", "fetch", "--global-config", "/config/global.yaml", "--library-root", "/data/library", "--state-root", "/data/state"]
 
   library-manager:
@@ -76,8 +91,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   podcast-manager:
     build:
@@ -86,8 +101,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   # M15: manual audiobook import (merge MP3 parts -> tagged .m4b via
   # beets-audible). Gated behind its own profile, unlike library-manager/
@@ -102,8 +117,8 @@ services:
       context: .
       dockerfile: services/audiobook-manager/Dockerfile
     volumes:
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   # M9: keeps library/ fresh on each playlist's/show's configured
   # fetch_schedule (see music-stack-planning.md), independently of whether
@@ -122,8 +137,8 @@ services:
     command: ["--config-root", "/config", "--library-root", "/data/library", "--state-root", "/data/state"]
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   # M11-M14: web GUI (config editor + Overview/Activity monitoring +
   # on-demand device sync). Unlike every service above, this one needs
@@ -161,8 +176,8 @@ services:
       - "${WEB_GUI_PORT:-8420}:8420"
     volumes:
       - ./config:/config
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
       # Real block-device nodes -- lsblk/eject/iopenpod's own device
       # enrichment all read these directly. privileged: true (above)
       # relaxes the device cgroup; this makes sure the nodes themselves
