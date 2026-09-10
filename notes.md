@@ -4770,6 +4770,41 @@ landed succeeded (`activity` log: added 1, removed 7 tracks, including
 the previously-conflicting episodes) — the two prior attempts at this
 exact state had both failed with `update_conflicts_with_remove`.
 
+## 2026-09-10: audiobook-manager couldn't handle a single pre-merged .m4b
+
+Reported live: dropping an already-complete `.m4b` (downloaded
+pre-made, or ripped as one file rather than per-chapter parts) into the
+audiobooks drop-zone showed up as a real discovered candidate
+(`discover.py`'s `_AUDIO_EXTENSIONS` already includes `.m4b`), but
+`import-audiobook`/`merge` always failed with "no .mp3/.m4a files
+found" — `merge.py`'s own parts-discovery whitelist
+(`_PART_SUFFIXES = {".mp3", ".m4a"}`) never included `.m4b` at all.
+Discover and merge disagreed about what counts as a real book — a
+genuine oversight, not an edge case anyone had hit before.
+
+Fix: new `merge.find_pre_merged_m4b()` — a folder containing *exactly*
+one `.m4b` and nothing else is recognized as already-complete and
+copied straight through to the staging path unchanged, skipping the
+ffmpeg concat+re-encode pipeline entirely (which would otherwise
+needlessly re-encode an already-encoded file — lossy source: a real
+quality loss; lossless source: ~16x the storage for no gain — and
+replace whatever real per-chapter breakdown it may already have
+embedded with a single synthetic whole-book chapter).  Deliberately
+narrow: a `.m4b` mixed with real `.mp3`/`.m4a` parts, or more than one
+`.m4b` with nothing else, is genuinely ambiguous and left to the
+existing behavior (the real parts still merge normally in the mixed
+case; the same "no .mp3/.m4a files found" error as before in the
+multiple-`.m4b` case) rather than guessing which file(s) are "the"
+book.
+
+**Verified**: 5 new unit tests (`find_pre_merged_m4b`'s four
+detect/ambiguous-none cases) plus an end-to-end
+`merge_parts_to_m4b` test asserting the output is byte-identical to a
+synthesized source `.m4b` (confirming a real copy-through, not a
+re-encode); full audiobook-manager suite (42 passed) and root workspace
+suite (551 passed). Not yet verified against the user's real reported
+book on the homelab.
+
 ## 2026-09-03: `config/profiles/john-copy.yaml` removed (user action, not a bug)
 
 `services/common/tests/test_config.py::test_example_profiles_load`
