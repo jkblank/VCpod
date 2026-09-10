@@ -103,6 +103,28 @@ def discover_parts(parts_dir: Path | str) -> list[Path]:
     return parts
 
 
+def find_pre_merged_m4b(parts_dir: Path | str) -> Path | None:
+    """A drop-zone folder containing exactly one .m4b and no .mp3/.m4a
+    parts isn't raw parts at all -- it's already a single, complete
+    audiobook file (e.g. downloaded pre-made, or ripped as one file
+    rather than per-chapter). Returns that file, or None if parts_dir
+    looks like a normal multi-part source instead (this deliberately
+    doesn't try to guess at multiple .m4b files, or a .m4b mixed with
+    real parts -- genuinely ambiguous, left to discover_parts' existing
+    error/normal-merge behavior). Real oversight this fixes: discover.py
+    already lists a folder like this as a valid candidate (.m4b is in
+    its own _AUDIO_EXTENSIONS), but merge_parts_to_m4b used to always
+    fail on it with "no .mp3/.m4a files found" -- discover and merge
+    disagreed about what counts as a real book. See notes.md."""
+    parts_dir = Path(parts_dir)
+    entries = list(parts_dir.iterdir())
+    m4b_files = [p for p in entries if p.is_file() and p.suffix.lower() == ".m4b"]
+    other_parts = [p for p in entries if p.is_file() and p.suffix.lower() in _PART_SUFFIXES]
+    if len(m4b_files) == 1 and not other_parts:
+        return m4b_files[0]
+    return None
+
+
 def probe_duration_seconds(ffprobe_path: str, path: Path) -> float:
     result = subprocess.run(
         [
@@ -172,11 +194,23 @@ def merge_parts_to_m4b(
     auto-selected per select_encoding's source-matching/lossless-cutover
     policy. Pass an explicit value (e.g. "64k") only to force a flat
     lossy AAC bitrate regardless of source, overriding that policy."""
-    ffmpeg_path = find_ffmpeg()
-    ffprobe_path = find_ffprobe()
     parts_dir = Path(parts_dir).resolve()
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pre_merged = find_pre_merged_m4b(parts_dir)
+    if pre_merged is not None:
+        # Already a single, complete .m4b -- copied through as-is rather
+        # than run through the concat+re-encode pipeline below, which
+        # would needlessly re-encode it (lossy source: a real quality
+        # loss; lossless source: 16x the storage for no gain) and
+        # replace whatever real per-chapter breakdown it may already
+        # have embedded with a single synthetic whole-book chapter.
+        shutil.copyfile(pre_merged, output_path)
+        return output_path
+
+    ffmpeg_path = find_ffmpeg()
+    ffprobe_path = find_ffprobe()
     if title is None:
         title = derive_title_from_folder_name(parts_dir.name)
 

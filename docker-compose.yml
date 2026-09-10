@@ -13,6 +13,21 @@
 # (`docker compose --profile audiobooks up`) — it's a manual, per-book CLI
 # tool, not something every profile needs by default, and it pulls in a
 # genuinely heavier dependency tree (beets).
+#
+# LIBRARY_ROOT/STATE_ROOT (.env, defaulting to the repo-relative
+# ./library, ./state every service below mounts) let library/ and
+# state/ live on a different filesystem than this checkout entirely --
+# set either to an absolute path (e.g. a RAID array mount point) if the
+# drive this repo lives on is too small for real acquired-music/backup
+# volume. Confirmed live: the default lands everything on whatever
+# drive `docker compose`/`docker-compose` is run from, with no warning,
+# which filled a real host's main drive fast enough to matter (a single
+# device's pre-sync backup snapshots alone were measured at 199GB, see
+# notes.md). Move any data that already landed in the old location
+# first (`mv library state /path/on/your/raid/`), THEN set these and
+# bring the stack back up -- Compose has no idea prior data existed
+# somewhere else, it just mounts whatever's at the new path, empty or
+# not.
 services:
   fetcher-apple:
     profiles: ["apple"]
@@ -22,8 +37,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   fetcher-spotify:
     profiles: ["spotify"]
@@ -33,8 +48,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   fetcher-ytmusic:
     profiles: ["ytmusic"]
@@ -44,8 +59,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   # The Docker equivalent of `uv run music-stack fetch --profile ...`
   # (see the top-level README's Setup) — fetches every playlist across
@@ -65,8 +80,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "music-stack", "fetch", "--global-config", "/config/global.yaml", "--library-root", "/data/library", "--state-root", "/data/state"]
 
   library-manager:
@@ -76,8 +91,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   podcast-manager:
     build:
@@ -86,8 +101,8 @@ services:
     env_file: .env
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   # M15: manual audiobook import (merge MP3 parts -> tagged .m4b via
   # beets-audible). Gated behind its own profile, unlike library-manager/
@@ -102,8 +117,8 @@ services:
       context: .
       dockerfile: services/audiobook-manager/Dockerfile
     volumes:
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   # M9: keeps library/ fresh on each playlist's/show's configured
   # fetch_schedule (see music-stack-planning.md), independently of whether
@@ -122,8 +137,8 @@ services:
     command: ["--config-root", "/config", "--library-root", "/data/library", "--state-root", "/data/state"]
     volumes:
       - ./config:/config:ro
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
 
   # M11-M14: web GUI (config editor + Overview/Activity monitoring +
   # on-demand device sync). Unlike every service above, this one needs
@@ -161,8 +176,8 @@ services:
       - "${WEB_GUI_PORT:-8420}:8420"
     volumes:
       - ./config:/config
-      - ./library:/data/library
-      - ./state:/data/state
+      - ${LIBRARY_ROOT:-./library}:/data/library
+      - ${STATE_ROOT:-./state}:/data/state
       # Real block-device nodes -- lsblk/eject/iopenpod's own device
       # enrichment all read these directly. privileged: true (above)
       # relaxes the device cgroup; this makes sure the nodes themselves
@@ -178,18 +193,22 @@ services:
       # freshly-plugged-in iPod to be found without a container restart).
       # Adjust HOST_MEDIA_ROOT in .env if your distro doesn't auto-mount
       # under /run/media (Debian/Ubuntu typically use /media/$USER).
-      # create_host_path: a bare bind mount fails outright ("bind source
-      # path does not exist") on a fresh headless server where nothing's
-      # ever been auto-mounted yet -- confirmed live on a real homelab
-      # deploy, /run/media didn't exist until something was actually
-      # plugged in. This creates it empty instead, same as udisks2 would
-      # lazily create it on first real mount.
+      # MUST already exist on the host before your first `docker compose
+      # up`/`docker-compose up` -- a bind mount whose source doesn't
+      # exist yet fails outright ("bind source path does not exist"),
+      # confirmed live on a fresh homelab server where nothing had ever
+      # auto-mounted anything yet. bind.create_host_path (the Compose
+      # Specification's own fix for exactly this) was tried and reverted
+      # -- it isn't in docker-compose v1's (1.29.2) schema at all and
+      # broke the whole file outright there ("unsupported option:
+      # 'create_host_path'"), and this repo can't assume every deploy
+      # target is on the newer `docker compose` v2 plugin. Just:
+      #   sudo mkdir -p /run/media/<you>   # or your real HOST_MEDIA_ROOT
       - type: bind
         source: ${HOST_MEDIA_ROOT:-/run/media}
         target: ${HOST_MEDIA_ROOT:-/run/media}
         bind:
           propagation: rslave
-          create_host_path: true
       # ExternalLibraryConfig.path / AudiobookManagerConfig.discover_root
       # (common/models.py) are real host paths used AS-IS -- unlike
       # config/library/state above, they're never remapped to a fixed
@@ -199,25 +218,20 @@ services:
       # (routers/external_library.py, routers/audiobooks_discover.py)
       # can see them is an identity mount: same absolute path on both
       # sides. Set EXTERNAL_LIBRARY_PATH/AUDIOBOOK_DISCOVER_ROOT in .env
-      # to your real absolute path(s) if you use either feature --
-      # unset, these default to two harmless, independent placeholders
-      # (the container-side default MUST be a fixed absolute path
-      # either way -- Docker rejects a relative mount target -- so it
-      # doesn't/can't match the host-side default, which is fine: unset
-      # means unused, so nothing needs them to agree). A setup with
+      # to your real absolute path(s) if you use either feature -- each
+      # one MUST already exist on the host, same reasoning as
+      # HOST_MEDIA_ROOT just above. Unset, these default to this repo's
+      # own root (`.` -- guaranteed to already exist, no setup burden
+      # for the common case of not using either feature) mounted to a
+      # placeholder container path nothing ever reads. A setup with
       # several profiles pointing at *different* external_library paths
       # needs one such mount line per path -- add more by hand following
-      # this same pattern.
-      - type: bind
-        source: ${EXTERNAL_LIBRARY_PATH:-./state/unused-external-library}
-        target: ${EXTERNAL_LIBRARY_PATH:-/mnt/unused-external-library}
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ${AUDIOBOOK_DISCOVER_ROOT:-./state/unused-audiobook-discover-root}
-        target: ${AUDIOBOOK_DISCOVER_ROOT:-/mnt/unused-audiobook-discover-root}
-        bind:
-          create_host_path: true
+      # this same pattern. Plain short syntax here (no propagation
+      # needed, unlike HOST_MEDIA_ROOT) -- also sidesteps the long-syntax
+      # `bind:` object's schema differences across Compose versions
+      # entirely.
+      - ${EXTERNAL_LIBRARY_PATH:-.}:${EXTERNAL_LIBRARY_PATH:-/mnt/unused-external-library}
+      - ${AUDIOBOOK_DISCOVER_ROOT:-.}:${AUDIOBOOK_DISCOVER_ROOT:-/mnt/unused-audiobook-discover-root}
 
 # sync-orchestrator itself is intentionally not its own top-level service
 # here — it needs direct USB access to the iPod and runs bare metal (its

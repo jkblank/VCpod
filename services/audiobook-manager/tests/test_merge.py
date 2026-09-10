@@ -13,6 +13,7 @@ from audiobook_manager.merge import (
     discover_parts,
     find_ffmpeg,
     find_ffprobe,
+    find_pre_merged_m4b,
     merge_parts_to_m4b,
     probe_bitrate_kbps,
     select_encoding,
@@ -33,6 +34,24 @@ def _make_synthetic_mp3(path: Path, *, bitrate_kbps: int, channels: int = 2) -> 
             "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
             "-ac", str(channels),
             "-c:a", "libmp3lame", "-b:a", f"{bitrate_kbps}k",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+def _make_synthetic_m4b(path: Path, *, duration: float = 1.0) -> Path:
+    """1-second sine-wave .m4b, standing in for an already-complete
+    audiobook file dropped straight into the drop zone (e.g. downloaded
+    pre-made, or ripped as one file rather than per-chapter parts)."""
+    subprocess.run(
+        [
+            find_ffmpeg(),
+            "-y", "-v", "error",
+            "-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}",
+            "-c:a", "aac", "-b:a", "64k",
             str(path),
         ],
         check=True,
@@ -64,6 +83,39 @@ def test_discover_parts_accepts_m4a(tmp_path: Path) -> None:
     parts = discover_parts(tmp_path)
 
     assert [p.name for p in parts] == ["01.m4a", "02.m4a"]
+
+
+def test_find_pre_merged_m4b_detects_lone_m4b(tmp_path: Path) -> None:
+    (tmp_path / "book.m4b").write_bytes(b"")
+
+    found = find_pre_merged_m4b(tmp_path)
+
+    assert found == tmp_path / "book.m4b"
+
+
+def test_find_pre_merged_m4b_none_for_normal_parts(tmp_path: Path) -> None:
+    (tmp_path / "01.mp3").write_bytes(b"")
+    (tmp_path / "02.mp3").write_bytes(b"")
+
+    assert find_pre_merged_m4b(tmp_path) is None
+
+
+def test_find_pre_merged_m4b_none_when_mixed_with_real_parts(tmp_path: Path) -> None:
+    # Ambiguous (a stray .m4b alongside real .mp3/.m4a parts) -- left to
+    # discover_parts' normal multi-part merge, not guessed at here.
+    (tmp_path / "book.m4b").write_bytes(b"")
+    (tmp_path / "01.mp3").write_bytes(b"")
+
+    assert find_pre_merged_m4b(tmp_path) is None
+
+
+def test_find_pre_merged_m4b_none_for_multiple_m4b_files(tmp_path: Path) -> None:
+    # Also ambiguous (could be genuinely split .m4b parts) -- left alone
+    # rather than guessing which one is "the" book.
+    (tmp_path / "part1.m4b").write_bytes(b"")
+    (tmp_path / "part2.m4b").write_bytes(b"")
+
+    assert find_pre_merged_m4b(tmp_path) is None
 
 
 def test_build_ffmetadata_chapter_boundaries() -> None:
@@ -128,6 +180,20 @@ def test_merge_parts_to_m4b_end_to_end(tmp_path: Path) -> None:
         check=True,
     )
     assert 5.5 <= float(duration.stdout.strip()) <= 6.5
+
+
+def test_merge_parts_to_m4b_passes_through_a_lone_pre_merged_m4b(tmp_path: Path) -> None:
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    source = _make_synthetic_m4b(parts_dir / "already-a-book.m4b", duration=2.0)
+
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b")
+
+    assert output.is_file()
+    # Byte-identical -- confirms this really is a copy-through, not a
+    # (lossy) re-encode of an already-complete file via the ffmpeg
+    # concat pipeline below.
+    assert output.read_bytes() == source.read_bytes()
 
 
 def test_probe_bitrate_kbps_reads_source_bitrate() -> None:

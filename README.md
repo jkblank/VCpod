@@ -130,8 +130,16 @@ cp .env.example .env
 Edit `.env`: set `COMPOSE_PROFILES` for the sources you use (`apple`,
 `ytmusic`, `spotify` — see the comments in `.env.example`), and, if
 this is a headless server rather than your own desktop, `HOST_MEDIA_ROOT`
-(wherever this host auto-mounts removable media) and `WEB_GUI_PORT` if
-`8420` is already taken.
+(wherever this host auto-mounts removable media — **not** literally
+`/media/$USER`, `.env` doesn't expand shell variables; use your real
+username) and `WEB_GUI_PORT` if `8420` is already taken.
+
+Then create that directory if it doesn't exist yet (Compose doesn't
+reliably auto-create a missing bind mount source across versions):
+
+```bash
+sudo mkdir -p /run/media/<your actual username>   # or your real HOST_MEDIA_ROOT
+```
 
 #### 3. Bring up the stack
 

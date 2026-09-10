@@ -55,6 +55,19 @@ file into `library/audiobooks/{Author}/{Album}/{Title}.m4b` (plus
 `cover.png`/`desc.txt`/`reader.txt` sidecars) and the empty staging
 folder is removed.
 
+**A folder containing exactly one already-complete `.m4b`** (downloaded
+pre-made, or ripped as a single file rather than per-chapter parts) is
+also a valid `--parts-dir` — it's passed straight through to tagging
+unchanged rather than re-encoded (a wasteful, lossy round-trip for an
+already-encoded file, which would also throw away whatever real
+per-chapter breakdown it already has embedded). This only fires for *exactly* one `.m4b` and nothing else in the
+folder — genuinely ambiguous combinations fall through to the normal
+multi-part merge unchanged: a stray `.m4b` alongside real `.mp3`/`.m4a`
+parts just gets silently ignored (the real parts still merge normally),
+and multiple `.m4b` files with nothing else still hits the same "no
+.mp3/.m4a files found" error as before this existed, since neither case
+guesses which file(s) are "the" book.
+
 ## Discovering what still needs processing
 
 If you drop several captured "Author - Title" folders into one drop-zone
