@@ -1,5 +1,31 @@
 # Notes / Future Work
 
+## 2026-09-11: a podcasts-only profile (playlists: []) could never sync at all
+
+Reported live: `sync-orchestrator sync` for the `Tobie` profile
+(homelab) failed with `FAIL: pc folder not found: /data/library/
+playlists/Tobie`. Root cause: `plan_sync`'s `pc_folders` tuple includes
+`library_root / "playlists" / profile.profile` as a bare path with no
+resolver of its own — unlike every *other* pc_folder (music/audiobooks/
+external-library), which each go through a `resolve_*_folder()` helper
+that guarantees its own directory exists first. `music-stack-cli` owns
+`library/playlists/{profile}/`, but only ever creates it as a side
+effect of writing a real playlist's `.m3u8` file there — a profile with
+`playlists: []` (confirmed: `Tobie.yaml`, podcasts-only) legitimately
+never has anything to write, so `music-stack fetch` never creates that
+directory no matter how many times it's run. "No playlists yet" is a
+completely normal state; it was being treated as a hard failure.
+
+Fix: `plan_sync` now `mkdir(parents=True, exist_ok=True)`s the
+playlists folder itself, right before adding it to `pc_folders` —
+mirroring what every other pc_folder already does.
+
+**Verified**: new `test_plan_sync_creates_missing_playlists_folder`
+(confirms the directory gets created and `plan_sync` proceeds past the
+old "pc folder not found" check); full sync-orchestrator suite (190
+passed) and root workspace suite (551 passed). Not yet re-verified
+against the real `Tobie` profile on the homelab.
+
 ## library-manager dedup had genuinely never been run — run for real, found a real duplicate
 
 User noticed some songs on the device had multiple copies and asked to

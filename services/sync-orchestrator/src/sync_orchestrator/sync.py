@@ -725,9 +725,21 @@ def plan_sync(
         state_root / ".music_staging" / profile.profile,
     )
 
+    # Unlike every other pc_folder above, this one has no resolve_*
+    # helper of its own to guarantee it exists first -- music-stack-cli
+    # owns this directory (README: "This command owns library/playlists/
+    # {profile}/"), but only ever creates it as a side effect of writing
+    # a real playlist's .m3u8 file there. A profile with playlists: []
+    # (a real, valid setup -- e.g. podcasts-only) legitimately never has
+    # anything to write, so fetch never creates this directory no matter
+    # how many times it runs, and this profile could never sync at all
+    # without this mkdir. Confirmed live: config/profiles/Tobie.yaml.
+    playlists_folder = library_root / "playlists" / profile.profile
+    playlists_folder.mkdir(parents=True, exist_ok=True)
+
     pc_folders = (
         *music_folders,
-        str(library_root / "playlists" / profile.profile),
+        str(playlists_folder),
         *external_library_folders,
         *audiobooks_folders,
         *extra_pc_folders,
