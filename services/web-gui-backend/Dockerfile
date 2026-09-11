@@ -35,8 +35,16 @@ FROM python:3.12-slim
 # to whichever udisks2 *daemon* is reachable over the D-Bus system
 # socket bind-mounted in at runtime, not one running in this container.
 # util-linux: `eject`, run after a successful --execute.
+# libchromaprint-tools (fpcalc): sync-orchestrator hard-requires it on
+# PATH for every sync (sync.py raises SyncError otherwise) -- confirmed
+# live, missing here originally even though this image vendors the
+# sync machinery specifically so the Sync screen's compute-plan/execute
+# buttons can run entirely inside this container. Package name verified
+# against Debian bookworm (this base image's own release) -- "chromaprint"
+# is not itself an installable package there, only the library-tools
+# split that actually ships the /usr/bin/fpcalc binary.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg udisks2 util-linux \
+    && apt-get install -y --no-install-recommends ffmpeg udisks2 util-linux libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/

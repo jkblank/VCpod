@@ -1,5 +1,24 @@
 # Notes / Future Work
 
+## 2026-09-11: web-gui-backend's Dockerfile was missing chromaprint (fpcalc)
+
+Reported live: `FAIL: fpcalc not found on PATH (chromaprint not
+installed)` from a "Compute plan" run through the web GUI. This
+container vendors a full sync-orchestrator install specifically so the
+Sync screen's buttons can run entirely inside it (see the earlier
+homelab-packaging entries) — `sync.py` hard-requires `fpcalc` on PATH
+for every sync, but the Dockerfile's `apt-get install` only ever listed
+`ffmpeg udisks2 util-linux`, missing the chromaprint package entirely.
+A pure oversight from when that Dockerfile was first written.
+
+Verified the correct Debian package name before touching anything (not
+just guessed): `chromaprint` is not itself installable via `apt-get`
+on this base image's actual release (`python:3.12-slim`, Debian
+bookworm — or trixie, since that tag isn't pinned to one release and
+Docker Hub currently serves either) — the package that actually ships
+`/usr/bin/fpcalc` on both is `libchromaprint-tools`. Added to the
+Dockerfile's `apt-get install` line.
+
 ## 2026-09-11: fetch-scheduler's backup pruning could delete another process's in-progress blob, failing a concurrent backup
 
 Reported live on the homelab: `sync-orchestrator sync` (via the web
