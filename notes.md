@@ -1,5 +1,69 @@
 # Notes / Future Work
 
+## 2026-09-11: fetch-scheduler's backup pruning could delete another process's in-progress blob, failing a concurrent backup
+
+Reported live on the homelab: `sync-orchestrator sync` (via the web
+GUI's "Compute plan", running inside `web-gui-backend`'s own container)
+kept failing device-backup creation with `DeviceWriteSafetyError: The
+iPod backup could not read N file(s) ... [Errno 2] No such file or
+directory: '/data/state/device_backups/blobs/<shard>/.blob_<random>'`
+— N shrank across retries (23 → 16 → 4) but never hit zero, and a
+pre-created skeleton of all 256 shard directories kept coming back
+empty ("we created those dirs, but there is nothing there now").
+
+Two real, independent bugs stacked here, both only possible now that
+two separate containers (`fetch-scheduler`, always running, and
+`web-gui-backend`, driving an on-demand manual sync) can touch
+`device_backups/` at the same time — a bare-metal, one-process-at-a-time
+deployment could never trigger either:
+
+1. **iOpenPod's own automatic cleanup-on-failure wipes empty shard
+   dirs.** `backup_manager.py`'s `create_backup` wrapper calls
+   `manager._gc_blobs()` whenever the wrapped call raises *any*
+   exception ("clean unpublished backup blobs after failure") —
+   `_gc_blobs()` deletes every blob not referenced by a complete
+   snapshot manifest (a failed attempt never writes one, so everything
+   it wrote counts as orphaned) and then `rmdir()`s any shard directory
+   left empty. This explained why the store kept resetting to
+   completely empty after every failure, including our own manually
+   pre-created placeholder directories — but not the underlying cause
+   of the failures themselves. **Workaround** (not a code fix, since
+   this lives in the third-party `iopenpod` package): drop a `.keep`
+   placeholder file in each of the 256 shard dirs so `rmdir()` (which
+   only succeeds on a truly empty directory) can never remove them
+   again.
+2. **`common/backups.py`'s own `prune_and_gc_backups` (this project's
+   code, called from `fetch-scheduler`'s maintenance tick) could delete
+   another process's in-progress temp blob.** iOpenPod's blob writer
+   (`_store_blob`) stages each blob at a dot-prefixed
+   `.blob_<random>` temp name in the shard dir (`tempfile.mkstemp(dir=
+   <shard dir>, prefix=".blob_")`) before atomically renaming it into
+   its final hash-named path. `prune_and_gc_backups`'s blob-walk had no
+   filter for this — a `.blob_*` name never matches any real hash, so
+   it looked exactly like an orphaned blob and got `unlink()`'d. If
+   `fetch-scheduler`'s tick ran its prune step while `web-gui-backend`'s
+   own in-progress backup was mid-write on that exact file, the rename
+   into its final path failed with "no such file or directory" on its
+   own temp path — explaining the shrinking-but-never-zero failure
+   count (random timing overlap between the two independent processes,
+   not a deterministic race) and why more of the file survived on each
+   retry once the `.keep` workaround stopped every retry from starting
+   completely from scratch. **Fixed in code**:
+   `prune_and_gc_backups`'s blob-walk now skips any dot-prefixed
+   filename outright, before ever checking it against
+   `surviving_hashes`.
+
+**Verified**: new `test_prune_and_gc_backups_never_touches_another_
+process_in_progress_temp_blob` (a real in-progress `.blob_*` temp file
+survives a real prune run untouched); full `common` suite (15 passed)
+and root workspace suite (552 passed). Not yet re-verified against a
+real concurrent fetch-scheduler-tick + manual-sync overlap on the
+homelab — the `.keep`-file workaround should make the *symptom* (empty
+shard dirs) stop recurring either way, but the actual race this fix
+closes needs the two processes to overlap in real time to trigger, so
+confirming it needs watching for the failure to simply stop happening
+over real usage, not a single retry.
+
 ## 2026-09-11: a podcasts-only profile (playlists: []) could never sync at all
 
 Reported live: `sync-orchestrator sync` for the `Tobie` profile

@@ -8,6 +8,19 @@ from typing import Iterable
 
 from common.models import GlobalConfig, ProfileConfig
 
+# iopenpod's own blob writer stages each blob at a dot-prefixed temp
+# name in the same shard dir before atomically renaming it into its
+# final (never dot-prefixed) hash-named path -- tempfile.mkstemp(dir=
+# <shard dir>, prefix=".blob_") in backup_manager.py's _store_blob.
+# Confirmed live: this fetch-scheduler maintenance tick runs
+# continuously and independently of any concurrent backup creation
+# (e.g. a manual "Compute plan" via the web GUI's own container) -- the
+# two were never able to race on a bare-metal, one-process-at-a-time
+# deployment, but can now. Before this filter, a real in-progress temp
+# file (never matching surviving_hashes, since it's not a real hash at
+# all) could get unlink()'d mid-write, failing that backup attempt with
+# a "no such file or directory" on its own temp path -- see notes.md.
+
 
 @dataclass(frozen=True)
 class RetentionPolicy:
@@ -251,6 +264,8 @@ def prune_and_gc_backups(
             if not shard_dir.is_dir():
                 continue
             for blob_path in shard_dir.iterdir():
+                if blob_path.name.startswith("."):
+                    continue  # another process's in-progress .blob_* temp file
                 if blob_path.name in surviving_hashes:
                     continue
                 size = blob_path.stat().st_size
