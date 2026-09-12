@@ -132,6 +132,31 @@ def test_build_staging_dir_creates_symlinks_to_real_files(tmp_path):
     assert not (staging / "The Cure").exists()
 
 
+def test_build_staging_dir_symlinks_are_readable_with_a_relative_library_path(
+    monkeypatch, tmp_path
+):
+    # Regression: a *relative* symlink target is resolved by the OS
+    # relative to the symlink's own containing directory, not the
+    # process's cwd at creation time -- passing a relative library_path/
+    # selected_files through (e.g. --library-root "../../library",
+    # exactly this project's own documented CLI invocation) used to
+    # produce a symlink pointing at a nonsense nested path instead of
+    # the real file, silently dropping every staged file from any real
+    # sync plan. Confirmed live against a real profile. See notes.md.
+    monkeypatch.chdir(tmp_path)
+    library = _make_library(Path("library"))
+    staging = Path("staging")
+    selected, _ = resolve_selected_files(library, ["Linkin Park/Meteora"], mode="include")
+    assert not library.is_absolute()
+    assert not selected[0].is_absolute()
+
+    build_staging_dir(staging, library, selected)
+
+    staged = staging / "Linkin Park" / "Meteora" / "01 Foreword.m4a"
+    assert staged.is_symlink()
+    assert staged.read_bytes() == b"fake audio"
+
+
 def test_build_staging_dir_rebuild_drops_deselected_files(tmp_path):
     library = _make_library(tmp_path)
     staging = tmp_path / "staging"
