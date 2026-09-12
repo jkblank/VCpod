@@ -1,5 +1,127 @@
 # Notes / Future Work
 
+## 2026-09-12: audiobook-manager's post-import path reporting picked up a real personal beets config instead of staying isolated
+
+Reported live: a successful `audiobook-manager tag` run ("Imported 1
+file(s)") crashed immediately afterward with `FileNotFoundError` on a
+path missing the `music-stack/library/audiobooks` prefix entirely
+(`/home/john/Music/Daniel Immerwahr/...` instead of the real
+`/home/john/Music/music-stack/library/audiobooks/Daniel Immerwahr/...`)
+— the file itself was correctly placed and tagged; only the
+post-import verification/reporting step (and, as a direct consequence,
+the `record_import()` call after it) crashed and never ran.
+
+Root cause: `beets_import.py`'s `_existing_item_paths()` (used to diff
+the library before/after an import, to detect what got newly added)
+constructs its own `beets.library.Library(str(beets_db_path))` with no
+explicit `directory=`. This machine has a real, pre-existing personal
+beets config (`directory: ~/Music`, unrelated to this project) that
+beets falls back to when none is given explicitly — some of
+`Item.path`'s resolution depends on the Library's *currently active*
+directory setting, not just the raw bytes stored in the db, so reading
+this project's own db without its own directory produced silently
+wrong absolute paths for existing items. The actual `beet import`
+subprocess itself was never affected (it always runs with `BEETSDIR`
+pointed at this project's own isolated config) — only this separate,
+in-process post-import diff read was exposed to the ambient global
+config.
+
+Fix: `_existing_item_paths()` now takes `audiobooks_root` and passes
+`directory=str(audiobooks_root)` explicitly, matching the real config
+used by the actual import subprocess.
+
+**Verified**: full audiobook-manager suite (42 passed); live-confirmed
+against the real crash — the same book's path resolved correctly after
+the fix, and `record_import()` completed instead of crashing.
+
+## 2026-09-12: a long audiobook near the lossy/lossless cutoff could produce a file exceeding FAT32's 4GiB limit
+
+Reported live: a real ~105kbps, 37-hour audiobook (Gravity's Rainbow)
+merged into a 16GB `.m4b` — `sync-orchestrator --execute` correctly
+refused to write it (`filesystem_safety: ... is 15.3 GB, exceeding the
+4.0 GB maximum supported by this iPod or its filesystem`). Root cause:
+`merge.select_encoding` only ever compares source bitrate against
+`_MAX_SPOKEN_WORD_LOSSY_KBPS` (96) — a source just barely over that
+(105kbps here) goes fully lossless (ALAC) with no regard for total
+duration, and for a long enough book even a "barely lossless" source
+can produce a file many times FAT32's real 4GiB-per-file ceiling.
+Confirmed live: the same 105kbps source, forced lossy at its own
+bitrate instead, produced a normal 1.6GB file.
+
+Fix: rather than try to *predict* ALAC's real (content-dependent)
+compression ratio up front, `merge_parts_to_m4b` now always measures
+the real output size after an auto-selected lossless encode, and only
+*if* it exceeds `_FAT32_SAFE_MAX_BYTES` (3GiB, a safety margin below
+the real 4GiB-1 limit) re-encodes lossy at the source's own bitrate
+instead — always correct regardless of how well a given book happens
+to compress, at the cost of one wasted encode on the rare book that
+actually needs the fallback. An explicit `--bitrate` override is
+untouched by this (a deliberate user choice, not eligible for
+override).
+
+**Verified**: 2 new unit tests (monkeypatching the safety margin down
+to a few bytes so a normal tiny fixture encode already exceeds it,
+rather than generating a genuinely multi-GB test fixture) — one
+confirming the lossy fallback fires and produces AAC, one confirming
+an explicit `--bitrate` is never second-guessed; full audiobook-manager
+suite (22 passed) and root workspace suite (554 passed). Live-verified
+against the real book: re-merged at 1.6GB, tagged, and placed
+successfully.
+
+## 2026-09-12: audiobook/external-library staging silently dropped every file when --library-root was relative
+
+Reported live: two newly-processed audiobooks, correctly tagged and
+placed in `library/audiobooks/`, and correctly selected by a profile's
+`audiobooks.selections`, never showed up in a real sync plan at all —
+`to_add` stayed at 1 (an unrelated podcast episode), with no error,
+warning visible in the summary, or mention of either book anywhere.
+The actual cause was buried in the full run's debug log:
+`WARNING:root:Failed to read .../.audiobooks_staging/john/Daniel
+Immerwahr/.../01 - ....m4b: [Errno 2] No such file or directory` for
+both books.
+
+Root cause: `selection.py`'s `build_staging_dir` (shared by
+`resolve_audiobooks_folder` and `resolve_selected_files`'s
+external-library caller) creates each staged file as
+`dest.symlink_to(src)`, where `src` is whatever `Path` the caller
+passed through — if `library_root` (and therefore `audiobooks_root`,
+`selected_files`, etc.) was ever a *relative* path, `src` stayed
+relative all the way down. A relative symlink target is resolved by
+the OS relative to the **symlink's own containing directory**, not the
+process's cwd at creation time — so a relative `src` like
+`library/audiobooks/Daniel Immerwahr/...` produced a symlink that
+actually pointed at
+`state/.audiobooks_staging/john/Daniel Immerwahr/.../library/audiobooks/
+Daniel Immerwahr/...` (nested under itself), which obviously doesn't
+exist. iopenpod's own scan just silently skipped the unreadable
+symlink and moved on — no error surfaced anywhere in the plan summary,
+only in the full debug log.
+
+This wasn't a rare edge case: `--library-root ../../library` is this
+project's own documented, standard way to invoke `sync-orchestrator`
+(`cd services/sync-orchestrator && ... --library-root ../../library`,
+in the root README, this service's own README, and literally every
+manual invocation this session used) — meaning audiobook/
+external-library selection narrowing has likely been silently broken
+for every real relative-path invocation since either feature shipped,
+not just today's case. `external_library.path` itself is always a
+real, absolute host path by its own documented convention, so that
+specific input happened to dodge the bug in practice even though the
+same shared code path was exposed to it too.
+
+Fix: `build_staging_dir` now symlinks to `src.resolve()`, guaranteeing
+an absolute (and therefore correctly-resolving) target regardless of
+what path shape any caller passes in.
+
+**Verified**: new `test_build_staging_dir_symlinks_are_readable_with_a_
+relative_library_path` (chdir's into a tmp_path, builds staging from
+deliberately relative paths, confirms the resulting symlink is
+readable — this reproduces the exact failure mode before the fix and
+passes after); full sync-orchestrator suite (191 passed). Not yet
+re-verified against the real `john` profile's actual sync plan on this
+machine — next real run should now show both books under `to_add`
+instead of silently omitting them.
+
 ## 2026-09-11: web-gui-backend's Dockerfile was missing chromaprint (fpcalc)
 
 Reported live: `FAIL: fpcalc not found on PATH (chromaprint not
