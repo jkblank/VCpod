@@ -19,6 +19,7 @@ from audiobook_manager.merge import (
     select_encoding,
 )
 from audiobook_manager.merge import _concat_escape
+from audiobook_manager import merge as merge_module
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -291,3 +292,45 @@ def test_merge_parts_to_m4b_auto_selects_lossless_when_source_exceeds_cap(
         capture_output=True, text=True, check=True,
     )
     assert probe.stdout.strip() == "alac"
+
+
+def test_merge_parts_to_m4b_falls_back_to_lossy_when_lossless_exceeds_fat32_safety_margin(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # Regression: select_encoding's lossless branch has no notion of
+    # total duration -- confirmed live, a real ~105kbps, 37-hour
+    # audiobook (just over the 96kbps lossy cutoff) produced a 16GB
+    # ALAC file, well past FAT32's real 4GiB-per-file limit, that
+    # iOpenPod correctly refused to write. Rather than generate a
+    # genuinely multi-GB fixture here, shrink the safety margin so a
+    # normal tiny test encode already exceeds it.
+    monkeypatch.setattr(merge_module, "_FAT32_SAFE_MAX_BYTES", 1000)
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    _make_synthetic_mp3(parts_dir / "01.mp3", bitrate_kbps=128)
+
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b")
+
+    probe = subprocess.run(
+        [find_ffprobe(), "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_name", "-of",
+         "default=noprint_wrappers=1:nokey=1", str(output)],
+        capture_output=True, text=True, check=True,
+    )
+    assert probe.stdout.strip() == "aac"
+
+
+def test_merge_parts_to_m4b_respects_explicit_bitrate_even_past_fat32_margin(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # The FAT32 fallback only ever second-guesses the *auto* (bitrate=
+    # None) policy -- an explicit --bitrate override is a deliberate
+    # user choice and must never be silently re-encoded a second time.
+    monkeypatch.setattr(merge_module, "_FAT32_SAFE_MAX_BYTES", 1000)
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    _make_synthetic_mp3(parts_dir / "01.mp3", bitrate_kbps=128)
+
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b", bitrate="128k")
+
+    assert output.is_file()

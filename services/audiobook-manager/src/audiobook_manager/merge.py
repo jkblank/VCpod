@@ -40,6 +40,13 @@ notes.md."""
 
 _MIN_SPOKEN_WORD_LOSSY_KBPS = 32
 
+_FAT32_SAFE_MAX_BYTES = 3 * 1024**3
+"""Safety margin below FAT32's real 4GiB-1 per-file limit (the same
+filesystem sync_orchestrator/sync.py already has to work around for
+ArtworkDB's own .ithmb chunking) -- a merged .m4b past this is treated
+as needing the lossy fallback in merge_parts_to_m4b, comfortably clear
+of the real ceiling rather than cutting it exactly at 4GiB."""
+
 
 def probe_bitrate_kbps(ffprobe_path: str, path: Path) -> float:
     result = subprocess.run(
@@ -222,36 +229,56 @@ def merge_parts_to_m4b(
     else:
         codec, bitrate_flag = select_encoding(parts, ffprobe_path)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        list_path = tmp_path / "parts.txt"
-        list_path.write_text(
-            "\n".join(f"file '{_concat_escape(p)}'" for p in parts) + "\n"
-        )
-        meta_path = tmp_path / "chapters.txt"
-        meta_path.write_text(build_ffmetadata(list(zip(parts, durations)), title=title))
+    def _run_ffmpeg_merge(codec: str, bitrate_flag: str | None) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            list_path = tmp_path / "parts.txt"
+            list_path.write_text(
+                "\n".join(f"file '{_concat_escape(p)}'" for p in parts) + "\n"
+            )
+            meta_path = tmp_path / "chapters.txt"
+            meta_path.write_text(build_ffmetadata(list(zip(parts, durations)), title=title))
 
-        cmd = [
-            ffmpeg_path,
-            "-y",
-            "-v", "error",
-            "-f", "concat", "-safe", "0", "-i", str(list_path),
-            "-f", "ffmetadata", "-i", str(meta_path),
-            "-map", "0:a",
-            "-map_metadata", "1",
-            "-map_chapters", "1",
-            "-c:a", codec,
-        ]
-        if bitrate_flag is not None:
-            cmd += ["-b:a", bitrate_flag]
-        cmd += ["-movflags", "+faststart", str(output_path)]
+            cmd = [
+                ffmpeg_path,
+                "-y",
+                "-v", "error",
+                "-f", "concat", "-safe", "0", "-i", str(list_path),
+                "-f", "ffmetadata", "-i", str(meta_path),
+                "-map", "0:a",
+                "-map_metadata", "1",
+                "-map_chapters", "1",
+                "-c:a", codec,
+            ]
+            if bitrate_flag is not None:
+                cmd += ["-b:a", bitrate_flag]
+            cmd += ["-movflags", "+faststart", str(output_path)]
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise MergeError(f"ffmpeg exited {result.returncode}\n{result.stderr}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise MergeError(f"ffmpeg exited {result.returncode}\n{result.stderr}")
+
+    _run_ffmpeg_merge(codec, bitrate_flag)
+
+    if (
+        bitrate is None
+        and codec == "alac"
+        and output_path.stat().st_size > _FAT32_SAFE_MAX_BYTES
+    ):
+        # select_encoding's lossless branch has no notion of total
+        # duration -- for a long enough audiobook, even a source just
+        # over the lossy cutoff can produce a lossless file well past
+        # FAT32's real 4GiB-per-file limit (confirmed live: a ~105kbps,
+        # 37-hour source produced a 16GB ALAC file iOpenPod correctly
+        # refused to write). Re-encoding lossy at the source's own
+        # bitrate here, only *after* actually measuring the real
+        # lossless output's size, avoids needing to predict ALAC's
+        # content-dependent compression ratio up front -- always
+        # correct regardless of how well a given book happens to
+        # compress, at the cost of a wasted encode on the rare book
+        # that actually needs this fallback. See notes.md.
+        source_kbps = round(max(probe_bitrate_kbps(ffprobe_path, p) for p in parts))
+        codec, bitrate_flag = "aac", f"{max(source_kbps, _MIN_SPOKEN_WORD_LOSSY_KBPS)}k"
+        _run_ffmpeg_merge(codec, bitrate_flag)
 
     return output_path
