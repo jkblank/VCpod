@@ -70,12 +70,25 @@ class BeetsImportResult:
     stderr: str = ""
 
 
-def _existing_item_paths(beets_db_path: Path) -> dict[int, str]:
+def _existing_item_paths(beets_db_path: Path, audiobooks_root: Path) -> dict[int, str]:
+    """Real bug, confirmed live: Library(str(beets_db_path)) with no
+    explicit directory= falls back to beets' own global config (this
+    machine had a real, pre-existing personal beets config with
+    directory: ~/Music from unrelated use) -- some of Item.path's
+    resolution depends on the Library's *currently active* directory
+    setting, not just the raw bytes stored in the db, so reading the
+    same db without this project's own directory produced silently
+    wrong absolute paths (e.g. ~/Music/Author/... instead of the real
+    ~/Music/music-stack/library/audiobooks/Author/...) for existing
+    items. The actual `beet import` subprocess below is unaffected --
+    it always runs with BEETSDIR set to this project's own isolated
+    config -- only this separate, in-process post-import diff read was
+    exposed to the ambient global config. See notes.md."""
     if not beets_db_path.is_file():
         return {}
     from beets.library import Library
 
-    lib = Library(str(beets_db_path))
+    lib = Library(str(beets_db_path), directory=str(audiobooks_root))
     return {
         item.id: (
             item.path.decode("utf-8") if isinstance(item.path, bytes) else str(item.path)
@@ -107,7 +120,7 @@ def import_audiobook(
         beets_config_dir, audiobooks_root=audiobooks_root, beets_db_path=beets_db_path
     )
 
-    before = _existing_item_paths(beets_db_path)
+    before = _existing_item_paths(beets_db_path, audiobooks_root)
     result = subprocess.run(
         [beet_path, "-c", str(config_path), "import", "-q", str(source_dir)],
         capture_output=True,
@@ -119,7 +132,7 @@ def import_audiobook(
             f"beet import exited {result.returncode}\n{result.stdout}\n{result.stderr}"
         )
 
-    after = _existing_item_paths(beets_db_path)
+    after = _existing_item_paths(beets_db_path, audiobooks_root)
     new_ids = after.keys() - before.keys()
     return BeetsImportResult(
         imported=bool(new_ids),
