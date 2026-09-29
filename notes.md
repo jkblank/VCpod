@@ -1,5 +1,50 @@
 # Notes / Future Work
 
+## 2026-09-29: real sync succeeded, but crashed with exit 1 right after — eject_device() choking on a missing `eject` binary, and Debian base-image tag drift
+
+Found live on the real homelab deploy (`olive`) immediately after a
+real `--execute --allow-removals` sync via the container genuinely
+succeeded (`PASS: wrote 1028 track(s) to a real device`) — the process
+then crashed with an uncaught `FileNotFoundError` traceback and exit
+code 1 while trying to auto-eject the device afterward, which would
+mislead any script/tooling checking the exit code into thinking the
+whole sync had failed.
+
+Root cause, in two parts:
+1. `device.py`'s `eject_device()` calls `subprocess.run(["eject", ...])`
+   with no handling for the binary not existing at all --
+   `subprocess.run` raises a bare `FileNotFoundError` in that case,
+   which `cli.py`'s own `except EjectError:` (the *only* exception type
+   it catches around this call) never catches.
+2. `eject` genuinely wasn't installed in `web-gui-backend`'s image, and
+   not because anyone forgot it — confirmed live: `util-linux` (already
+   in the Dockerfile specifically *for* eject) is installed, but
+   `dpkg -l` showed the container was actually running Debian **trixie**
+   (`util-linux 2.41.5-0+deb13u1`), not bookworm. `FROM python:3.12-slim`
+   was never pinned to one release, and between this image's original
+   build and now, that rolling tag itself moved from bookworm to
+   trixie -- which is exactly when Debian split `eject` out of
+   `util-linux` into its own separate package. util-linux alone had
+   simply stopped providing it.
+
+Fix: `eject_device()` now catches `FileNotFoundError` from the
+subprocess call and re-raises it as its own `EjectError` — the exact
+same graceful "WARNING: could not eject device automatically" path
+every other real eject failure already goes through, no changes needed
+at the call site. The Dockerfile gained the (now separate) `eject`
+package, and — to stop this exact class of drift from recurring for
+some *other* package next time — `FROM python:3.12-slim` is now pinned
+to `python:3.12-slim-trixie` (matching what was actually already
+running) instead of the rolling, unpinned alias.
+
+**Verified**: new `test_eject_device_raises_eject_error_when_eject_
+binary_missing`; full sync-orchestrator suite (192 passed) and root
+workspace suite (555 passed). Live-verified the underlying sync itself
+was never in question — full success, live-confirmed via the real
+`PASS`/`Sync completed` summary before this crash ever happened. The
+eject fix itself needs a fresh image rebuild + real trigger to confirm
+live (queued next).
+
 ## 2026-09-29: auto-sync-on-connect had been silently failing on every real trigger since install
 
 Diagnosed live on the real homelab deploy (`olive`), remotely via SSH,

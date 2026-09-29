@@ -307,6 +307,28 @@ def test_eject_device_raises_if_no_longer_mounted(monkeypatch):
         eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
 
 
+def test_eject_device_raises_eject_error_when_eject_binary_missing(monkeypatch):
+    # Regression: web-gui-backend's minimal container image doesn't
+    # install util-linux's `eject` at all -- subprocess.run raises a
+    # bare FileNotFoundError in that case, which cli.py's own
+    # `except EjectError:` never catches, crashing the whole process
+    # with an ugly traceback right after a real sync had already
+    # succeeded. See notes.md.
+    monkeypatch.setattr(
+        device_module,
+        "iter_candidate_mounts",
+        lambda: [("/dev/sdc2", "/run/media/john/JOHN_S IPOD", "vfat")],
+    )
+
+    def _fake_run(cmd, capture_output, text, check=False):
+        raise FileNotFoundError(2, "No such file or directory", "eject")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(EjectError, match="eject not found on PATH"):
+        eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
+
+
 def test_eject_device_raises_on_eject_failure(monkeypatch):
     monkeypatch.setattr(
         device_module,

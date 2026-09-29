@@ -24,7 +24,17 @@ COPY services/web-gui-frontend/ ./
 RUN npm run build
 
 # --- backend + vendored sync-orchestrator -------------------------------
-FROM python:3.12-slim
+
+# Pinned to a specific Debian release, not the rolling "slim" alias --
+# confirmed live, that alias had silently drifted from bookworm to
+# trixie between builds (Debian's own package split of `eject` out of
+# util-linux on trixie is what actually surfaced this), which is
+# exactly the kind of non-reproducible build this project's own
+# "verify the real package name against this base image's actual
+# release" caveats elsewhere in this file were already trying to guard
+# against -- pinning the release itself closes the gap those comments
+# could only work around one package at a time. See notes.md.
+FROM python:3.12-slim-trixie
 
 # ffmpeg: transitively needed the same way fetch-scheduler's Dockerfile
 # already documents (web-gui-backend depends on fetcher-apple/
@@ -34,17 +44,24 @@ FROM python:3.12-slim
 # best-effort auto-mount (device.py's mount_candidate_devices) -- talks
 # to whichever udisks2 *daemon* is reachable over the D-Bus system
 # socket bind-mounted in at runtime, not one running in this container.
-# util-linux: `eject`, run after a successful --execute.
+# eject: run after a successful --execute (device.py's eject_device).
+# NOT part of util-linux below on every Debian release -- confirmed
+# live, this base image's tag isn't pinned to one release and had
+# silently drifted from bookworm to trixie, which split `eject` out of
+# util-linux into its own package; util-linux alone left it missing
+# entirely, crashing eject_device() with an uncaught FileNotFoundError
+# right after a real, already-successful sync. See notes.md.
+# util-linux: everything else `eject` used to imply here.
 # libchromaprint-tools (fpcalc): sync-orchestrator hard-requires it on
 # PATH for every sync (sync.py raises SyncError otherwise) -- confirmed
 # live, missing here originally even though this image vendors the
 # sync machinery specifically so the Sync screen's compute-plan/execute
 # buttons can run entirely inside this container. Package name verified
-# against Debian bookworm (this base image's own release) -- "chromaprint"
-# is not itself an installable package there, only the library-tools
-# split that actually ships the /usr/bin/fpcalc binary.
+# against Debian bookworm (this base image's own release at the time) --
+# "chromaprint" is not itself an installable package there, only the
+# library-tools split that actually ships the /usr/bin/fpcalc binary.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg udisks2 util-linux libchromaprint-tools \
+    && apt-get install -y --no-install-recommends ffmpeg udisks2 util-linux eject libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
