@@ -810,6 +810,78 @@ def test_run_sync_json_mode_failure_reports_via_fail_not_broken_json(monkeypatch
         json.loads(out)
 
 
+def test_run_sync_plan_failure_records_activity_entry(monkeypatch, tmp_path):
+    # Regression: a plan-phase failure (e.g. plan_sync raising SyncError
+    # because a system dependency like fpcalc is missing) used to return
+    # _fail() directly with no record_activity call at all -- only the
+    # later execute-phase except block logged anything. A real unattended
+    # auto-sync run failed exactly this way and never appeared in the
+    # Activity screen. See notes.md's 2026-09-29 entry.
+    from common.activity import list_activity
+    from sync_orchestrator.sync import SyncError
+
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(
+        cli_module, "find_matching_device", lambda match: _connected_device(serial="X"),
+    )
+    monkeypatch.setattr(
+        cli_module, "plan_sync",
+        lambda **kwargs: (_ for _ in ()).throw(SyncError("fpcalc not found on PATH")),
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(state_root=str(tmp_path)),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 1
+    entries = list_activity(tmp_path)
+    assert len(entries) == 1
+    assert entries[0].result == "error"
+    assert entries[0].profile == "john"
+    assert "plan failed" in entries[0].description
+    assert "fpcalc not found on PATH" in entries[0].description
+
+
+def test_run_rockbox_sync_plan_failure_records_activity_entry(monkeypatch, tmp_path):
+    # See _run_sync's matching regression test -- same gap, same fix, in
+    # the Rockbox-mode sibling.
+    from common.activity import list_activity
+    from sync_orchestrator.rockbox_sync import RockboxSyncError
+
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(
+        cli_module, "find_matching_device", lambda match: _connected_device(serial="X"),
+    )
+    monkeypatch.setattr(
+        cli_module, "plan_rockbox_sync",
+        lambda **kwargs: (_ for _ in ()).throw(RockboxSyncError("fpcalc not found on PATH")),
+    )
+
+    result = cli_module._run_rockbox_sync(
+        _run_sync_args(state_root=str(tmp_path)),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 1
+    entries = list_activity(tmp_path)
+    assert len(entries) == 1
+    assert entries[0].result == "error"
+    assert entries[0].profile == "john"
+    assert "plan failed" in entries[0].description
+    assert "fpcalc not found on PATH" in entries[0].description
+
+
 def test_run_rockbox_sync_rejects_json_mode(monkeypatch, capsys):
     profile = SimpleNamespace(
         profile="john", device=SimpleNamespace(match_by="volume_label", match_value="TEST")

@@ -1,5 +1,43 @@
 # Notes / Future Work
 
+## 2026-09-29: a real auto-sync failure never showed up in the Activity log — plan-phase failures were never recorded, only execute-phase ones
+
+Found live on `olive` right after the udev-generation fix above finally
+let a real auto-sync run trigger end-to-end for the first time: it got
+through device backup successfully (310 files hashed) then failed with
+`FAIL: fpcalc not found on PATH (chromaprint not installed)` — the
+bare-metal `sync-orchestrator` venv on `olive` never had `ffmpeg`/
+`libchromaprint-tools` installed at the OS level (only inside
+web-gui-backend's own Docker image). That failure was real and
+reproducible, but the web GUI's Activity screen showed nothing for it.
+
+Root cause: `_run_sync`'s (and `_run_rockbox_sync`'s) `try/except` around
+`plan_sync`/`plan_rockbox_sync` just did `return _fail(str(e))` with no
+`record_activity` call — only the *later* `except` block around
+`execute_sync`/`execute_rockbox_sync` logged anything. A plan-phase
+failure (missing dependency, unresolved selection re-raised as
+`SyncError`, etc.) is exactly as real an auto-sync outcome as an
+execute-phase one, especially for an unattended run nobody's watching
+live — but never reached `record_activity` at all, since it fails
+before `execute_sync` is ever called.
+
+Fix: both plan-phase `except` blocks in `cli.py` now call
+`record_activity` (`result="error"`, description prefixed `"sync — plan
+failed:"` / `"sync (rockbox) — plan failed:"`) before returning,
+mirroring the existing execute-phase pattern exactly. New regression
+tests `test_run_sync_plan_failure_records_activity_entry` /
+`test_run_rockbox_sync_plan_failure_records_activity_entry` assert a
+real entry lands in `list_activity()`. 196/196 sync-orchestrator tests
+passing (2 new), 557/557 root workspace.
+
+Not yet covering: `_cmd_auto_sync`'s own "no matching profile found
+within Ns" timeout path (no single profile to attach the entry to) and
+`find_matching_device`'s `DeviceNotFoundError` in both plan functions —
+left out as lower-value/lower-risk for now (the interactive-command
+redundant re-match essentially never fails right after `_cmd_auto_sync`
+already matched the same device seconds earlier); flagged here as a
+known remaining gap if it turns out to matter in practice.
+
 ## 2026-09-29: auto-sync's generated udev rule only ever matched one iPod generation, silently dropping a second real one on every regeneration
 
 Found live on `olive` while confirming whether the auto-sync fixes
