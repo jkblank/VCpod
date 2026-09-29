@@ -1,5 +1,43 @@
 # Notes / Future Work
 
+## 2026-09-29: auto-sync's generated udev rule only ever matched one iPod generation, silently dropping a second real one on every regeneration
+
+Found live on `olive` while confirming whether the auto-sync fixes
+(above) would apply to every profile's iPod, not just one. The
+installed `/etc/udev/rules.d/99-ipod-music-stack.rules` had been
+hand-edited: its generated `idProduct=="1209"` line was commented out
+and replaced with an active `idProduct=="1261"` line — clear evidence
+someone had already hit a real second iPod generation the generator
+didn't cover, and patched around it by hand.
+
+Confirmed via real kernel history (`journalctl -k`, full retention):
+`05ac:1209` (bcdDevice 0.02) is a real 5th/5.5th-gen iPod Video (one
+real serial, nienie's — the exact device this session's "not
+auto-mounting" report was about); `05ac:1261` (bcdDevice 0.01) is a
+different, real generation confirmed against *two* distinct real
+device serials across this host's history (likely iPod Classic 6th/7th
+gen). Both are genuinely in use across this deploy's 3 profiles
+(john/nienie/Tobie).
+
+Root cause: `_UDEV_RULE_TEMPLATE` in `routers/auto_sync_setup.py`
+hardcoded exactly one `ACTION=="add"` rule, for `1209` only — a
+profile's `device.match_value` (a real Apple product serial, SCSI VPD
+page 0x80) is unrelated to the USB idProduct family a device enumerates
+under, so a correctly-configured profile still silently never
+auto-triggers if its iPod's *generation* isn't one of the udev rule's
+matched PIDs. Every regeneration via the web GUI overwrote any manual
+fix for this back down to the single hardcoded PID.
+
+Fix: the template now emits one rule per confirmed PID (`1209` and
+`1261`, both real, both evidenced above) instead of one hardcoded rule.
+New regression test
+(`test_udev_rule_covers_both_confirmed_ipod_generations`) asserts both
+PIDs are present with their own trigger clause. Still not a general
+solution — a *third* never-seen generation still needs a new rule added
+by hand (the docstring/comment says so) — but this at minimum stops the
+two generations already proven to exist on this real deploy from
+fighting each other every time someone regenerates the file.
+
 ## 2026-09-29: auto-sync setup route's own host-path fix broke writing the generated files, on the same day it was introduced
 
 Found live on `olive` while diagnosing why a *second* profile's

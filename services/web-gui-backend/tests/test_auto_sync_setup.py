@@ -45,6 +45,24 @@ def test_generates_udev_rule_with_confirmed_vid_pid_and_caveat(tmp_path):
     assert "lsusb" in rule
 
 
+def test_udev_rule_covers_both_confirmed_ipod_generations(tmp_path):
+    # Regression: the generator used to hardcode a single idProduct
+    # (1209, 5th/5.5th-gen iPod Video only) -- a real second generation
+    # (1261, iPod Classic 6th/7th gen, confirmed live against two
+    # distinct real device serials) connecting for the first time would
+    # never trigger auto-sync at all, and every regeneration silently
+    # clobbered any hand-added rule for it. See notes.md's 2026-09-29
+    # entry.
+    client = _client(tmp_path)
+
+    resp = client.get("/api/auto-sync/setup")
+
+    rule = resp.json()["udev_rule"]
+    assert 'ATTR{idProduct}=="1209"' in rule
+    assert 'ATTR{idProduct}=="1261"' in rule
+    assert rule.count('TAG+="systemd", ENV{SYSTEMD_WANTS}="music-stack-auto-sync.service"') == 2
+
+
 def test_writes_generated_files_under_state_root(tmp_path):
     client = _client(tmp_path)
 
