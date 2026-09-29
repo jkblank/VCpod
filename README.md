@@ -219,6 +219,20 @@ runs bare metal on whichever machine the iPod plugs into, which is why
 step 1 above flagged `uv`/`ffmpeg`/`chromaprint` as needed there for
 this optional step specifically.
 
+Before generating this, set `HOST_CONFIG_ROOT`/`HOST_LIBRARY_ROOT`/
+`HOST_STATE_ROOT`/`HOST_SYNC_ORCHESTRATOR_DIR` in `.env` (see the
+comments in `.env.example`) — `web-gui-backend`'s own view of these
+paths is its *container's* bind-mount targets, meaningless to a systemd
+unit that always runs on the bare host. Skipping this silently
+generates a unit that fails on every single trigger (confirmed live:
+`Failed at step STDOUT spawning /app/services/sync-orchestrator/.venv/
+bin/sync-orchestrator: No such file or directory` — that path only
+exists inside the container). `HOST_SYNC_ORCHESTRATOR_DIR` specifically
+needs to point at a *separate*, real bare-metal `services/
+sync-orchestrator` checkout on this host with its own `uv sync`'d
+`.venv` — this same repo checkout's own copy is the obvious choice,
+never the container's own vendored one.
+
 ### Why the sync step needs privileged Docker access
 
 `web-gui-backend`'s image vendors a full second `sync-orchestrator`

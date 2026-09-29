@@ -85,6 +85,42 @@ def test_status_reports_real_install_state(tmp_path, monkeypatch):
     assert resp.json()["status"] == {"systemd_installed": False, "udev_rule_installed": False}
 
 
+def test_host_overrides_are_used_instead_of_this_process_own_paths(tmp_path):
+    # Regression: a containerized web-gui-backend's own config_root/
+    # library_root/state_root/sync_orchestrator_dir are that container's
+    # bind-mount targets (e.g. /config), meaningless to a systemd unit
+    # that always runs on the bare host -- confirmed live, the generated
+    # unit tried to exec the container's own vendored sync-orchestrator
+    # binary and failed on every trigger. See notes.md's 2026-09-29
+    # entry.
+    config_root = tmp_path / "container-config"
+    (config_root / "profiles").mkdir(parents=True)
+    app = create_app(
+        config_root=config_root,
+        library_root=tmp_path / "container-library",
+        state_root=tmp_path / "container-state",
+        sync_orchestrator_dir=tmp_path / "container-sync-orchestrator",
+        host_config_root=tmp_path / "host" / "config",
+        host_library_root=tmp_path / "host" / "library",
+        host_state_root=tmp_path / "host" / "state",
+        host_sync_orchestrator_dir=tmp_path / "host" / "sync-orchestrator",
+    )
+    client = TestClient(app)
+
+    resp = client.get("/api/auto-sync/setup")
+
+    unit = resp.json()["systemd_unit"]
+    assert str(tmp_path / "host" / "sync-orchestrator" / ".venv" / "bin" / "sync-orchestrator") in unit
+    assert f"--config-root {tmp_path / 'host' / 'config'}" in unit
+    assert f"--library-root {tmp_path / 'host' / 'library'}" in unit
+    assert f"--state-root {tmp_path / 'host' / 'state'}" in unit
+    assert str(tmp_path / "host" / "state" / "auto-sync.log") in unit
+    assert "container-config" not in unit
+    assert "container-library" not in unit
+    assert "container-state" not in unit
+    assert "container-sync-orchestrator" not in unit
+
+
 def test_status_reflects_a_file_that_actually_exists(tmp_path, monkeypatch):
     client = _client(tmp_path)
     from web_gui_backend.routers import auto_sync_setup as router_module

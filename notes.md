@@ -1,5 +1,69 @@
 # Notes / Future Work
 
+## 2026-09-29: auto-sync-on-connect had been silently failing on every real trigger since install
+
+Diagnosed live on the real homelab deploy (`olive`), remotely via SSH,
+while investigating "auto-sync isn't working" (flagged as an open issue
+back on 2026-09-10). Two separate, real bugs, both in
+`routers/auto_sync_setup.py`'s systemd-unit/udev-rule generator —
+neither had ever been exercised against a containerized deployment
+before now:
+
+**1. The generated systemd unit's `ExecStart` used container-internal
+paths.** `get_auto_sync_setup()` bakes in `request.app.state.
+config_root`/`library_root`/`state_root`/`sync_orchestrator_dir` — this
+process's *own* filesystem view. When `web-gui-backend` runs
+containerized (as it does on every real deploy this project actually
+documents), that view is the container's bind-mount targets (`/config`,
+`/data/library`, `/app/services/sync-orchestrator`'s vendored copy),
+none of which exist on the bare host the systemd unit actually runs on.
+`journalctl -u music-stack-auto-sync.service` on `olive` showed the
+exact same failure on *every single trigger* since the unit was first
+installed on 2026-09-10: `Failed at step STDOUT spawning /app/services/
+sync-orchestrator/.venv/bin/sync-orchestrator: No such file or
+directory`. The udev rule itself was firing correctly (confirmed live:
+plugging the iPod in triggered the unit reliably, immediately) — only
+the unit's own `ExecStart` was broken, on every attempt, unconditionally.
+
+**2. The install-status check (`systemd_installed`/`udev_rule_installed`)
+always reported "not installed."** It checks fixed host paths
+(`/etc/systemd/system/music-stack-auto-sync.service`, `/etc/udev/
+rules.d/99-ipod-music-stack.rules`) that a container can't see at all
+unless bind-mounted in — confirmed live: both files were genuinely
+present and had been since 2026-09-10, but `curl .../api/auto-sync/
+setup` reported both as `false` regardless, misleading anyone using the
+web GUI into thinking auto-sync had never been set up when it actually
+had (just silently broken per bug 1).
+
+**Fix**: `create_app()` gained four new optional `host_*` params
+(`host_config_root`/`host_library_root`/`host_state_root`/
+`host_sync_orchestrator_dir`), threaded through new `--host-*` CLI
+flags and `WEB_GUI_HOST_*` env vars (same relay pattern `--reload`
+already uses). `get_auto_sync_setup()` now prefers these when set,
+falling back to its own resolved paths unchanged otherwise — a
+bare-metal deployment (no containerization) never needs to set them.
+`docker-compose.yml`'s `web-gui-backend` service gained the matching
+`HOST_CONFIG_ROOT`/`HOST_LIBRARY_ROOT`/`HOST_STATE_ROOT`/
+`HOST_SYNC_ORCHESTRATOR_DIR` env vars (documented in `.env.example`,
+pointing at the *real* host paths — for the last one, a separate,
+real bare-metal `sync-orchestrator` checkout with its own `uv sync`'d
+`.venv`, never this container's own vendored copy) and two new
+read-only bind mounts (`/etc/systemd/system`, `/etc/udev/rules.d`) so
+its own status check can see the real host files.
+
+**Verified**: new `test_host_overrides_are_used_instead_of_this_
+process_own_paths` (confirms the override values replace the
+container-internal ones in the generated unit, and that none of the
+container-internal path fragments leak through); full web-gui-backend
+suite (7/7 `test_auto_sync_setup.py`, no regressions in the other 4
+existing tests there which cover the unset/default case unchanged);
+root workspace suite (555 passed). Not yet re-verified end-to-end on
+`olive` itself (pull + rebuild + reinstall the regenerated unit still
+needed) — the real trigger-on-connect test is also blocked on a
+separate, unrelated hardware issue found during the same investigation
+(see the `apple_mfi_fastcharge` entry, if one exists by the time you're
+reading this, or ask).
+
 ## 2026-09-12: audiobook-manager's post-import path reporting picked up a real personal beets config instead of staying isolated
 
 Reported live: a successful `audiobook-manager tag` run ("Imported 1

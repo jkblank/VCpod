@@ -156,10 +156,18 @@ services:
   # The udev-triggered *unattended* auto-sync-on-connect (this screen's
   # own "Set up auto-sync" generates the systemd unit + udev rule text,
   # `/api/auto-sync/setup`) is deliberately NOT this container — it's a
-  # genuinely separate bare-metal install on the host, using this same
-  # checkout's services/sync-orchestrator directly, and keeps working
+  # genuinely separate bare-metal install on the host, and keeps working
   # whether or not this container is even running. See
-  # services/sync-orchestrator/README.md.
+  # services/sync-orchestrator/README.md. That generator route needs the
+  # HOST_*_ROOT vars below to know the real host paths, though -- this
+  # container's own view of config_root/library_root/etc. is just its
+  # own bind-mount targets (e.g. /config), which don't mean anything to
+  # a systemd unit running on the bare host. Confirmed live: without
+  # these, the generated unit tried to exec this container's own
+  # vendored sync-orchestrator binary (/app/services/sync-orchestrator/
+  # .venv/bin/sync-orchestrator) -- a path that only exists inside this
+  # container -- and failed on every single trigger. See notes.md's
+  # 2026-09-29 entry.
   web-gui-backend:
     build:
       context: .
@@ -172,6 +180,18 @@ services:
       - "--config-root=/config"
       - "--library-root=/data/library"
       - "--state-root=/data/state"
+      # See the routers/auto_sync_setup.py comment below for why these
+      # are needed at all -- set the *real host* paths matching whatever
+      # LIBRARY_ROOT/STATE_ROOT/COMPOSE_PROFILES you set above, and where
+      # a real bare-metal `uv sync`'d sync-orchestrator checkout lives on
+      # this same host (this container's own vendored copy at
+      # /app/services/sync-orchestrator, used for the Sync screen's own
+      # buttons, is NOT that -- it only exists inside this container).
+      # Leave unset (the default) for a bare-metal (non-Docker) deploy.
+      - "--host-config-root=${HOST_CONFIG_ROOT:-}"
+      - "--host-library-root=${HOST_LIBRARY_ROOT:-}"
+      - "--host-state-root=${HOST_STATE_ROOT:-}"
+      - "--host-sync-orchestrator-dir=${HOST_SYNC_ORCHESTRATOR_DIR:-}"
     ports:
       - "${WEB_GUI_PORT:-8420}:8420"
     volumes:
@@ -187,6 +207,13 @@ services:
       # (device.py's mount_candidate_devices) reach the *host's* udisks2
       # daemon, instead of needing one running inside this container.
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      # Read-only: lets routers/auto_sync_setup.py's install-status check
+      # (systemd_installed/udev_rule_installed) see the real host files
+      # instead of always reporting "not installed" -- this container's
+      # own /etc/systemd/system, /etc/udev/rules.d are otherwise separate
+      # from the host's and unused by anything inside this image.
+      - /etc/systemd/system:/etc/systemd/system:ro
+      - /etc/udev/rules.d:/etc/udev/rules.d:ro
       # Wherever this host actually auto-mounts removable media --
       # rslave propagation means a device mounted on the host *after*
       # this container starts still shows up in here (needed for a

@@ -63,6 +63,10 @@ def create_app(
     library_root: Path | str | None = None,
     frontend_dist: Path | str | None = None,
     state_root: Path | str | None = None,
+    host_config_root: Path | str | None = None,
+    host_library_root: Path | str | None = None,
+    host_state_root: Path | str | None = None,
+    host_sync_orchestrator_dir: Path | str | None = None,
 ) -> FastAPI:
     config_root = Path(config_root)
     app = FastAPI(title="VCpod web-gui-backend")
@@ -72,6 +76,25 @@ def create_app(
     # directory next to config_root.
     app.state.library_root = Path(library_root) if library_root else config_root.parent / "library"
     app.state.state_root = Path(state_root) if state_root else config_root.parent / "state"
+    # Real, bare-host equivalents of the four paths above -- None (the
+    # default) everywhere except a containerized deployment that
+    # explicitly sets them. This process's own config_root/library_root/
+    # state_root/sync_orchestrator_dir are *its own* filesystem view,
+    # which inside a container is that container's bind-mount target
+    # (e.g. /config, /data/library), not a path that means anything on
+    # the bare host -- routers/auto_sync_setup.py is the one place this
+    # actually matters, since the systemd unit/udev rule it generates
+    # runs on the bare host by design (see notes.md's 2026-09-29 entry:
+    # a real containerized deploy's generated unit tried to exec
+    # /app/services/sync-orchestrator/.venv/bin/sync-orchestrator --
+    # a path that only exists inside the container -- and failed on
+    # every single trigger since the day it was installed).
+    app.state.host_config_root = Path(host_config_root) if host_config_root else None
+    app.state.host_library_root = Path(host_library_root) if host_library_root else None
+    app.state.host_state_root = Path(host_state_root) if host_state_root else None
+    app.state.host_sync_orchestrator_dir = (
+        Path(host_sync_orchestrator_dir) if host_sync_orchestrator_dir else None
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -130,4 +153,8 @@ def create_app_from_env() -> FastAPI:
         library_root=os.environ.get("WEB_GUI_LIBRARY_ROOT") or None,
         frontend_dist=os.environ.get("WEB_GUI_FRONTEND_DIST") or None,
         state_root=os.environ.get("WEB_GUI_STATE_ROOT") or None,
+        host_config_root=os.environ.get("WEB_GUI_HOST_CONFIG_ROOT") or None,
+        host_library_root=os.environ.get("WEB_GUI_HOST_LIBRARY_ROOT") or None,
+        host_state_root=os.environ.get("WEB_GUI_HOST_STATE_ROOT") or None,
+        host_sync_orchestrator_dir=os.environ.get("WEB_GUI_HOST_SYNC_ORCHESTRATOR_DIR") or None,
     )

@@ -47,6 +47,37 @@ def main() -> None:
         "never built), the backend just serves the JSON API as before.",
     )
     parser.add_argument(
+        "--host-config-root",
+        default=None,
+        help="Real path to --config-root on the BARE HOST, only needed "
+        "when this process itself is containerized (its own --config-root "
+        "is then a container-internal bind-mount target, e.g. /config, "
+        "not a path meaning anything to the systemd unit the auto-sync "
+        "setup card generates -- that unit always runs on the bare "
+        "host). Bare-metal deployments never need this.",
+    )
+    parser.add_argument(
+        "--host-library-root",
+        default=None,
+        help="Same idea as --host-config-root, for --library-root.",
+    )
+    parser.add_argument(
+        "--host-state-root",
+        default=None,
+        help="Same idea as --host-config-root, for --state-root.",
+    )
+    parser.add_argument(
+        "--host-sync-orchestrator-dir",
+        default=None,
+        help="Real path, on the bare host, to a sync-orchestrator "
+        "checkout with its own `uv sync`'d .venv -- the auto-sync "
+        "systemd unit execs "
+        "<this>/.venv/bin/sync-orchestrator directly, so this must be a "
+        "real bare-metal install, never this container's own vendored "
+        "copy (which only exists inside the container). Only needed "
+        "when this process itself is containerized.",
+    )
+    parser.add_argument(
         "--host",
         default="127.0.0.1",
         help="Bind address (default 127.0.0.1 -- localhost only; this "
@@ -76,6 +107,14 @@ def main() -> None:
             os.environ["WEB_GUI_LIBRARY_ROOT"] = str(args.library_root)
         if args.state_root:
             os.environ["WEB_GUI_STATE_ROOT"] = str(args.state_root)
+        if args.host_config_root:
+            os.environ["WEB_GUI_HOST_CONFIG_ROOT"] = str(args.host_config_root)
+        if args.host_library_root:
+            os.environ["WEB_GUI_HOST_LIBRARY_ROOT"] = str(args.host_library_root)
+        if args.host_state_root:
+            os.environ["WEB_GUI_HOST_STATE_ROOT"] = str(args.host_state_root)
+        if args.host_sync_orchestrator_dir:
+            os.environ["WEB_GUI_HOST_SYNC_ORCHESTRATOR_DIR"] = str(args.host_sync_orchestrator_dir)
         os.environ["WEB_GUI_FRONTEND_DIST"] = str(frontend_dist)
         uvicorn.run(
             "web_gui_backend.app:create_app_from_env",
@@ -92,6 +131,10 @@ def main() -> None:
             args.library_root,
             frontend_dist,
             args.state_root,
+            host_config_root=args.host_config_root,
+            host_library_root=args.host_library_root,
+            host_state_root=args.host_state_root,
+            host_sync_orchestrator_dir=args.host_sync_orchestrator_dir,
         )
         uvicorn.run(app, host=args.host, port=args.port)
 

@@ -69,11 +69,33 @@ def get_auto_sync_setup(request: Request) -> dict:
     # ExecStart must be absolute regardless of whether this backend
     # itself was started with a relative --config-root (the documented,
     # common case: `uv run web-gui-backend --config-root config`).
-    config_root: Path = request.app.state.config_root.resolve()
-    library_root: Path = request.app.state.library_root.resolve()
-    state_root: Path = request.app.state.state_root.resolve()
-    sync_orchestrator_dir = Path(
-        request.app.state.sync_orchestrator_dir or _default_sync_orchestrator_dir()
+    #
+    # host_config_root/host_library_root/host_state_root/
+    # host_sync_orchestrator_dir (app.py) override this process's own
+    # view when set -- required when this process is itself
+    # containerized, since its own config_root/etc. are then a
+    # container-internal bind-mount target (e.g. /config), not a path
+    # meaning anything to the systemd unit below, which always runs on
+    # the bare host. Confirmed live: a real containerized deploy's
+    # generated unit tried to exec /app/services/sync-orchestrator/
+    # .venv/bin/sync-orchestrator -- a path that only exists inside the
+    # container -- and failed on every single trigger since the day it
+    # was installed. See notes.md's 2026-09-29 entry.
+    #
+    # Deliberately NOT .resolve()d when they come from a host_* override:
+    # this process's own filesystem view (inside a container) has no
+    # idea whether a host path exists, has symlinks, etc. -- resolving
+    # it here could silently normalize it against the wrong filesystem.
+    # The operator is expected to give an already-absolute real path;
+    # this process's own paths (the non-override branch) still get
+    # resolved exactly as before, since those genuinely are paths on
+    # its own filesystem.
+    state = request.app.state
+    config_root: Path = state.host_config_root or state.config_root.resolve()
+    library_root: Path = state.host_library_root or state.library_root.resolve()
+    state_root: Path = state.host_state_root or state.state_root.resolve()
+    sync_orchestrator_dir = state.host_sync_orchestrator_dir or Path(
+        state.sync_orchestrator_dir or _default_sync_orchestrator_dir()
     ).resolve()
     sync_orchestrator_bin = sync_orchestrator_dir / ".venv" / "bin" / "sync-orchestrator"
 
