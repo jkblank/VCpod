@@ -107,11 +107,34 @@ def get_auto_sync_setup(request: Request) -> dict:
         log_path=state_root / "auto-sync.log",
     )
 
+    # Deliberately NOT the same `state_root` used above: that one is
+    # host_state_root when set, i.e. a path meaningful to the *systemd
+    # unit* (which always runs on bare metal). This process itself, when
+    # containerized, can only actually write through its OWN filesystem
+    # view (state.state_root, e.g. /data/state) -- writing through
+    # host_state_root's path string (e.g. /mnt/storage/vcpod/state) from
+    # inside the container silently lands in a phantom directory in the
+    # container's own writable layer, never reaching the real bind-mounted
+    # host path, since nothing maps that exact string to anything inside
+    # the container. Confirmed live: every previous call "succeeded" and
+    # returned fresh content, but the real file on the host's disk (what
+    # the sudo cp install_commands below actually copy from) silently
+    # never changed. See notes.md's 2026-09-29 entry (second one, same
+    # day as the original host-path fix -- this bug was introduced by
+    # that very fix).
+    local_generated_dir = state.state_root.resolve() / "generated"
+    local_systemd_unit_path = local_generated_dir / "music-stack-auto-sync.service"
+    local_udev_rule_path = local_generated_dir / "99-ipod-music-stack.rules"
+    write_text_atomic(systemd_unit, local_systemd_unit_path)
+    write_text_atomic(_UDEV_RULE_TEMPLATE, local_udev_rule_path)
+
+    # install_commands, by contrast, are shown to a human running `sudo
+    # cp` on the bare host -- those need the host-visible path to the
+    # same files, i.e. state_root (the host_state_root-aware one), not
+    # state.state_root.
     generated_dir = state_root / "generated"
     systemd_unit_path = generated_dir / "music-stack-auto-sync.service"
     udev_rule_path = generated_dir / "99-ipod-music-stack.rules"
-    write_text_atomic(systemd_unit, systemd_unit_path)
-    write_text_atomic(_UDEV_RULE_TEMPLATE, udev_rule_path)
 
     return {
         "systemd_unit": systemd_unit,

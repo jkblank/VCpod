@@ -1,5 +1,44 @@
 # Notes / Future Work
 
+## 2026-09-29: auto-sync setup route's own host-path fix broke writing the generated files, on the same day it was introduced
+
+Found live on `olive` while diagnosing why a *second* profile's
+auto-sync still wasn't working even after supposedly installing the
+fix from earlier the same day (below). The systemd unit installed at
+`/etc/systemd/system/music-stack-auto-sync.service` was still the old,
+broken, container-path version — despite `GET /api/auto-sync/setup`
+consistently returning fresh, correct, host-path content on every call,
+and despite `status.systemd_installed`/`udev_rule_installed` both
+correctly reporting `true`.
+
+Root cause: the earlier host_* override fix (below) made the route use
+`host_state_root` (e.g. `/mnt/storage/vcpod/state`, meaningful to the
+bare-host systemd unit) for *two* different things that need *different*
+paths when this process is itself containerized — the text baked into
+the generated unit (correctly wants the host path) and the filesystem
+path this process itself writes the generated files to (needs this
+container's *own* bind-mount view, e.g. `/data/state`, since nothing
+inside the container maps the literal string `/mnt/storage/vcpod/state`
+to the real bind-mounted directory). Every `GET` call "succeeded" and
+returned correct, fresh content, computed in memory — but the actual
+write landed in a phantom `/mnt/storage/vcpod/state/generated/` inside
+the container's own writable overlay layer, never reaching the real
+host-visible file the `install_commands`' `sudo cp` lines actually copy
+from. A completely convincing false positive: right response, wrong
+disk.
+
+Fix: `routers/auto_sync_setup.py` now writes through
+`state.state_root.resolve()` (this process's own view, ignoring the
+host override) while still using the host-aware `state_root` for both
+the unit's embedded text and the host-facing paths shown in
+`install_commands`. New regression test
+(`test_writes_to_this_process_own_state_root_even_with_host_override`)
+asserts the write lands under the container-local state root and that
+no directory is created under the host-facing path at all. 8/8
+`test_auto_sync_setup.py` passing, 169/170 web-gui-backend (1
+pre-existing, unrelated failure in `test_sync_runner.py`, confirmed via
+`git stash` to predate this change), 556/556 root workspace.
+
 ## 2026-09-29: real sync succeeded, but crashed with exit 1 right after — eject_device() choking on a missing `eject` binary, and Debian base-image tag drift
 
 Found live on the real homelab deploy (`olive`) immediately after a
