@@ -55,12 +55,35 @@ Fix, all three requested together:
   "always --allow-removals, no opt-out" design).
 
 New regression tests for all three (8 new, 571/571 root workspace
-passing). Live-verified against the real `olive` deploy: rebuilt+
-redeployed `web-gui-backend`, then re-ran the real `"How to Hide an
-Empire..."` import from its still-present original source folder in
-the real drop-zone (not the old stale staging leftover, which predates
-this fix) via the real SSE endpoint — see the next log entry below for
-the actual outcome.
+passing). Live-verified against the real `olive` deploy, both real
+stuck books, from their still-present original source folders in the
+real drop-zone (not the old stale staging leftovers, which predate this
+fix) via the real SSE endpoint:
+
+- `"How to Hide an Empire (Audiobook) A History of the Greater United
+  States [RFKLibrary.org] Daniel Immerwahr"` (a single pre-merged
+  `.m4b`, so this exercised beets-audible/the loosened threshold, not
+  the new artist/album-tag-writing -- its own embedded tags were
+  whatever the source file already carried) confidently matched via
+  Audible: `imported_paths` came back with the real published title
+  correctly reconstructed with a colon -- `How to Hide an Empire:
+  A History of the Greater United States` -- not present in that form
+  anywhere in the raw folder name -- under `Daniel Immerwahr`, landing
+  at `/data/library/audiobooks/Daniel Immerwahr/How to Hide an
+  Empire_ A History of the Greater United States/00 - How to Hide an
+  Empire_ A History of the Greater United States.m4b`.
+- `"Thomas Pynchon_Gravity's Rainbow_George Guidall_FerraBit"` (30 real
+  parts, ~32 hours of audio -- genuinely exercised the full pipeline:
+  lossless ALAC merge, the FAT32-safe fallback re-encode at 106k lossy,
+  then beets-audible) imported successfully, landing at
+  `/data/library/audiobooks/Thomas Pynchon/Gravity's Rainbow/00 -
+  Gravity's Rainbow.m4b` -- author/title exactly matching
+  derive_author_and_title_from_folder_name's underscore-split result,
+  confirming the new artist/album tags on the merged file fed a real,
+  clean search query.
+
+Both books had been stuck since 2026-09-10/11 (19-20 days) before this
+fix; both now import cleanly with correct metadata.
 
 ## 2026-09-30: audiobook processing had zero progress feedback — the web GUI's import button just hung
 
