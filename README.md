@@ -256,12 +256,19 @@ sync-orchestrator isn't containerized too" for the full reasoning. A
 button a human clicks tolerates `--privileged` fine; an always-on
 background daemon was judged not worth it.
 
-**Honestly**: the container-to-real-iPod path above (reaching a real
-device through the host's udisks2/D-Bus stack from inside a container)
-was built and documented from reading the actual code, not
-live-verified against a running deployment — no Docker daemon was
-available to build/run it in the environment this was built in. If
-"identify device" doesn't find a connected iPod, `docker compose exec
+**Update (2026-09-29)**: the container-to-real-iPod path above *is* now
+live-verified — a real `--privileged` `web-gui-backend` container on a
+real homelab deploy successfully wrote 1028 tracks to a real connected
+iPod via a real `--execute --allow-removals` sync (see `notes.md`'s
+2026-09-29 entries). That same deploy also surfaced and fixed two real
+bugs the first time this path was actually exercised end to end: the
+generated auto-sync unit/udev rule silently used container-internal
+paths (fixed via the `HOST_*` env vars documented in step 7 above,
+which didn't exist before this), and `eject_device()` crashed on a
+missing `eject` binary right after an already-successful sync (fixed;
+also traced to a Debian base-image tag drift, now pinned).
+
+If "identify device" doesn't find a connected iPod, `docker compose exec
 web-gui-backend uv run --project services/sync-orchestrator
 sync-orchestrator identify-device` is the first thing to try directly,
 to see the real error past the web GUI's "not connected" degradation
@@ -271,8 +278,9 @@ message rather than surfacing it) — most likely culprits are
 `/run/dbus/system_bus_socket` not existing at that exact path on the
 host. The reliable fallback either way is step 7's bare-metal auto-sync,
 which doesn't depend on any of this container-specific plumbing — that
-path *is* live-verified (see `notes.md`'s 2026-09-03/2026-09-08
-entries).
+path is also live-verified (see `notes.md`'s 2026-09-03/2026-09-08 and
+2026-09-29 entries) and now covers both confirmed iPod generations'
+USB PIDs (`0x1209`, `0x1261`) in its generated udev rule, not just one.
 
 ## Manual / local dev install
 
