@@ -3,7 +3,10 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
+
+ProgressCallback = Callable[[str], None]
 
 
 class MergeError(Exception):
@@ -191,6 +194,7 @@ def merge_parts_to_m4b(
     *,
     bitrate: str | None = None,
     title: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> Path:
     """Concats every .mp3 part under parts_dir into one .m4b at
     output_path, with one chapter per source part. `title` seeds the
@@ -200,10 +204,25 @@ def merge_parts_to_m4b(
     `bitrate` is normally left as None: the codec and bitrate are then
     auto-selected per select_encoding's source-matching/lossless-cutover
     policy. Pass an explicit value (e.g. "64k") only to force a flat
-    lossy AAC bitrate regardless of source, overriding that policy."""
+    lossy AAC bitrate regardless of source, overriding that policy.
+
+    `progress_callback`, if given, is called with one short human-readable
+    string per real stage -- this is a handful of coarse steps (probe,
+    encode, maybe a fallback re-encode), not a live percentage: ffmpeg
+    runs here with `-v error` and no `-progress` pipe, same as this
+    codebase's other subprocess.run(capture_output=True)-based progress
+    reporting (e.g. sync_orchestrator's own per-file callbacks), so a
+    caller streaming this to a browser (see web_gui_backend's Audiobooks
+    screen) can at least show *which* step is running and that it's not
+    hung, rather than nothing at all for what can be a multi-minute call
+    on a long book."""
     parts_dir = Path(parts_dir).resolve()
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _report(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
 
     pre_merged = find_pre_merged_m4b(parts_dir)
     if pre_merged is not None:
@@ -213,6 +232,7 @@ def merge_parts_to_m4b(
         # loss; lossless source: 16x the storage for no gain) and
         # replace whatever real per-chapter breakdown it may already
         # have embedded with a single synthetic whole-book chapter.
+        _report(f"found a single pre-merged {pre_merged.name} -- copying through unchanged")
         shutil.copyfile(pre_merged, output_path)
         return output_path
 
@@ -222,6 +242,7 @@ def merge_parts_to_m4b(
         title = derive_title_from_folder_name(parts_dir.name)
 
     parts = discover_parts(parts_dir)
+    _report(f"probing {len(parts)} part(s)...")
     durations = [probe_duration_seconds(ffprobe_path, p) for p in parts]
 
     if bitrate is not None:
@@ -258,6 +279,8 @@ def merge_parts_to_m4b(
             if result.returncode != 0:
                 raise MergeError(f"ffmpeg exited {result.returncode}\n{result.stderr}")
 
+    bitrate_desc = bitrate_flag if bitrate_flag is not None else "lossless"
+    _report(f"merging {len(parts)} part(s) via ffmpeg (codec={codec}, {bitrate_desc})...")
     _run_ffmpeg_merge(codec, bitrate_flag)
 
     if (
@@ -279,6 +302,12 @@ def merge_parts_to_m4b(
         # that actually needs this fallback. See notes.md.
         source_kbps = round(max(probe_bitrate_kbps(ffprobe_path, p) for p in parts))
         codec, bitrate_flag = "aac", f"{max(source_kbps, _MIN_SPOKEN_WORD_LOSSY_KBPS)}k"
+        size_mb = output_path.stat().st_size / 1024**2
+        _report(
+            f"lossless output ({size_mb:.0f} MB) exceeds the FAT32-safe limit -- "
+            f"re-encoding lossy at {bitrate_flag}..."
+        )
         _run_ffmpeg_merge(codec, bitrate_flag)
 
+    _report(f"merge complete: {output_path.stat().st_size / 1024**2:.0f} MB")
     return output_path

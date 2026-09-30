@@ -183,6 +183,35 @@ def test_merge_parts_to_m4b_end_to_end(tmp_path: Path) -> None:
     assert 5.5 <= float(duration.stdout.strip()) <= 6.5
 
 
+def test_merge_parts_to_m4b_reports_progress(tmp_path: Path) -> None:
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    for name in ("part_01.mp3", "part_02.mp3", "part_03.mp3"):
+        shutil.copy(FIXTURES / name, parts_dir / name)
+
+    messages: list[str] = []
+    merge_parts_to_m4b(
+        parts_dir, tmp_path / "out.m4b", bitrate="32k", progress_callback=messages.append
+    )
+
+    assert any("probing 3 part" in m for m in messages)
+    assert any("merging 3 part" in m and "codec=aac" in m for m in messages)
+    assert any(m.startswith("merge complete") for m in messages)
+
+
+def test_merge_parts_to_m4b_pre_merged_m4b_reports_progress(tmp_path: Path) -> None:
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    _make_synthetic_m4b(parts_dir / "already-a-book.m4b", duration=1.0)
+
+    messages: list[str] = []
+    merge_parts_to_m4b(
+        parts_dir, tmp_path / "out.m4b", progress_callback=messages.append
+    )
+
+    assert any("pre-merged" in m and "copying through unchanged" in m for m in messages)
+
+
 def test_merge_parts_to_m4b_passes_through_a_lone_pre_merged_m4b(tmp_path: Path) -> None:
     parts_dir = tmp_path / "parts"
     parts_dir.mkdir()
@@ -309,7 +338,8 @@ def test_merge_parts_to_m4b_falls_back_to_lossy_when_lossless_exceeds_fat32_safe
     parts_dir.mkdir()
     _make_synthetic_mp3(parts_dir / "01.mp3", bitrate_kbps=128)
 
-    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b")
+    messages: list[str] = []
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b", progress_callback=messages.append)
 
     probe = subprocess.run(
         [find_ffprobe(), "-v", "error", "-select_streams", "a:0",
@@ -318,6 +348,7 @@ def test_merge_parts_to_m4b_falls_back_to_lossy_when_lossless_exceeds_fat32_safe
         capture_output=True, text=True, check=True,
     )
     assert probe.stdout.strip() == "aac"
+    assert any("exceeds the FAT32-safe limit" in m and "re-encoding lossy" in m for m in messages)
 
 
 def test_merge_parts_to_m4b_respects_explicit_bitrate_even_past_fat32_margin(

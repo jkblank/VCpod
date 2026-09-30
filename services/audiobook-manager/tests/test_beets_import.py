@@ -70,6 +70,40 @@ def test_import_audiobook_reports_success_when_new_item_appears(
     assert result.imported_paths[0] == fake_audio
 
 
+def test_import_audiobook_reports_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    beets_db_path = tmp_path / "state" / "beets-library.db"
+    source_dir = tmp_path / "staging"
+    source_dir.mkdir(parents=True)
+    fake_audio = source_dir / "merged.m4b"
+    fake_audio.write_bytes(b"not real audio, just a placeholder")
+
+    monkeypatch.setattr(beets_import, "find_beet", lambda: "beet")
+
+    def fake_run(cmd, **kwargs):
+        from beets.library import Item, Library
+
+        beets_db_path.parent.mkdir(parents=True, exist_ok=True)
+        lib = Library(str(beets_db_path))
+        lib.add(Item(path=str(fake_audio).encode("utf-8"), title="The Trial"))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(beets_import.subprocess, "run", fake_run)
+
+    messages: list[str] = []
+    beets_import.import_audiobook(
+        source_dir,
+        audiobooks_root=tmp_path / "library" / "audiobooks",
+        beets_db_path=beets_db_path,
+        beets_config_dir=tmp_path / "beets-config",
+        progress_callback=messages.append,
+    )
+
+    assert any("looking up on Audible" in m for m in messages)
+    assert any("1 file(s) imported" in m for m in messages)
+
+
 def test_import_audiobook_reports_skip_when_no_new_item(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

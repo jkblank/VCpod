@@ -9,20 +9,31 @@ in-process here doesn't introduce a new isolated dependency tree --
 beets-audible is already installed in this exact venv. discover.py
 itself never imports beets (see its own docstring); only the
 POST .../import route below, which actually runs the pipeline, pays
-that cost."""
+that cost.
+
+That POST route streams progress over SSE (audiobook_runner.py) rather
+than blocking until the whole merge+tag pipeline finishes -- a real
+multi-hour audiobook's ffmpeg concat/encode plus beets-audible's Audible
+lookup can take minutes, and the route used to just hang with zero
+feedback until then. Same event shape (progress/result/error) as
+routers/sync.py's SSE routes, for the same reason."""
 
 from __future__ import annotations
 
 import dataclasses
+import json
+from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
 
 from audiobook_manager.discover import discover_audiobooks
-from audiobook_manager.pipeline import ImportPipelineError, run_import_audiobook
 
 from common.config import ConfigError, load_global_config
 
+from web_gui_backend.audiobook_runner import stream_import_audiobook
 from web_gui_backend.errors import config_error_response
+from web_gui_backend.sse import sse_event
 
 router = APIRouter()
 
@@ -44,45 +55,46 @@ def list_discovered_audiobooks(request: Request) -> dict:
     return {"root": root, "books": [dataclasses.asdict(b) for b in books]}
 
 
-@router.post("/api/audiobooks/discover/import")
-def import_discovered_audiobook(body: dict, request: Request) -> dict:
-    name = body.get("name", "")
+async def _import_events(*, request: Request, name: str, root: str) -> AsyncIterator[str]:
     if not name:
-        raise HTTPException(status_code=422, detail="name is required")
-    root = _discover_root(request)
+        yield sse_event("error", "name is required")
+        return
     if not root:
-        raise HTTPException(
-            status_code=422, detail="no discover_root configured for audiobook_manager"
-        )
+        yield sse_event("error", "no discover_root configured for audiobook_manager")
+        return
 
     parts_dir = f"{root.rstrip('/')}/{name}"
     library_root = request.app.state.library_root / "audiobooks"
 
-    try:
-        outcome = run_import_audiobook(
-            parts_dir, library_root=library_root, state_root=request.app.state.state_root
-        )
-    except ImportPipelineError as e:
-        # A real failure (ffmpeg/merge error, beets crashing) -- reaches
-        # out to real external tools/network (Audible/Audnex lookups),
-        # whose failure modes aren't enumerable up front, same "502, not
-        # a raw 500" treatment every other external-call route here uses.
-        raise HTTPException(status_code=502, detail=str(e)) from e
+    async for event, data in stream_import_audiobook(
+        parts_dir, library_root=library_root, state_root=request.app.state.state_root
+    ):
+        if event == "result":
+            payload = json.loads(data)
+            if not payload["imported"]:
+                # Not a failure -- beets-audible just couldn't confidently
+                # match this book. Still an "error" event (there's no
+                # separate SSE status-code channel to distinguish this
+                # from a real failure), same as every other error case
+                # below/above -- the frontend already treats all of them
+                # uniformly (see AudiobookDiscovery.tsx's importError
+                # state), so this loses no behavior the non-streaming
+                # 422-vs-502 split actually provided.
+                yield sse_event(
+                    "error",
+                    "beets-audible could not confidently match this book -- merged file "
+                    f"left at {payload['staging_dir']}. Add a metadata.yml there and retry "
+                    "via `audiobook-manager tag` (see services/audiobook-manager/README.md).",
+                )
+                return
+        yield sse_event(event, data)
 
-    if not outcome.imported:
-        # Not a failure -- beets-audible just couldn't confidently match
-        # this book. Surfaced as a normal (non-2xx) response so the
-        # frontend can show "needs a metadata.yml, see the CLI docs"
-        # rather than claiming success.
-        raise HTTPException(
-            status_code=422,
-            detail="beets-audible could not confidently match this book -- "
-            f"merged file left at {outcome.staging_dir}. Add a metadata.yml "
-            "there and retry via `audiobook-manager tag` (see "
-            "services/audiobook-manager/README.md).",
-        )
 
-    return {
-        "status": "ok",
-        "imported_paths": [str(p) for p in outcome.imported_paths],
-    }
+@router.post("/api/audiobooks/discover/import")
+def import_discovered_audiobook(body: dict, request: Request) -> StreamingResponse:
+    name = body.get("name", "")
+    root = _discover_root(request)
+    return StreamingResponse(
+        _import_events(request=request, name=name, root=root),
+        media_type="text/event-stream",
+    )

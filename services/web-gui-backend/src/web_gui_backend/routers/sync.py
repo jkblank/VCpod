@@ -20,35 +20,24 @@ from fastapi.responses import StreamingResponse
 from common.config import ConfigError, resolve_profile_path
 
 from web_gui_backend.device import _default_sync_orchestrator_dir
+from web_gui_backend.sse import sse_event
 from web_gui_backend.sync_runner import stream_sync
 from web_gui_backend.sync_status import is_sync_running, recent_auto_sync_log_tail
 
 router = APIRouter()
 
 
-def _sse(event: str, data: str) -> str:
-    # Multi-line-safe SSE framing: one "data: " line per line of data,
-    # per the SSE spec (a browser EventSource/manual parser concatenates
-    # consecutive data: lines with '\n' when reconstructing). Every event
-    # this route emits happens to be single-line today (a stderr log
-    # line, or sync-orchestrator's own single-line json.dumps(...)
-    # output) but this stays correct if that ever changes.
-    lines = data.splitlines() or [""]
-    data_block = "\n".join(f"data: {line}" for line in lines)
-    return f"event: {event}\n{data_block}\n\n"
-
-
 async def _sync_events(*, request: Request, body: dict, execute: bool) -> AsyncIterator[str]:
     profile_name = body.get("profile", "")
     if not profile_name:
-        yield _sse("error", "profile is required")
+        yield sse_event("error", "profile is required")
         return
 
     config_root = request.app.state.config_root
     try:
         profile_path = resolve_profile_path(profile_name, config_root)
     except ConfigError as e:
-        yield _sse("error", str(e))
+        yield sse_event("error", str(e))
         return
 
     sync_orchestrator_dir = (
@@ -70,7 +59,7 @@ async def _sync_events(*, request: Request, body: dict, execute: bool) -> AsyncI
             args.append("--allow-removals")
 
     async for event, data in stream_sync(args=args, sync_orchestrator_dir=sync_orchestrator_dir):
-        yield _sse(event, data)
+        yield sse_event(event, data)
 
 
 @router.post("/api/sync/plan")

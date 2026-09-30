@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { api, ApiError, type DiscoveredBook, type GlobalConfig } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { api, ApiError, streamImportAudiobook, type DiscoveredBook, type GlobalConfig } from '../api'
 import { formatRelativeTime } from '../format'
 import { Spinner, SyncedIcon, ToAddIcon } from '../icons'
 
@@ -15,6 +15,12 @@ export default function AudiobookDiscovery() {
   const [error, setError] = useState<string | null>(null)
   const [importing, setImporting] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
+  const [importLog, setImportLog] = useState<string[]>([])
+  const importLogRef = useRef<HTMLPreElement | null>(null)
+
+  useEffect(() => {
+    if (importLogRef.current) importLogRef.current.scrollTop = importLogRef.current.scrollHeight
+  }, [importLog])
 
   const loadBooks = async () => {
     setError(null)
@@ -63,9 +69,22 @@ export default function AudiobookDiscovery() {
   const processBook = async (name: string) => {
     setImporting(name)
     setImportError(null)
+    setImportLog([])
     try {
-      await api.importDiscoveredAudiobook(name)
-      await loadBooks()
+      // Streamed (see web_gui_backend/audiobook_runner.py) rather than one
+      // blocking request -- a real multi-hour book's ffmpeg encode plus
+      // beets-audible's Audible lookup can take minutes, and this way the
+      // log below shows *which* step is running instead of a bare spinner
+      // with no sign of whether it's actually progressing.
+      for await (const evt of streamImportAudiobook(name)) {
+        if (evt.event === 'progress') {
+          setImportLog((prev) => [...prev, evt.data])
+        } else if (evt.event === 'result') {
+          await loadBooks()
+        } else {
+          setImportError(`${name}: ${evt.data}`)
+        }
+      }
     } catch (e) {
       setImportError(`${name}: ${e instanceof ApiError ? e.message : String(e)}`)
     } finally {
@@ -106,6 +125,12 @@ export default function AudiobookDiscovery() {
       </div>
 
       {importError && <div className="error-banner">{importError}</div>}
+
+      {importing && importLog.length > 0 && (
+        <pre className="sync-log" ref={importLogRef}>
+          {importLog.join('\n')}
+        </pre>
+      )}
 
       {books && books.length === 0 && (
         <p className="muted">

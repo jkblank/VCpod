@@ -1,5 +1,75 @@
 # Notes / Future Work
 
+## 2026-09-30: audiobook processing had zero progress feedback — the web GUI's import button just hung
+
+Requested after the auto-sync work above: the web GUI's "Process into
+library" button on the Audiobooks screen (`AudiobookDiscovery.tsx`)
+called one blocking `POST /api/audiobooks/discover/import` and just sat
+there — no feedback at all — until the whole merge+tag pipeline
+finished, which for a real multi-hour audiobook means several minutes
+of ffmpeg concat/encode plus a real network round-trip to Audible via
+beets-audible, with nothing on screen but a static spinner.
+
+Fixed the same way the Sync screen already solves the identical problem
+(a long-running operation streamed to the browser as it runs):
+
+- `audiobook_manager.merge.merge_parts_to_m4b`,
+  `audiobook_manager.beets_import.import_audiobook`, and
+  `audiobook_manager.pipeline.run_import_audiobook` all gained an
+  optional `progress_callback` param, called with one short message per
+  real stage (probing parts, which ffmpeg codec/bitrate got picked, the
+  FAT32-fallback re-encode when it fires, starting the Audible lookup,
+  and each step's completion) — coarse stage-level messages, not a live
+  percentage bar, since ffmpeg here runs with `-v error`/no `-progress`
+  pipe and `beet import -q` has no per-item hook, matching this
+  project's existing progress-reporting convention elsewhere (e.g.
+  sync-orchestrator's own per-file callbacks) rather than inventing a
+  finer-grained mechanism.
+- CLI (`audiobook-manager merge`/`tag`/`import-audiobook`) now prints
+  these as it goes, same `  message` convention sync-orchestrator's CLI
+  already uses.
+- New `web_gui_backend/audiobook_runner.py`: bridges the blocking,
+  in-process, callback-based `run_import_audiobook` (no subprocess, no
+  asyncio anywhere in audiobook-manager) into the same
+  `AsyncIterator[(event, data)]` shape `sync_runner.stream_sync` already
+  established for the Sync screen's SSE routes, via a background thread
+  + `asyncio.Queue` + `call_soon_threadsafe` bridge -- the first time
+  this project has needed to stream an *in-process* blocking call rather
+  than a genuinely separate subprocess's own stdio.
+- The shared SSE-framing helper (`_sse` in `routers/sync.py`) got pulled
+  out into `web_gui_backend/sse.py` once this became a second real
+  caller needing the exact same framing -- `routers/sync.py` updated to
+  use it too, no behavior change there.
+- `POST /api/audiobooks/discover/import` now streams
+  progress/result/error events the same way `/api/sync/plan`/`/execute`
+  already do, instead of returning one blocking JSON response. This
+  folds the old 502 (pipeline error) vs. 422 (beets couldn't match)
+  status-code distinction into a single "error" event type (SSE has no
+  per-event status-code channel) -- no real behavior loss, since the
+  frontend already treated both uniformly as one `importError` string.
+- `AudiobookDiscovery.tsx` now consumes the stream and shows a live,
+  auto-scrolling log (the same `.sync-log` component the Sync screen
+  already uses) while an import is running, instead of a bare spinner.
+
+Verified: `uv run pytest` at the root workspace (563 passing, 1
+pre-existing unrelated failure in `test_sync_runner.py` confirmed via
+`git stash` to predate this work), `npm run build` type-checks clean,
+and a genuine live end-to-end run against a real synthetic ffmpeg-
+generated MP3 through a locally-started `web-gui-backend` (isolated
+`/tmp` config/state/library, not this repo's own) confirmed via `curl
+-N` against the real SSE endpoint: real progress messages streamed in
+the correct order (probing → merging → merge complete → tagging →
+beets-audible's real, correct "could not confidently match" outcome for
+a fake sine-wave file), ending in the expected "error" event with the
+retry instructions. The frontend's own rendering of this was **not**
+visually verified in a browser -- no browser automation tool was
+available in this session (same caveat this README already carries
+elsewhere for prior frontend work); the log-rendering code itself is a
+direct reuse of the Sync screen's already-working `streamSSE`/`.sync-log`
+pattern, not new UI logic, which is why this stopped one step short of
+being live-verified rather than skipping verification for this whole
+piece.
+
 ## 2026-09-29: a real auto-sync failure never showed up in the Activity log — plan-phase failures were never recorded, only execute-phase ones
 
 Found live on `olive` right after the udev-generation fix above finally
