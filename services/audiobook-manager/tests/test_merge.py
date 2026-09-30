@@ -9,6 +9,7 @@ import pytest
 from audiobook_manager.merge import (
     MergeError,
     build_ffmetadata,
+    derive_author_and_title_from_folder_name,
     derive_title_from_folder_name,
     discover_parts,
     find_ffmpeg,
@@ -132,6 +133,16 @@ def test_build_ffmetadata_chapter_boundaries() -> None:
     assert "END=5500" in text
     assert "title=01" in text
     assert "title=02" in text
+    assert "artist=" not in text
+    assert "album=" not in text
+
+
+def test_build_ffmetadata_sets_artist_and_album_when_author_given() -> None:
+    text = build_ffmetadata([(Path("01.mp3"), 2.5)], title="The Trial", author="Franz Kafka")
+
+    assert "title=The Trial" in text
+    assert "artist=Franz Kafka" in text
+    assert "album=The Trial" in text
 
 
 def test_derive_title_from_folder_name_splits_author_and_title() -> None:
@@ -140,6 +151,40 @@ def test_derive_title_from_folder_name_splits_author_and_title() -> None:
 
 def test_derive_title_from_folder_name_falls_back_to_whole_name() -> None:
     assert derive_title_from_folder_name("The Trial") == "The Trial"
+
+
+def test_derive_author_and_title_splits_on_dash() -> None:
+    assert derive_author_and_title_from_folder_name("Franz Kafka - The Trial") == (
+        "Franz Kafka", "The Trial"
+    )
+
+
+def test_derive_author_and_title_splits_on_underscores() -> None:
+    # Regression: a real stuck import named exactly this way -- the
+    # first two underscore-separated fields are the real author/title,
+    # the rest (narrator, release-group) is noise this project has no
+    # use for. See notes.md.
+    assert derive_author_and_title_from_folder_name(
+        "Thomas Pynchon_Gravity's Rainbow_George Guidall_FerraBit"
+    ) == ("Thomas Pynchon", "Gravity's Rainbow")
+
+
+def test_derive_author_and_title_falls_back_to_none_author() -> None:
+    assert derive_author_and_title_from_folder_name("The Trial") == (None, "The Trial")
+
+
+def test_derive_author_and_title_strips_release_noise() -> None:
+    # Regression: a real stuck import named exactly this way -- site tag
+    # in brackets plus an "(Audiobook)" suffix, both of which used to
+    # get sent straight through as part of the Audible search query. See
+    # notes.md.
+    author, title = derive_author_and_title_from_folder_name(
+        "How to Hide an Empire (Audiobook) [RFKLibrary.org] Daniel Immerwahr"
+    )
+    assert "(Audiobook)" not in title
+    assert "[RFKLibrary.org]" not in title
+    assert "RFKLibrary" not in (title or "")
+    assert author is None  # no " - " or "_" separator present in this real name
 
 
 def test_merge_parts_to_m4b_end_to_end(tmp_path: Path) -> None:
@@ -210,6 +255,30 @@ def test_merge_parts_to_m4b_pre_merged_m4b_reports_progress(tmp_path: Path) -> N
     )
 
     assert any("pre-merged" in m and "copying through unchanged" in m for m in messages)
+
+
+def test_merge_parts_to_m4b_writes_real_artist_and_album_tags(tmp_path: Path) -> None:
+    # Regression: the merged file used to only ever get a `title` tag,
+    # never `artist`/`album` -- beets-audible's own Audible search only
+    # falls back to a (noisier) folder-name query when an item has *no*
+    # album/artist tags at all, so every real import here used to take
+    # that weaker path regardless of how clean the folder name actually
+    # was. See notes.md.
+    parts_dir = tmp_path / "Franz Kafka - The Trial"
+    parts_dir.mkdir()
+    for name in ("part_01.mp3", "part_02.mp3", "part_03.mp3"):
+        shutil.copy(FIXTURES / name, parts_dir / name)
+
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b", bitrate="32k")
+
+    tags = subprocess.run(
+        [find_ffprobe(), "-v", "error", "-show_entries", "format_tags=title,artist,album",
+         "-of", "default=noprint_wrappers=1", str(output)],
+        capture_output=True, text=True, check=True,
+    )
+    assert "TAG:title=The Trial" in tags.stdout
+    assert "TAG:artist=Franz Kafka" in tags.stdout
+    assert "TAG:album=The Trial" in tags.stdout
 
 
 def test_merge_parts_to_m4b_passes_through_a_lone_pre_merged_m4b(tmp_path: Path) -> None:

@@ -22,6 +22,30 @@ def test_build_beets_config_text_substitutes_absolute_paths(tmp_path: Path) -> N
     assert "region: us" in text
 
 
+def test_build_beets_config_text_falls_back_to_asis_instead_of_skipping(tmp_path: Path) -> None:
+    # Regression: a real import stuck needing a manual metadata.yml every
+    # time Audible's search didn't turn up a near-exact match -- asis
+    # means it lands in the library anyway instead of sitting unimported.
+    # See notes.md.
+    text = beets_import.build_beets_config_text(
+        audiobooks_root=tmp_path / "library", beets_db_path=tmp_path / "library.db"
+    )
+
+    assert "quiet_fallback: asis" in text
+
+
+def test_build_beets_config_text_loosens_strong_match_threshold(tmp_path: Path) -> None:
+    # Regression: beets' own default (0.04) is tight enough that real
+    # near-matches (a dropped subtitle, narrator folded into the title)
+    # score as "medium" and get skipped in quiet mode instead of applied.
+    # See notes.md.
+    text = beets_import.build_beets_config_text(
+        audiobooks_root=tmp_path / "library", beets_db_path=tmp_path / "library.db"
+    )
+
+    assert "strong_rec_thresh: 0.15" in text
+
+
 def test_write_beets_config_creates_file(tmp_path: Path) -> None:
     config_dir = tmp_path / "beets-config"
     config_path = beets_import.write_beets_config(

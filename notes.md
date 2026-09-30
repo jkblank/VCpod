@@ -1,5 +1,67 @@
 # Notes / Future Work
 
+## 2026-09-30: real audiobook imports were getting stuck unmatched — messy real folder names, a too-strict match threshold, and no fallback
+
+Requested directly: real imports were failing on the actual homelab
+deploy. Found two real books genuinely stuck in
+`state/audiobooks/staging/` on `olive`, never imported:
+
+- `How to Hide an Empire (Audiobook) A History of the Greater United
+  States [RFKLibrary.org] Daniel Immerwahr`
+- `Thomas Pynchon_Gravity's Rainbow_George Guidall_FerraBit`
+
+Neither follows this project's assumed `"Author - Title"` folder
+naming — real scene/release-style captures instead, with bracketed
+site/release-group tags, an `"(Audiobook)"` suffix, and underscore-
+delimited `Author_Title_Narrator_Group` fields. Root cause, three real
+compounding problems:
+
+1. The merged `.m4b` only ever got a `title` tag, never `artist`/
+   `album` — beets-audible's `candidates()` only falls back to a
+   (noisier, unstripped) folder-name-based Audible query when an item
+   has *no* album/artist tags at all; every real import here was
+   already taking that weaker path regardless of how clean the source
+   name actually was.
+2. That folder-name fallback query included raw junk like
+   `"(Audiobook)"` and `"[RFKLibrary.org]"` as literal search terms —
+   beets-audible's own query builder only strips CD/disc-number and
+   (un)abridged markers, nothing else.
+3. beets' own default `match.strong_rec_thresh` (0.04) is tight enough
+   that a real match with only minor differences from the search query
+   scores as "medium" rather than "strong" and gets skipped in quiet
+   mode (`_summary_judgment` in beets' own `session.py`: quiet mode
+   auto-applies only `Recommendation.strong`, otherwise falls to
+   `quiet_fallback`, whose beets-wide default is `skip`) — with no
+   fallback configured, a skip meant "stuck in staging forever, needs a
+   hand-written `metadata.yml`."
+
+Fix, all three requested together:
+
+- `merge.py`: new `derive_author_and_title_from_folder_name()` --
+  strips the noise patterns above, then tries `"Author - Title"`, then
+  `"Author_Title_Narrator_..."` (first two underscore fields), falling
+  back to `(None, cleaned_name)` rather than guessing wrong. The merged
+  file's ffmetadata now gets real `artist=`/`album=` tags (not just
+  `title=`) whenever an author was derived, so beets-audible's *primary*
+  clean-query search path is used instead of its noisy fallback.
+- `beets_import.py`'s generated config: `import.quiet_fallback: asis`
+  (a real, unmatched book now still lands in the library, using
+  whatever tags are already on the file, instead of sitting stuck) and
+  `match.strong_rec_thresh: 0.15` (loosened from beets' 0.04 default,
+  deliberately trading a small real risk of an occasional wrong-book
+  auto-accept for far fewer noisily-named real captures needing manual
+  intervention — matches this project's existing bias elsewhere toward
+  a decisive unattended pipeline, e.g. auto-sync's own
+  "always --allow-removals, no opt-out" design).
+
+New regression tests for all three (8 new, 571/571 root workspace
+passing). Live-verified against the real `olive` deploy: rebuilt+
+redeployed `web-gui-backend`, then re-ran the real `"How to Hide an
+Empire..."` import from its still-present original source folder in
+the real drop-zone (not the old stale staging leftover, which predates
+this fix) via the real SSE endpoint — see the next log entry below for
+the actual outcome.
+
 ## 2026-09-30: audiobook processing had zero progress feedback — the web GUI's import button just hung
 
 Requested after the auto-sync work above: the web GUI's "Process into

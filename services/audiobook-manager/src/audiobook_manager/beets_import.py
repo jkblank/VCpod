@@ -17,6 +17,17 @@ directory: {directory}
 library: {library_db}
 import:
   move: yes
+  # Real, confirmed-live imports were getting stuck in staging needing a
+  # manual metadata.yml every time Audible's search didn't turn up a
+  # near-exact title/author match -- often just messy real-world release
+  # naming (site tags, narrator/release-group noise merge.py now strips
+  # before searching), not a genuinely wrong/ambiguous book. `asis`
+  # means an import that still isn't a strong match after that cleanup
+  # (and after loosening match.strong_rec_thresh below) lands in the
+  # library anyway, using whatever title/artist/album tags are already
+  # on the merged file, instead of sitting unimported forever. See
+  # notes.md.
+  quiet_fallback: asis
 plugins: audible edit fromfilename scrub
 paths:
   "albumtype:audiobook series_name::.+ series_position::.+": $albumartist/%ifdef{{series_name}}/%ifdef{{series_position}} - $album%aunique{{}}/$track - $title
@@ -25,6 +36,19 @@ paths:
   default: $albumartist/$album%aunique{{}}/$track - $title
 musicbrainz:
   enabled: no
+match:
+  # beets' own default (0.04) is tight enough that real Audible matches
+  # with only minor differences from the search query (a dropped
+  # subtitle, narrator name folded into the title, punctuation) score as
+  # "medium" rather than "strong" and get skipped in quiet mode instead
+  # of auto-applied. Loosened deliberately, matching this project's
+  # existing bias elsewhere toward a decisive unattended pipeline over a
+  # more cautious one that needs hand-holding (see auto-sync's own
+  # "always --allow-removals, no opt-out" design) -- the real risk this
+  # trades away is an occasional wrong-book auto-accept, judged less bad
+  # than every noisily-named real capture needing a manual metadata.yml
+  # retry. See notes.md.
+  strong_rec_thresh: 0.15
 audible:
   match_chapters: true
   data_source_mismatch_penalty: 0.0

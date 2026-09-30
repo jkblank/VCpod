@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -152,9 +153,63 @@ def probe_duration_seconds(ffprobe_path: str, path: Path) -> float:
     return float(result.stdout.strip())
 
 
+_RELEASE_NOISE_PATTERNS = [
+    re.compile(r"(?i)\(audiobook\)"),
+    re.compile(r"(?i)\((?:un)?abridged\)"),
+    re.compile(r"\[[^\]]*\]"),  # bracketed release/site tags: [RFKLibrary.org], [FerraBit]
+]
+
+
+def _strip_release_noise(name: str) -> str:
+    """Strips common scene/release-style noise from a raw drop-zone
+    folder name before it's used to derive an author/title or as
+    beets-audible's Audible search query -- "(Audiobook)"/"(Unabridged)"/
+    "(Abridged)" suffixes and bracketed site/release-group tags.
+    Confirmed live: two real audiobooks stuck in staging, unable to
+    confidently match, both had exactly this kind of noise in their
+    folder name (e.g. "... [RFKLibrary.org] Daniel Immerwahr") --
+    beets-audible's own query builder only strips CD/disc-number and
+    (un)abridged markers, nothing else. See notes.md. Collapses the
+    resulting extra whitespace."""
+    cleaned = name
+    for pattern in _RELEASE_NOISE_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    return " ".join(cleaned.split())
+
+
+def derive_author_and_title_from_folder_name(name: str) -> tuple[str | None, str]:
+    """(author, title) best-effort parse of a raw drop-zone folder name,
+    after stripping known noise (see _strip_release_noise). Tries, in
+    order:
+    1. "Author - Title" -- this project's own documented convention.
+    2. "Author_Title_Narrator_..." -- a common scene/release convention,
+       confirmed live against a real stuck import named "Thomas
+       Pynchon_Gravity's Rainbow_George Guidall_FerraBit": the first two
+       underscore-separated fields are exactly the real author/title,
+       the rest narrator/release-group noise this project has no use
+       for.
+    Falls back to (None, cleaned_name) if neither pattern matches -- not
+    every real capture follows a splittable convention (e.g. a
+    subtitle-heavy title with no author separator at all), and guessing
+    wrong here is worse than falling back to Audible's own full-text
+    search over the whole cleaned string."""
+    cleaned = _strip_release_noise(name)
+
+    author, sep, title = cleaned.partition(" - ")
+    if sep and author.strip() and title.strip():
+        return author.strip(), title.strip()
+
+    parts = [p.strip() for p in cleaned.split("_") if p.strip()]
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+
+    return None, cleaned
+
+
 def derive_title_from_folder_name(name: str) -> str:
-    """"Author - Title" -> "Title"; falls back to the whole name if no
-    " - " separator is present.
+    """"Author - Title" -> "Title"; falls back to the whole (noise-
+    stripped) name if no author could be split out -- see
+    derive_author_and_title_from_folder_name, which this delegates to.
 
     Only an initial/fallback title -- beets-audible's own Audible lookup
     may override it on a confident match, but it is copied through
@@ -162,17 +217,30 @@ def derive_title_from_folder_name(name: str) -> str:
     this, the merged file's own filename-derived tag -- literally
     "merged", since that's the staging filename -- ends up as the
     permanent track title). See notes.md."""
-    _, sep, rest = name.partition(" - ")
-    return rest.strip() if sep and rest.strip() else name
+    _, title = derive_author_and_title_from_folder_name(name)
+    return title
 
 
-def build_ffmetadata(parts_with_durations: list[tuple[Path, float]], *, title: str) -> str:
+def build_ffmetadata(
+    parts_with_durations: list[tuple[Path, float]], *, title: str, author: str | None = None
+) -> str:
     """One [CHAPTER] block per source part (boundaries from cumulative
-    durations), preceded by a global `title=` tag -- real tagging
-    (author/album/etc.) happens later via beets-audible, but title is
-    seeded here since beets-audible doesn't reliably override it (see
-    derive_title_from_folder_name)."""
-    lines = [";FFMETADATA1", f"title={title}", ""]
+    durations), preceded by global `title=`/`album=`/`artist=` tags --
+    real tagging happens later via beets-audible, but these are seeded
+    here since beets-audible doesn't reliably override them (see
+    derive_title_from_folder_name).
+
+    `album`/`artist` (not just `title`) matter beyond cosmetics: beets-
+    audible's own candidates() search only falls back to a folder-name-
+    based Audible query when an item has *no* album/artist tags at all
+    -- its primary path builds the query from those two tags directly.
+    Leaving them unset (as this project used to) meant every real import
+    took the weaker, unstripped-noise fallback path instead of a clean
+    "album artist" query. See notes.md."""
+    lines = [";FFMETADATA1", f"title={title}"]
+    if author:
+        lines += [f"artist={author}", f"album={title}"]
+    lines.append("")
     start_ms = 0
     for path, duration in parts_with_durations:
         end_ms = start_ms + round(duration * 1000)
@@ -194,12 +262,16 @@ def merge_parts_to_m4b(
     *,
     bitrate: str | None = None,
     title: str | None = None,
+    author: str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> Path:
     """Concats every .mp3 part under parts_dir into one .m4b at
-    output_path, with one chapter per source part. `title` seeds the
-    output's own title tag -- defaults to derive_title_from_folder_name
-    of parts_dir's name if not given. Returns the resolved output_path.
+    output_path, with one chapter per source part. `title`/`author` seed
+    the output's own title/artist/album tags -- default to
+    derive_author_and_title_from_folder_name of parts_dir's name if not
+    given (best-effort: `author` may come back None if it can't be split
+    out, in which case only `title` is set, same as before this param
+    existed). Returns the resolved output_path.
 
     `bitrate` is normally left as None: the codec and bitrate are then
     auto-selected per select_encoding's source-matching/lossless-cutover
@@ -238,8 +310,12 @@ def merge_parts_to_m4b(
 
     ffmpeg_path = find_ffmpeg()
     ffprobe_path = find_ffprobe()
-    if title is None:
-        title = derive_title_from_folder_name(parts_dir.name)
+    if title is None or author is None:
+        derived_author, derived_title = derive_author_and_title_from_folder_name(parts_dir.name)
+        if title is None:
+            title = derived_title
+        if author is None:
+            author = derived_author
 
     parts = discover_parts(parts_dir)
     _report(f"probing {len(parts)} part(s)...")
@@ -258,7 +334,9 @@ def merge_parts_to_m4b(
                 "\n".join(f"file '{_concat_escape(p)}'" for p in parts) + "\n"
             )
             meta_path = tmp_path / "chapters.txt"
-            meta_path.write_text(build_ffmetadata(list(zip(parts, durations)), title=title))
+            meta_path.write_text(
+                build_ffmetadata(list(zip(parts, durations)), title=title, author=author)
+            )
 
             cmd = [
                 ffmpeg_path,
