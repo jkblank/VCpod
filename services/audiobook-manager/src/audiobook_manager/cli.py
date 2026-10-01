@@ -43,9 +43,16 @@ def _print_skip_error(source_dir: Path, library_root: Path, state_root: Path) ->
     )
 
 
+def _report_progress(message: str) -> None:
+    print(f"  {message}")
+
+
 def _cmd_merge(args: argparse.Namespace) -> int:
     try:
-        output = merge_parts_to_m4b(args.parts_dir, args.output, bitrate=args.bitrate)
+        output = merge_parts_to_m4b(
+            args.parts_dir, args.output, bitrate=args.bitrate,
+            progress_callback=_report_progress,
+        )
     except MergeError as exc:
         print(f"ERROR: {exc}")
         return 1
@@ -65,6 +72,7 @@ def _cmd_tag(args: argparse.Namespace) -> int:
             audiobooks_root=library_root,
             beets_db_path=beets_db_path,
             beets_config_dir=beets_config_dir,
+            progress_callback=_report_progress,
         )
     except BeetsImportError as exc:
         print(f"ERROR: {exc}")
@@ -86,7 +94,8 @@ def _cmd_import_audiobook(args: argparse.Namespace) -> int:
 
     try:
         outcome = run_import_audiobook(
-            parts_dir, library_root=library_root, state_root=state_root, bitrate=args.bitrate
+            parts_dir, library_root=library_root, state_root=state_root, bitrate=args.bitrate,
+            progress_callback=_report_progress,
         )
     except ImportPipelineError as exc:
         print(f"ERROR: {exc}")

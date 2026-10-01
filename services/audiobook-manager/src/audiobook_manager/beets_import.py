@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +17,17 @@ directory: {directory}
 library: {library_db}
 import:
   move: yes
+  # Real, confirmed-live imports were getting stuck in staging needing a
+  # manual metadata.yml every time Audible's search didn't turn up a
+  # near-exact title/author match -- often just messy real-world release
+  # naming (site tags, narrator/release-group noise merge.py now strips
+  # before searching), not a genuinely wrong/ambiguous book. `asis`
+  # means an import that still isn't a strong match after that cleanup
+  # (and after loosening match.strong_rec_thresh below) lands in the
+  # library anyway, using whatever title/artist/album tags are already
+  # on the merged file, instead of sitting unimported forever. See
+  # notes.md.
+  quiet_fallback: asis
 plugins: audible edit fromfilename scrub
 paths:
   "albumtype:audiobook series_name::.+ series_position::.+": $albumartist/%ifdef{{series_name}}/%ifdef{{series_position}} - $album%aunique{{}}/$track - $title
@@ -24,6 +36,19 @@ paths:
   default: $albumartist/$album%aunique{{}}/$track - $title
 musicbrainz:
   enabled: no
+match:
+  # beets' own default (0.04) is tight enough that real Audible matches
+  # with only minor differences from the search query (a dropped
+  # subtitle, narrator name folded into the title, punctuation) score as
+  # "medium" rather than "strong" and get skipped in quiet mode instead
+  # of auto-applied. Loosened deliberately, matching this project's
+  # existing bias elsewhere toward a decisive unattended pipeline over a
+  # more cautious one that needs hand-holding (see auto-sync's own
+  # "always --allow-removals, no opt-out" design) -- the real risk this
+  # trades away is an occasional wrong-book auto-accept, judged less bad
+  # than every noisily-named real capture needing a manual metadata.yml
+  # retry. See notes.md.
+  strong_rec_thresh: 0.15
 audible:
   match_chapters: true
   data_source_mismatch_penalty: 0.0
@@ -70,12 +95,25 @@ class BeetsImportResult:
     stderr: str = ""
 
 
-def _existing_item_paths(beets_db_path: Path) -> dict[int, str]:
+def _existing_item_paths(beets_db_path: Path, audiobooks_root: Path) -> dict[int, str]:
+    """Real bug, confirmed live: Library(str(beets_db_path)) with no
+    explicit directory= falls back to beets' own global config (this
+    machine had a real, pre-existing personal beets config with
+    directory: ~/Music from unrelated use) -- some of Item.path's
+    resolution depends on the Library's *currently active* directory
+    setting, not just the raw bytes stored in the db, so reading the
+    same db without this project's own directory produced silently
+    wrong absolute paths (e.g. ~/Music/Author/... instead of the real
+    ~/Music/music-stack/library/audiobooks/Author/...) for existing
+    items. The actual `beet import` subprocess below is unaffected --
+    it always runs with BEETSDIR set to this project's own isolated
+    config -- only this separate, in-process post-import diff read was
+    exposed to the ambient global config. See notes.md."""
     if not beets_db_path.is_file():
         return {}
     from beets.library import Library
 
-    lib = Library(str(beets_db_path))
+    lib = Library(str(beets_db_path), directory=str(audiobooks_root))
     return {
         item.id: (
             item.path.decode("utf-8") if isinstance(item.path, bytes) else str(item.path)
@@ -90,13 +128,23 @@ def import_audiobook(
     audiobooks_root: Path | str,
     beets_db_path: Path | str,
     beets_config_dir: Path | str,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> BeetsImportResult:
     """Runs `beet import -q <source_dir>` against a project-managed,
     freshly-regenerated config (BEETSDIR-isolated from any real user beets
     install on the host), then verifies success by diffing
     beets.library.Library's item set before/after -- NOT by parsing
     beet's stdout, which isn't a stable contract (matches this codebase's
-    convention of only checking subprocess returncode)."""
+    convention of only checking subprocess returncode).
+
+    `progress_callback`, if given, is called once before the (single,
+    blocking) `beet import` subprocess starts -- `-q` suppresses beets'
+    own per-track output, and there's no per-item hook to report finer-
+    grained progress through, so this is one "this may take a while"
+    message covering the real-network Audible/Audnex lookup inside it,
+    not a live progress bar. See merge.merge_parts_to_m4b's matching
+    param for the same reasoning applied to the ffmpeg half of the
+    pipeline."""
     beet_path = find_beet()
     source_dir = Path(source_dir).resolve()
     audiobooks_root = Path(audiobooks_root).resolve()
@@ -107,7 +155,11 @@ def import_audiobook(
         beets_config_dir, audiobooks_root=audiobooks_root, beets_db_path=beets_db_path
     )
 
-    before = _existing_item_paths(beets_db_path)
+    before = _existing_item_paths(beets_db_path, audiobooks_root)
+    if progress_callback is not None:
+        progress_callback(
+            "tagging via beets-audible (looking up on Audible -- may take a while)..."
+        )
     result = subprocess.run(
         [beet_path, "-c", str(config_path), "import", "-q", str(source_dir)],
         capture_output=True,
@@ -119,8 +171,14 @@ def import_audiobook(
             f"beet import exited {result.returncode}\n{result.stdout}\n{result.stderr}"
         )
 
-    after = _existing_item_paths(beets_db_path)
+    after = _existing_item_paths(beets_db_path, audiobooks_root)
     new_ids = after.keys() - before.keys()
+    if progress_callback is not None:
+        progress_callback(
+            f"beets-audible finished: {len(new_ids)} file(s) imported"
+            if new_ids
+            else "beets-audible finished: could not confidently match this book"
+        )
     return BeetsImportResult(
         imported=bool(new_ids),
         imported_paths=[Path(after[i]) for i in new_ids],

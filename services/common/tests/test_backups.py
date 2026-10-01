@@ -248,6 +248,37 @@ def test_prune_and_gc_backups_cross_device_blob_sharing_safety(tmp_path):
     assert result.deleted_blob_count == 1
 
 
+def test_prune_and_gc_backups_never_touches_another_process_in_progress_temp_blob(tmp_path):
+    # Regression: iopenpod's own blob writer (backup_manager.py's
+    # _store_blob) stages each blob at a dot-prefixed ".blob_<random>"
+    # temp name in the shard dir before atomically renaming it into its
+    # final hash-named path -- a real, in-progress temp file from a
+    # *concurrent* backup creation (e.g. fetch-scheduler's continuous
+    # maintenance tick racing a manual "Compute plan" via the web GUI's
+    # own container) never matches any real hash, so without this
+    # filter it looked exactly like an orphaned blob and got deleted
+    # mid-write, failing that other backup attempt. See notes.md.
+    state_root = tmp_path
+    keep_hash = "k" * 40
+    device_dir = state_root / "device_backups" / "DEVICE_A"
+    _write_snapshot(
+        device_dir, "20260101_000000", timestamp=NOW, device_name="A", hashes=[keep_hash],
+    )
+    _write_blob(state_root, keep_hash)
+    shard = state_root / "device_backups" / "blobs" / "aa"
+    shard.mkdir(parents=True, exist_ok=True)
+    in_progress_temp = shard / ".blob_rgwvj4sx"
+    in_progress_temp.write_bytes(b"partial")
+
+    policy = RetentionPolicy(keep_last=1, max_age_days=14)
+    result = prune_and_gc_backups(
+        state_root, retention_by_device_id={"DEVICE_A": policy}, default_retention=policy, now=NOW
+    )
+
+    assert in_progress_temp.exists()
+    assert result.deleted_blob_count == 0
+
+
 def test_prune_and_gc_backups_never_touches_hashcache_json(tmp_path):
     state_root = tmp_path
     device_dir = state_root / "device_backups" / "DEVICE_A"

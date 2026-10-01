@@ -175,6 +175,40 @@ def test_plan_sync_raises_when_external_library_path_missing(tmp_path):
         )
 
 
+def test_plan_sync_creates_missing_playlists_folder(tmp_path):
+    # A profile with playlists: [] (a real, valid setup -- e.g.
+    # podcasts-only) legitimately never has anything for music-stack
+    # fetch to write to library/playlists/{profile}/, so fetch never
+    # creates that directory no matter how many times it runs. Confirmed
+    # live against config/profiles/Tobie.yaml: plan_sync used to hard-
+    # fail with "pc folder not found" for exactly this reason, even
+    # though "no playlists yet" should be a completely normal state.
+    mount = _make_ipod_mount(tmp_path)
+    library_root = tmp_path / "library"
+    (library_root / "music").mkdir(parents=True)
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    playlists_folder = library_root / "playlists" / "test"
+    assert not playlists_folder.exists()
+
+    profile = _make_profile(tmp_path, str(tmp_path))
+
+    # Stops at the next real dependency this minimal fake can't satisfy
+    # (BackupManager wants a real device serial) -- same "shallowest
+    # reliable failure point" approach the other plan_sync tests here
+    # use, since getting further needs a real iTunesDB/SyncEngine.
+    # What matters is *not* hitting "pc folder not found" for playlists.
+    with pytest.raises(AttributeError, match="serial"):
+        plan_sync(
+            device_info=_FakeDeviceInfo(str(mount)),
+            library_root=library_root,
+            state_root=state_root,
+            profile=profile,
+        )
+
+    assert playlists_folder.is_dir()
+
+
 def test_plan_sync_uses_resolve_music_folder_for_pc_folders(monkeypatch, tmp_path):
     # plan_sync must build its pc_folders from resolve_music_folder's
     # return value, not a hardcoded library_root/music — asserted by

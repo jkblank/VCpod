@@ -98,7 +98,18 @@ def build_staging_dir(
     for src in selected_files:
         dest = staging_dir / src.relative_to(library_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.symlink_to(src)
+        # .resolve(): a *relative* symlink target is resolved by the OS
+        # relative to the symlink's own containing directory, not this
+        # process's cwd -- a relative src here (e.g. --library-root
+        # passed as "../../library", exactly this project's own
+        # documented invocation) would silently produce a broken
+        # symlink pointing at a nonsense nested path, not the real file.
+        # Confirmed live: audiobooks staging (resolve_audiobooks_folder)
+        # inherits whatever --library-root happened to be, unlike
+        # external_library's own path (always real/absolute by its own
+        # convention) -- this is why the bug showed up there first. See
+        # notes.md.
+        dest.symlink_to(src.resolve())
 
 
 def build_media_folders(pc_folders: tuple[str, ...]) -> tuple[MediaFolderEntry, ...]:

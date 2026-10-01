@@ -12,7 +12,10 @@ from audiobook_manager.merge import MergeError
 
 def test_cmd_merge_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     output = tmp_path / "out.m4b"
-    monkeypatch.setattr(cli, "merge_parts_to_m4b", lambda parts_dir, out, bitrate: output)
+    monkeypatch.setattr(
+        cli, "merge_parts_to_m4b",
+        lambda parts_dir, out, bitrate, progress_callback=None: output,
+    )
 
     args = argparse.Namespace(parts_dir=str(tmp_path), output=str(output), bitrate="64k")
     assert cli._cmd_merge(args) == 0
@@ -22,7 +25,7 @@ def test_cmd_merge_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caps
 def test_cmd_merge_reports_merge_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    def boom(parts_dir, out, bitrate):
+    def boom(parts_dir, out, bitrate, progress_callback=None):
         raise MergeError("no ffmpeg")
 
     monkeypatch.setattr(cli, "merge_parts_to_m4b", boom)
@@ -82,7 +85,10 @@ def test_cmd_import_audiobook_success_removes_empty_staging_dir(
     state_root = tmp_path / "state"
     library_root = tmp_path / "library" / "audiobooks"
 
-    monkeypatch.setattr(pipeline, "merge_parts_to_m4b", lambda parts_dir, out, bitrate: out)
+    monkeypatch.setattr(
+        pipeline, "merge_parts_to_m4b",
+        lambda parts_dir, out, bitrate, progress_callback=None: out,
+    )
 
     imported_path = library_root / "Kafka" / "The Trial.m4b"
 
@@ -107,6 +113,45 @@ def test_cmd_import_audiobook_success_removes_empty_staging_dir(
     assert not staging_dir.exists()
 
 
+def test_run_import_audiobook_forwards_progress_callback_to_merge_and_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts_dir = tmp_path / "Franz Kafka - The Trial"
+    parts_dir.mkdir()
+    state_root = tmp_path / "state"
+    library_root = tmp_path / "library" / "audiobooks"
+
+    received_by_merge: list = []
+    received_by_import: list = []
+
+    def fake_merge(parts_dir, out, bitrate, progress_callback=None):
+        received_by_merge.append(progress_callback)
+        if progress_callback:
+            progress_callback("merge step")
+        return out
+
+    def fake_import(source_dir, *, progress_callback=None, **kwargs):
+        received_by_import.append(progress_callback)
+        if progress_callback:
+            progress_callback("import step")
+        return BeetsImportResult(imported=True, imported_paths=[Path("x.m4b")])
+
+    monkeypatch.setattr(pipeline, "merge_parts_to_m4b", fake_merge)
+    monkeypatch.setattr(pipeline, "import_audiobook", fake_import)
+
+    messages: list[str] = []
+    pipeline.run_import_audiobook(
+        parts_dir, library_root=library_root, state_root=state_root,
+        progress_callback=messages.append,
+    )
+
+    assert received_by_merge == [messages.append]
+    assert received_by_import == [messages.append]
+    assert any("starting import" in m for m in messages)
+    assert "merge step" in messages
+    assert "import step" in messages
+
+
 def test_cmd_import_audiobook_skip_leaves_staging_dir_and_reports_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
@@ -115,7 +160,10 @@ def test_cmd_import_audiobook_skip_leaves_staging_dir_and_reports_retry(
     state_root = tmp_path / "state"
     library_root = tmp_path / "library" / "audiobooks"
 
-    monkeypatch.setattr(pipeline, "merge_parts_to_m4b", lambda parts_dir, out, bitrate: out)
+    monkeypatch.setattr(
+        pipeline, "merge_parts_to_m4b",
+        lambda parts_dir, out, bitrate, progress_callback=None: out,
+    )
     monkeypatch.setattr(
         pipeline, "import_audiobook", lambda *a, **k: BeetsImportResult(imported=False)
     )
@@ -199,7 +247,10 @@ def test_cmd_import_audiobook_success_records_import_for_discover(tmp_path, monk
     state_root = tmp_path / "state"
     library_root = tmp_path / "library" / "audiobooks"
 
-    monkeypatch.setattr(pipeline, "merge_parts_to_m4b", lambda parts_dir, out, bitrate: out)
+    monkeypatch.setattr(
+        pipeline, "merge_parts_to_m4b",
+        lambda parts_dir, out, bitrate, progress_callback=None: out,
+    )
 
     imported_path = library_root / "Kafka" / "The Trial.m4b"
 

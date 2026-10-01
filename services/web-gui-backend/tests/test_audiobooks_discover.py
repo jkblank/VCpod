@@ -4,7 +4,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from audiobook_manager.discover import record_import
-from audiobook_manager.pipeline import ImportOutcome, ImportPipelineError
 from common.config import save_global_config
 from common.models import (
     AppleMusicSource,
@@ -103,13 +102,29 @@ def test_discover_flags_already_imported_books(config_root, state_root, tmp_path
     assert book["library_paths"] == ["/lib/trial.m4b"]
 
 
+def _parse_sse(text: str) -> list[tuple[str, str]]:
+    parsed = []
+    for block in text.strip().split("\n\n"):
+        if not block:
+            continue
+        event = None
+        data_lines = []
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event = line[len("event: "):]
+            elif line.startswith("data: "):
+                data_lines.append(line[len("data: "):])
+        parsed.append((event, "\n".join(data_lines)))
+    return parsed
+
+
 def test_import_discovered_audiobook_requires_name(config_root, state_root):
     client = _client(config_root, state_root, discover_root="/somewhere")
 
     resp = client.post("/api/audiobooks/discover/import", json={})
 
-    assert resp.status_code == 422
-    assert "name is required" in resp.json()["detail"]
+    events = _parse_sse(resp.text)
+    assert events == [("error", "name is required")]
 
 
 def test_import_discovered_audiobook_requires_discover_root_configured(config_root, state_root):
@@ -117,61 +132,86 @@ def test_import_discovered_audiobook_requires_discover_root_configured(config_ro
 
     resp = client.post("/api/audiobooks/discover/import", json={"name": "Some Book"})
 
-    assert resp.status_code == 422
-    assert "no discover_root configured" in resp.json()["detail"]
+    events = _parse_sse(resp.text)
+    assert events == [("error", "no discover_root configured for audiobook_manager")]
 
 
-def test_import_discovered_audiobook_returns_502_on_pipeline_error(
+def test_import_discovered_audiobook_streams_progress_then_error_on_pipeline_failure(
     monkeypatch, config_root, state_root
 ):
-    def _boom(parts_dir, *, library_root, state_root):
-        raise ImportPipelineError("no ffmpeg on PATH")
+    async def _boom(parts_dir, *, library_root, state_root):
+        yield ("progress", "starting import for 'Some Book'")
+        yield ("error", "no ffmpeg on PATH")
 
-    monkeypatch.setattr(routers.audiobooks_discover, "run_import_audiobook", _boom)
+    monkeypatch.setattr(routers.audiobooks_discover, "stream_import_audiobook", _boom)
     client = _client(config_root, state_root, discover_root="/drop-zone")
 
     resp = client.post("/api/audiobooks/discover/import", json={"name": "Some Book"})
 
-    assert resp.status_code == 502
-    assert "no ffmpeg" in resp.json()["detail"]
+    events = _parse_sse(resp.text)
+    assert events == [
+        ("progress", "starting import for 'Some Book'"),
+        ("error", "no ffmpeg on PATH"),
+    ]
 
 
-def test_import_discovered_audiobook_returns_422_when_beets_could_not_match(
+def test_import_discovered_audiobook_streams_error_when_beets_could_not_match(
     monkeypatch, config_root, state_root
 ):
-    staging_dir = state_root / "audiobooks" / "staging" / "Some Book"
+    staging_dir = str(state_root / "audiobooks" / "staging" / "Some Book")
 
-    def _skip(parts_dir, *, library_root, state_root):
-        return ImportOutcome(imported=False, imported_paths=[], staging_dir=staging_dir)
+    async def _skip(parts_dir, *, library_root, state_root):
+        import json
 
-    monkeypatch.setattr(routers.audiobooks_discover, "run_import_audiobook", _skip)
+        yield ("result", json.dumps(
+            {"imported": False, "imported_paths": [], "staging_dir": staging_dir}
+        ))
+
+    monkeypatch.setattr(routers.audiobooks_discover, "stream_import_audiobook", _skip)
     client = _client(config_root, state_root, discover_root="/drop-zone")
 
     resp = client.post("/api/audiobooks/discover/import", json={"name": "Some Book"})
 
-    assert resp.status_code == 422
-    assert "could not confidently match" in resp.json()["detail"]
-    assert str(staging_dir) in resp.json()["detail"]
+    events = _parse_sse(resp.text)
+    assert len(events) == 1
+    assert events[0][0] == "error"
+    assert "could not confidently match" in events[0][1]
+    assert staging_dir in events[0][1]
 
 
-def test_import_discovered_audiobook_success(monkeypatch, config_root, state_root):
+def test_import_discovered_audiobook_streams_progress_then_result_on_success(
+    monkeypatch, config_root, state_root
+):
+    import json
+
     captured = {}
     imported_path = Path("/lib/Franz Kafka/The Trial.m4b")
 
-    def _capture(parts_dir, *, library_root, state_root):
+    async def _capture(parts_dir, *, library_root, state_root):
         captured["parts_dir"] = parts_dir
         captured["library_root"] = library_root
-        return ImportOutcome(
-            imported=True, imported_paths=[imported_path], staging_dir=Path("/staging")
-        )
+        yield ("progress", "merging 3 part(s) via ffmpeg (codec=aac, 64k)...")
+        yield ("progress", "tagging via beets-audible (looking up on Audible)...")
+        yield ("result", json.dumps(
+            {
+                "imported": True,
+                "imported_paths": [str(imported_path)],
+                "staging_dir": "/staging",
+            }
+        ))
 
-    monkeypatch.setattr(routers.audiobooks_discover, "run_import_audiobook", _capture)
+    monkeypatch.setattr(routers.audiobooks_discover, "stream_import_audiobook", _capture)
     client = _client(config_root, state_root, discover_root="/drop-zone")
 
     resp = client.post(
         "/api/audiobooks/discover/import", json={"name": "Franz Kafka - The Trial"}
     )
 
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "imported_paths": [str(imported_path)]}
+    events = _parse_sse(resp.text)
+    assert events[0] == ("progress", "merging 3 part(s) via ffmpeg (codec=aac, 64k)...")
+    assert events[1] == ("progress", "tagging via beets-audible (looking up on Audible)...")
+    assert events[2][0] == "result"
+    result_payload = json.loads(events[2][1])
+    assert result_payload["imported"] is True
+    assert result_payload["imported_paths"] == [str(imported_path)]
     assert captured["parts_dir"] == "/drop-zone/Franz Kafka - The Trial"

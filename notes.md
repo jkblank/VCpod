@@ -1,5 +1,615 @@
 # Notes / Future Work
 
+## 2026-09-30: real audiobook imports were getting stuck unmatched — messy real folder names, a too-strict match threshold, and no fallback
+
+Requested directly: real imports were failing on the actual homelab
+deploy. Found two real books genuinely stuck in
+`state/audiobooks/staging/` on `olive`, never imported:
+
+- `How to Hide an Empire (Audiobook) A History of the Greater United
+  States [RFKLibrary.org] Daniel Immerwahr`
+- `Thomas Pynchon_Gravity's Rainbow_George Guidall_FerraBit`
+
+Neither follows this project's assumed `"Author - Title"` folder
+naming — real scene/release-style captures instead, with bracketed
+site/release-group tags, an `"(Audiobook)"` suffix, and underscore-
+delimited `Author_Title_Narrator_Group` fields. Root cause, three real
+compounding problems:
+
+1. The merged `.m4b` only ever got a `title` tag, never `artist`/
+   `album` — beets-audible's `candidates()` only falls back to a
+   (noisier, unstripped) folder-name-based Audible query when an item
+   has *no* album/artist tags at all; every real import here was
+   already taking that weaker path regardless of how clean the source
+   name actually was.
+2. That folder-name fallback query included raw junk like
+   `"(Audiobook)"` and `"[RFKLibrary.org]"` as literal search terms —
+   beets-audible's own query builder only strips CD/disc-number and
+   (un)abridged markers, nothing else.
+3. beets' own default `match.strong_rec_thresh` (0.04) is tight enough
+   that a real match with only minor differences from the search query
+   scores as "medium" rather than "strong" and gets skipped in quiet
+   mode (`_summary_judgment` in beets' own `session.py`: quiet mode
+   auto-applies only `Recommendation.strong`, otherwise falls to
+   `quiet_fallback`, whose beets-wide default is `skip`) — with no
+   fallback configured, a skip meant "stuck in staging forever, needs a
+   hand-written `metadata.yml`."
+
+Fix, all three requested together:
+
+- `merge.py`: new `derive_author_and_title_from_folder_name()` --
+  strips the noise patterns above, then tries `"Author - Title"`, then
+  `"Author_Title_Narrator_..."` (first two underscore fields), falling
+  back to `(None, cleaned_name)` rather than guessing wrong. The merged
+  file's ffmetadata now gets real `artist=`/`album=` tags (not just
+  `title=`) whenever an author was derived, so beets-audible's *primary*
+  clean-query search path is used instead of its noisy fallback.
+- `beets_import.py`'s generated config: `import.quiet_fallback: asis`
+  (a real, unmatched book now still lands in the library, using
+  whatever tags are already on the file, instead of sitting stuck) and
+  `match.strong_rec_thresh: 0.15` (loosened from beets' 0.04 default,
+  deliberately trading a small real risk of an occasional wrong-book
+  auto-accept for far fewer noisily-named real captures needing manual
+  intervention — matches this project's existing bias elsewhere toward
+  a decisive unattended pipeline, e.g. auto-sync's own
+  "always --allow-removals, no opt-out" design).
+
+New regression tests for all three (8 new, 571/571 root workspace
+passing). Live-verified against the real `olive` deploy, both real
+stuck books, from their still-present original source folders in the
+real drop-zone (not the old stale staging leftovers, which predate this
+fix) via the real SSE endpoint:
+
+- `"How to Hide an Empire (Audiobook) A History of the Greater United
+  States [RFKLibrary.org] Daniel Immerwahr"` (a single pre-merged
+  `.m4b`, so this exercised beets-audible/the loosened threshold, not
+  the new artist/album-tag-writing -- its own embedded tags were
+  whatever the source file already carried) confidently matched via
+  Audible: `imported_paths` came back with the real published title
+  correctly reconstructed with a colon -- `How to Hide an Empire:
+  A History of the Greater United States` -- not present in that form
+  anywhere in the raw folder name -- under `Daniel Immerwahr`, landing
+  at `/data/library/audiobooks/Daniel Immerwahr/How to Hide an
+  Empire_ A History of the Greater United States/00 - How to Hide an
+  Empire_ A History of the Greater United States.m4b`.
+- `"Thomas Pynchon_Gravity's Rainbow_George Guidall_FerraBit"` (30 real
+  parts, ~32 hours of audio -- genuinely exercised the full pipeline:
+  lossless ALAC merge, the FAT32-safe fallback re-encode at 106k lossy,
+  then beets-audible) imported successfully, landing at
+  `/data/library/audiobooks/Thomas Pynchon/Gravity's Rainbow/00 -
+  Gravity's Rainbow.m4b` -- author/title exactly matching
+  derive_author_and_title_from_folder_name's underscore-split result,
+  confirming the new artist/album tags on the merged file fed a real,
+  clean search query.
+
+Both books had been stuck since 2026-09-10/11 (19-20 days) before this
+fix; both now import cleanly with correct metadata.
+
+## 2026-09-30: audiobook processing had zero progress feedback — the web GUI's import button just hung
+
+Requested after the auto-sync work above: the web GUI's "Process into
+library" button on the Audiobooks screen (`AudiobookDiscovery.tsx`)
+called one blocking `POST /api/audiobooks/discover/import` and just sat
+there — no feedback at all — until the whole merge+tag pipeline
+finished, which for a real multi-hour audiobook means several minutes
+of ffmpeg concat/encode plus a real network round-trip to Audible via
+beets-audible, with nothing on screen but a static spinner.
+
+Fixed the same way the Sync screen already solves the identical problem
+(a long-running operation streamed to the browser as it runs):
+
+- `audiobook_manager.merge.merge_parts_to_m4b`,
+  `audiobook_manager.beets_import.import_audiobook`, and
+  `audiobook_manager.pipeline.run_import_audiobook` all gained an
+  optional `progress_callback` param, called with one short message per
+  real stage (probing parts, which ffmpeg codec/bitrate got picked, the
+  FAT32-fallback re-encode when it fires, starting the Audible lookup,
+  and each step's completion) — coarse stage-level messages, not a live
+  percentage bar, since ffmpeg here runs with `-v error`/no `-progress`
+  pipe and `beet import -q` has no per-item hook, matching this
+  project's existing progress-reporting convention elsewhere (e.g.
+  sync-orchestrator's own per-file callbacks) rather than inventing a
+  finer-grained mechanism.
+- CLI (`audiobook-manager merge`/`tag`/`import-audiobook`) now prints
+  these as it goes, same `  message` convention sync-orchestrator's CLI
+  already uses.
+- New `web_gui_backend/audiobook_runner.py`: bridges the blocking,
+  in-process, callback-based `run_import_audiobook` (no subprocess, no
+  asyncio anywhere in audiobook-manager) into the same
+  `AsyncIterator[(event, data)]` shape `sync_runner.stream_sync` already
+  established for the Sync screen's SSE routes, via a background thread
+  + `asyncio.Queue` + `call_soon_threadsafe` bridge -- the first time
+  this project has needed to stream an *in-process* blocking call rather
+  than a genuinely separate subprocess's own stdio.
+- The shared SSE-framing helper (`_sse` in `routers/sync.py`) got pulled
+  out into `web_gui_backend/sse.py` once this became a second real
+  caller needing the exact same framing -- `routers/sync.py` updated to
+  use it too, no behavior change there.
+- `POST /api/audiobooks/discover/import` now streams
+  progress/result/error events the same way `/api/sync/plan`/`/execute`
+  already do, instead of returning one blocking JSON response. This
+  folds the old 502 (pipeline error) vs. 422 (beets couldn't match)
+  status-code distinction into a single "error" event type (SSE has no
+  per-event status-code channel) -- no real behavior loss, since the
+  frontend already treated both uniformly as one `importError` string.
+- `AudiobookDiscovery.tsx` now consumes the stream and shows a live,
+  auto-scrolling log (the same `.sync-log` component the Sync screen
+  already uses) while an import is running, instead of a bare spinner.
+
+Verified: `uv run pytest` at the root workspace (563 passing, 1
+pre-existing unrelated failure in `test_sync_runner.py` confirmed via
+`git stash` to predate this work), `npm run build` type-checks clean,
+and a genuine live end-to-end run against a real synthetic ffmpeg-
+generated MP3 through a locally-started `web-gui-backend` (isolated
+`/tmp` config/state/library, not this repo's own) confirmed via `curl
+-N` against the real SSE endpoint: real progress messages streamed in
+the correct order (probing → merging → merge complete → tagging →
+beets-audible's real, correct "could not confidently match" outcome for
+a fake sine-wave file), ending in the expected "error" event with the
+retry instructions. The frontend's own rendering of this was **not**
+visually verified in a browser -- no browser automation tool was
+available in this session (same caveat this README already carries
+elsewhere for prior frontend work); the log-rendering code itself is a
+direct reuse of the Sync screen's already-working `streamSSE`/`.sync-log`
+pattern, not new UI logic, which is why this stopped one step short of
+being live-verified rather than skipping verification for this whole
+piece.
+
+## 2026-09-29: a real auto-sync failure never showed up in the Activity log — plan-phase failures were never recorded, only execute-phase ones
+
+Found live on `olive` right after the udev-generation fix above finally
+let a real auto-sync run trigger end-to-end for the first time: it got
+through device backup successfully (310 files hashed) then failed with
+`FAIL: fpcalc not found on PATH (chromaprint not installed)` — the
+bare-metal `sync-orchestrator` venv on `olive` never had `ffmpeg`/
+`libchromaprint-tools` installed at the OS level (only inside
+web-gui-backend's own Docker image). That failure was real and
+reproducible, but the web GUI's Activity screen showed nothing for it.
+
+Root cause: `_run_sync`'s (and `_run_rockbox_sync`'s) `try/except` around
+`plan_sync`/`plan_rockbox_sync` just did `return _fail(str(e))` with no
+`record_activity` call — only the *later* `except` block around
+`execute_sync`/`execute_rockbox_sync` logged anything. A plan-phase
+failure (missing dependency, unresolved selection re-raised as
+`SyncError`, etc.) is exactly as real an auto-sync outcome as an
+execute-phase one, especially for an unattended run nobody's watching
+live — but never reached `record_activity` at all, since it fails
+before `execute_sync` is ever called.
+
+Fix: both plan-phase `except` blocks in `cli.py` now call
+`record_activity` (`result="error"`, description prefixed `"sync — plan
+failed:"` / `"sync (rockbox) — plan failed:"`) before returning,
+mirroring the existing execute-phase pattern exactly. New regression
+tests `test_run_sync_plan_failure_records_activity_entry` /
+`test_run_rockbox_sync_plan_failure_records_activity_entry` assert a
+real entry lands in `list_activity()`. 196/196 sync-orchestrator tests
+passing (2 new), 557/557 root workspace.
+
+Not yet covering: `_cmd_auto_sync`'s own "no matching profile found
+within Ns" timeout path (no single profile to attach the entry to) and
+`find_matching_device`'s `DeviceNotFoundError` in both plan functions —
+left out as lower-value/lower-risk for now (the interactive-command
+redundant re-match essentially never fails right after `_cmd_auto_sync`
+already matched the same device seconds earlier); flagged here as a
+known remaining gap if it turns out to matter in practice.
+
+## 2026-09-29: auto-sync's generated udev rule only ever matched one iPod generation, silently dropping a second real one on every regeneration
+
+Found live on `olive` while confirming whether the auto-sync fixes
+(above) would apply to every profile's iPod, not just one. The
+installed `/etc/udev/rules.d/99-ipod-music-stack.rules` had been
+hand-edited: its generated `idProduct=="1209"` line was commented out
+and replaced with an active `idProduct=="1261"` line — clear evidence
+someone had already hit a real second iPod generation the generator
+didn't cover, and patched around it by hand.
+
+Confirmed via real kernel history (`journalctl -k`, full retention):
+`05ac:1209` (bcdDevice 0.02) is a real 5th/5.5th-gen iPod Video (one
+real serial, nienie's — the exact device this session's "not
+auto-mounting" report was about); `05ac:1261` (bcdDevice 0.01) is a
+different, real generation confirmed against *two* distinct real
+device serials across this host's history (likely iPod Classic 6th/7th
+gen). Both are genuinely in use across this deploy's 3 profiles
+(john/nienie/Tobie).
+
+Root cause: `_UDEV_RULE_TEMPLATE` in `routers/auto_sync_setup.py`
+hardcoded exactly one `ACTION=="add"` rule, for `1209` only — a
+profile's `device.match_value` (a real Apple product serial, SCSI VPD
+page 0x80) is unrelated to the USB idProduct family a device enumerates
+under, so a correctly-configured profile still silently never
+auto-triggers if its iPod's *generation* isn't one of the udev rule's
+matched PIDs. Every regeneration via the web GUI overwrote any manual
+fix for this back down to the single hardcoded PID.
+
+Fix: the template now emits one rule per confirmed PID (`1209` and
+`1261`, both real, both evidenced above) instead of one hardcoded rule.
+New regression test
+(`test_udev_rule_covers_both_confirmed_ipod_generations`) asserts both
+PIDs are present with their own trigger clause. Still not a general
+solution — a *third* never-seen generation still needs a new rule added
+by hand (the docstring/comment says so) — but this at minimum stops the
+two generations already proven to exist on this real deploy from
+fighting each other every time someone regenerates the file.
+
+## 2026-09-29: auto-sync setup route's own host-path fix broke writing the generated files, on the same day it was introduced
+
+Found live on `olive` while diagnosing why a *second* profile's
+auto-sync still wasn't working even after supposedly installing the
+fix from earlier the same day (below). The systemd unit installed at
+`/etc/systemd/system/music-stack-auto-sync.service` was still the old,
+broken, container-path version — despite `GET /api/auto-sync/setup`
+consistently returning fresh, correct, host-path content on every call,
+and despite `status.systemd_installed`/`udev_rule_installed` both
+correctly reporting `true`.
+
+Root cause: the earlier host_* override fix (below) made the route use
+`host_state_root` (e.g. `/mnt/storage/vcpod/state`, meaningful to the
+bare-host systemd unit) for *two* different things that need *different*
+paths when this process is itself containerized — the text baked into
+the generated unit (correctly wants the host path) and the filesystem
+path this process itself writes the generated files to (needs this
+container's *own* bind-mount view, e.g. `/data/state`, since nothing
+inside the container maps the literal string `/mnt/storage/vcpod/state`
+to the real bind-mounted directory). Every `GET` call "succeeded" and
+returned correct, fresh content, computed in memory — but the actual
+write landed in a phantom `/mnt/storage/vcpod/state/generated/` inside
+the container's own writable overlay layer, never reaching the real
+host-visible file the `install_commands`' `sudo cp` lines actually copy
+from. A completely convincing false positive: right response, wrong
+disk.
+
+Fix: `routers/auto_sync_setup.py` now writes through
+`state.state_root.resolve()` (this process's own view, ignoring the
+host override) while still using the host-aware `state_root` for both
+the unit's embedded text and the host-facing paths shown in
+`install_commands`. New regression test
+(`test_writes_to_this_process_own_state_root_even_with_host_override`)
+asserts the write lands under the container-local state root and that
+no directory is created under the host-facing path at all. 8/8
+`test_auto_sync_setup.py` passing, 169/170 web-gui-backend (1
+pre-existing, unrelated failure in `test_sync_runner.py`, confirmed via
+`git stash` to predate this change), 556/556 root workspace.
+
+## 2026-09-29: real sync succeeded, but crashed with exit 1 right after — eject_device() choking on a missing `eject` binary, and Debian base-image tag drift
+
+Found live on the real homelab deploy (`olive`) immediately after a
+real `--execute --allow-removals` sync via the container genuinely
+succeeded (`PASS: wrote 1028 track(s) to a real device`) — the process
+then crashed with an uncaught `FileNotFoundError` traceback and exit
+code 1 while trying to auto-eject the device afterward, which would
+mislead any script/tooling checking the exit code into thinking the
+whole sync had failed.
+
+Root cause, in two parts:
+1. `device.py`'s `eject_device()` calls `subprocess.run(["eject", ...])`
+   with no handling for the binary not existing at all --
+   `subprocess.run` raises a bare `FileNotFoundError` in that case,
+   which `cli.py`'s own `except EjectError:` (the *only* exception type
+   it catches around this call) never catches.
+2. `eject` genuinely wasn't installed in `web-gui-backend`'s image, and
+   not because anyone forgot it — confirmed live: `util-linux` (already
+   in the Dockerfile specifically *for* eject) is installed, but
+   `dpkg -l` showed the container was actually running Debian **trixie**
+   (`util-linux 2.41.5-0+deb13u1`), not bookworm. `FROM python:3.12-slim`
+   was never pinned to one release, and between this image's original
+   build and now, that rolling tag itself moved from bookworm to
+   trixie -- which is exactly when Debian split `eject` out of
+   `util-linux` into its own separate package. util-linux alone had
+   simply stopped providing it.
+
+Fix: `eject_device()` now catches `FileNotFoundError` from the
+subprocess call and re-raises it as its own `EjectError` — the exact
+same graceful "WARNING: could not eject device automatically" path
+every other real eject failure already goes through, no changes needed
+at the call site. The Dockerfile gained the (now separate) `eject`
+package, and — to stop this exact class of drift from recurring for
+some *other* package next time — `FROM python:3.12-slim` is now pinned
+to `python:3.12-slim-trixie` (matching what was actually already
+running) instead of the rolling, unpinned alias.
+
+**Verified**: new `test_eject_device_raises_eject_error_when_eject_
+binary_missing`; full sync-orchestrator suite (192 passed) and root
+workspace suite (555 passed). Live-verified the underlying sync itself
+was never in question — full success, live-confirmed via the real
+`PASS`/`Sync completed` summary before this crash ever happened. The
+eject fix itself needs a fresh image rebuild + real trigger to confirm
+live (queued next).
+
+## 2026-09-29: auto-sync-on-connect had been silently failing on every real trigger since install
+
+Diagnosed live on the real homelab deploy (`olive`), remotely via SSH,
+while investigating "auto-sync isn't working" (flagged as an open issue
+back on 2026-09-10). Two separate, real bugs, both in
+`routers/auto_sync_setup.py`'s systemd-unit/udev-rule generator —
+neither had ever been exercised against a containerized deployment
+before now:
+
+**1. The generated systemd unit's `ExecStart` used container-internal
+paths.** `get_auto_sync_setup()` bakes in `request.app.state.
+config_root`/`library_root`/`state_root`/`sync_orchestrator_dir` — this
+process's *own* filesystem view. When `web-gui-backend` runs
+containerized (as it does on every real deploy this project actually
+documents), that view is the container's bind-mount targets (`/config`,
+`/data/library`, `/app/services/sync-orchestrator`'s vendored copy),
+none of which exist on the bare host the systemd unit actually runs on.
+`journalctl -u music-stack-auto-sync.service` on `olive` showed the
+exact same failure on *every single trigger* since the unit was first
+installed on 2026-09-10: `Failed at step STDOUT spawning /app/services/
+sync-orchestrator/.venv/bin/sync-orchestrator: No such file or
+directory`. The udev rule itself was firing correctly (confirmed live:
+plugging the iPod in triggered the unit reliably, immediately) — only
+the unit's own `ExecStart` was broken, on every attempt, unconditionally.
+
+**2. The install-status check (`systemd_installed`/`udev_rule_installed`)
+always reported "not installed."** It checks fixed host paths
+(`/etc/systemd/system/music-stack-auto-sync.service`, `/etc/udev/
+rules.d/99-ipod-music-stack.rules`) that a container can't see at all
+unless bind-mounted in — confirmed live: both files were genuinely
+present and had been since 2026-09-10, but `curl .../api/auto-sync/
+setup` reported both as `false` regardless, misleading anyone using the
+web GUI into thinking auto-sync had never been set up when it actually
+had (just silently broken per bug 1).
+
+**Fix**: `create_app()` gained four new optional `host_*` params
+(`host_config_root`/`host_library_root`/`host_state_root`/
+`host_sync_orchestrator_dir`), threaded through new `--host-*` CLI
+flags and `WEB_GUI_HOST_*` env vars (same relay pattern `--reload`
+already uses). `get_auto_sync_setup()` now prefers these when set,
+falling back to its own resolved paths unchanged otherwise — a
+bare-metal deployment (no containerization) never needs to set them.
+`docker-compose.yml`'s `web-gui-backend` service gained the matching
+`HOST_CONFIG_ROOT`/`HOST_LIBRARY_ROOT`/`HOST_STATE_ROOT`/
+`HOST_SYNC_ORCHESTRATOR_DIR` env vars (documented in `.env.example`,
+pointing at the *real* host paths — for the last one, a separate,
+real bare-metal `sync-orchestrator` checkout with its own `uv sync`'d
+`.venv`, never this container's own vendored copy) and two new
+read-only bind mounts (`/etc/systemd/system`, `/etc/udev/rules.d`) so
+its own status check can see the real host files.
+
+**Verified**: new `test_host_overrides_are_used_instead_of_this_
+process_own_paths` (confirms the override values replace the
+container-internal ones in the generated unit, and that none of the
+container-internal path fragments leak through); full web-gui-backend
+suite (7/7 `test_auto_sync_setup.py`, no regressions in the other 4
+existing tests there which cover the unset/default case unchanged);
+root workspace suite (555 passed). Not yet re-verified end-to-end on
+`olive` itself (pull + rebuild + reinstall the regenerated unit still
+needed) — the real trigger-on-connect test is also blocked on a
+separate, unrelated hardware issue found during the same investigation
+(see the `apple_mfi_fastcharge` entry, if one exists by the time you're
+reading this, or ask).
+
+## 2026-09-12: audiobook-manager's post-import path reporting picked up a real personal beets config instead of staying isolated
+
+Reported live: a successful `audiobook-manager tag` run ("Imported 1
+file(s)") crashed immediately afterward with `FileNotFoundError` on a
+path missing the `music-stack/library/audiobooks` prefix entirely
+(`/home/john/Music/Daniel Immerwahr/...` instead of the real
+`/home/john/Music/music-stack/library/audiobooks/Daniel Immerwahr/...`)
+— the file itself was correctly placed and tagged; only the
+post-import verification/reporting step (and, as a direct consequence,
+the `record_import()` call after it) crashed and never ran.
+
+Root cause: `beets_import.py`'s `_existing_item_paths()` (used to diff
+the library before/after an import, to detect what got newly added)
+constructs its own `beets.library.Library(str(beets_db_path))` with no
+explicit `directory=`. This machine has a real, pre-existing personal
+beets config (`directory: ~/Music`, unrelated to this project) that
+beets falls back to when none is given explicitly — some of
+`Item.path`'s resolution depends on the Library's *currently active*
+directory setting, not just the raw bytes stored in the db, so reading
+this project's own db without its own directory produced silently
+wrong absolute paths for existing items. The actual `beet import`
+subprocess itself was never affected (it always runs with `BEETSDIR`
+pointed at this project's own isolated config) — only this separate,
+in-process post-import diff read was exposed to the ambient global
+config.
+
+Fix: `_existing_item_paths()` now takes `audiobooks_root` and passes
+`directory=str(audiobooks_root)` explicitly, matching the real config
+used by the actual import subprocess.
+
+**Verified**: full audiobook-manager suite (42 passed); live-confirmed
+against the real crash — the same book's path resolved correctly after
+the fix, and `record_import()` completed instead of crashing.
+
+## 2026-09-12: a long audiobook near the lossy/lossless cutoff could produce a file exceeding FAT32's 4GiB limit
+
+Reported live: a real ~105kbps, 37-hour audiobook (Gravity's Rainbow)
+merged into a 16GB `.m4b` — `sync-orchestrator --execute` correctly
+refused to write it (`filesystem_safety: ... is 15.3 GB, exceeding the
+4.0 GB maximum supported by this iPod or its filesystem`). Root cause:
+`merge.select_encoding` only ever compares source bitrate against
+`_MAX_SPOKEN_WORD_LOSSY_KBPS` (96) — a source just barely over that
+(105kbps here) goes fully lossless (ALAC) with no regard for total
+duration, and for a long enough book even a "barely lossless" source
+can produce a file many times FAT32's real 4GiB-per-file ceiling.
+Confirmed live: the same 105kbps source, forced lossy at its own
+bitrate instead, produced a normal 1.6GB file.
+
+Fix: rather than try to *predict* ALAC's real (content-dependent)
+compression ratio up front, `merge_parts_to_m4b` now always measures
+the real output size after an auto-selected lossless encode, and only
+*if* it exceeds `_FAT32_SAFE_MAX_BYTES` (3GiB, a safety margin below
+the real 4GiB-1 limit) re-encodes lossy at the source's own bitrate
+instead — always correct regardless of how well a given book happens
+to compress, at the cost of one wasted encode on the rare book that
+actually needs the fallback. An explicit `--bitrate` override is
+untouched by this (a deliberate user choice, not eligible for
+override).
+
+**Verified**: 2 new unit tests (monkeypatching the safety margin down
+to a few bytes so a normal tiny fixture encode already exceeds it,
+rather than generating a genuinely multi-GB test fixture) — one
+confirming the lossy fallback fires and produces AAC, one confirming
+an explicit `--bitrate` is never second-guessed; full audiobook-manager
+suite (22 passed) and root workspace suite (554 passed). Live-verified
+against the real book: re-merged at 1.6GB, tagged, and placed
+successfully.
+
+## 2026-09-12: audiobook/external-library staging silently dropped every file when --library-root was relative
+
+Reported live: two newly-processed audiobooks, correctly tagged and
+placed in `library/audiobooks/`, and correctly selected by a profile's
+`audiobooks.selections`, never showed up in a real sync plan at all —
+`to_add` stayed at 1 (an unrelated podcast episode), with no error,
+warning visible in the summary, or mention of either book anywhere.
+The actual cause was buried in the full run's debug log:
+`WARNING:root:Failed to read .../.audiobooks_staging/john/Daniel
+Immerwahr/.../01 - ....m4b: [Errno 2] No such file or directory` for
+both books.
+
+Root cause: `selection.py`'s `build_staging_dir` (shared by
+`resolve_audiobooks_folder` and `resolve_selected_files`'s
+external-library caller) creates each staged file as
+`dest.symlink_to(src)`, where `src` is whatever `Path` the caller
+passed through — if `library_root` (and therefore `audiobooks_root`,
+`selected_files`, etc.) was ever a *relative* path, `src` stayed
+relative all the way down. A relative symlink target is resolved by
+the OS relative to the **symlink's own containing directory**, not the
+process's cwd at creation time — so a relative `src` like
+`library/audiobooks/Daniel Immerwahr/...` produced a symlink that
+actually pointed at
+`state/.audiobooks_staging/john/Daniel Immerwahr/.../library/audiobooks/
+Daniel Immerwahr/...` (nested under itself), which obviously doesn't
+exist. iopenpod's own scan just silently skipped the unreadable
+symlink and moved on — no error surfaced anywhere in the plan summary,
+only in the full debug log.
+
+This wasn't a rare edge case: `--library-root ../../library` is this
+project's own documented, standard way to invoke `sync-orchestrator`
+(`cd services/sync-orchestrator && ... --library-root ../../library`,
+in the root README, this service's own README, and literally every
+manual invocation this session used) — meaning audiobook/
+external-library selection narrowing has likely been silently broken
+for every real relative-path invocation since either feature shipped,
+not just today's case. `external_library.path` itself is always a
+real, absolute host path by its own documented convention, so that
+specific input happened to dodge the bug in practice even though the
+same shared code path was exposed to it too.
+
+Fix: `build_staging_dir` now symlinks to `src.resolve()`, guaranteeing
+an absolute (and therefore correctly-resolving) target regardless of
+what path shape any caller passes in.
+
+**Verified**: new `test_build_staging_dir_symlinks_are_readable_with_a_
+relative_library_path` (chdir's into a tmp_path, builds staging from
+deliberately relative paths, confirms the resulting symlink is
+readable — this reproduces the exact failure mode before the fix and
+passes after); full sync-orchestrator suite (191 passed). Not yet
+re-verified against the real `john` profile's actual sync plan on this
+machine — next real run should now show both books under `to_add`
+instead of silently omitting them.
+
+## 2026-09-11: web-gui-backend's Dockerfile was missing chromaprint (fpcalc)
+
+Reported live: `FAIL: fpcalc not found on PATH (chromaprint not
+installed)` from a "Compute plan" run through the web GUI. This
+container vendors a full sync-orchestrator install specifically so the
+Sync screen's buttons can run entirely inside it (see the earlier
+homelab-packaging entries) — `sync.py` hard-requires `fpcalc` on PATH
+for every sync, but the Dockerfile's `apt-get install` only ever listed
+`ffmpeg udisks2 util-linux`, missing the chromaprint package entirely.
+A pure oversight from when that Dockerfile was first written.
+
+Verified the correct Debian package name before touching anything (not
+just guessed): `chromaprint` is not itself installable via `apt-get`
+on this base image's actual release (`python:3.12-slim`, Debian
+bookworm — or trixie, since that tag isn't pinned to one release and
+Docker Hub currently serves either) — the package that actually ships
+`/usr/bin/fpcalc` on both is `libchromaprint-tools`. Added to the
+Dockerfile's `apt-get install` line.
+
+## 2026-09-11: fetch-scheduler's backup pruning could delete another process's in-progress blob, failing a concurrent backup
+
+Reported live on the homelab: `sync-orchestrator sync` (via the web
+GUI's "Compute plan", running inside `web-gui-backend`'s own container)
+kept failing device-backup creation with `DeviceWriteSafetyError: The
+iPod backup could not read N file(s) ... [Errno 2] No such file or
+directory: '/data/state/device_backups/blobs/<shard>/.blob_<random>'`
+— N shrank across retries (23 → 16 → 4) but never hit zero, and a
+pre-created skeleton of all 256 shard directories kept coming back
+empty ("we created those dirs, but there is nothing there now").
+
+Two real, independent bugs stacked here, both only possible now that
+two separate containers (`fetch-scheduler`, always running, and
+`web-gui-backend`, driving an on-demand manual sync) can touch
+`device_backups/` at the same time — a bare-metal, one-process-at-a-time
+deployment could never trigger either:
+
+1. **iOpenPod's own automatic cleanup-on-failure wipes empty shard
+   dirs.** `backup_manager.py`'s `create_backup` wrapper calls
+   `manager._gc_blobs()` whenever the wrapped call raises *any*
+   exception ("clean unpublished backup blobs after failure") —
+   `_gc_blobs()` deletes every blob not referenced by a complete
+   snapshot manifest (a failed attempt never writes one, so everything
+   it wrote counts as orphaned) and then `rmdir()`s any shard directory
+   left empty. This explained why the store kept resetting to
+   completely empty after every failure, including our own manually
+   pre-created placeholder directories — but not the underlying cause
+   of the failures themselves. **Workaround** (not a code fix, since
+   this lives in the third-party `iopenpod` package): drop a `.keep`
+   placeholder file in each of the 256 shard dirs so `rmdir()` (which
+   only succeeds on a truly empty directory) can never remove them
+   again.
+2. **`common/backups.py`'s own `prune_and_gc_backups` (this project's
+   code, called from `fetch-scheduler`'s maintenance tick) could delete
+   another process's in-progress temp blob.** iOpenPod's blob writer
+   (`_store_blob`) stages each blob at a dot-prefixed
+   `.blob_<random>` temp name in the shard dir (`tempfile.mkstemp(dir=
+   <shard dir>, prefix=".blob_")`) before atomically renaming it into
+   its final hash-named path. `prune_and_gc_backups`'s blob-walk had no
+   filter for this — a `.blob_*` name never matches any real hash, so
+   it looked exactly like an orphaned blob and got `unlink()`'d. If
+   `fetch-scheduler`'s tick ran its prune step while `web-gui-backend`'s
+   own in-progress backup was mid-write on that exact file, the rename
+   into its final path failed with "no such file or directory" on its
+   own temp path — explaining the shrinking-but-never-zero failure
+   count (random timing overlap between the two independent processes,
+   not a deterministic race) and why more of the file survived on each
+   retry once the `.keep` workaround stopped every retry from starting
+   completely from scratch. **Fixed in code**:
+   `prune_and_gc_backups`'s blob-walk now skips any dot-prefixed
+   filename outright, before ever checking it against
+   `surviving_hashes`.
+
+**Verified**: new `test_prune_and_gc_backups_never_touches_another_
+process_in_progress_temp_blob` (a real in-progress `.blob_*` temp file
+survives a real prune run untouched); full `common` suite (15 passed)
+and root workspace suite (552 passed). Not yet re-verified against a
+real concurrent fetch-scheduler-tick + manual-sync overlap on the
+homelab — the `.keep`-file workaround should make the *symptom* (empty
+shard dirs) stop recurring either way, but the actual race this fix
+closes needs the two processes to overlap in real time to trigger, so
+confirming it needs watching for the failure to simply stop happening
+over real usage, not a single retry.
+
+## 2026-09-11: a podcasts-only profile (playlists: []) could never sync at all
+
+Reported live: `sync-orchestrator sync` for the `Tobie` profile
+(homelab) failed with `FAIL: pc folder not found: /data/library/
+playlists/Tobie`. Root cause: `plan_sync`'s `pc_folders` tuple includes
+`library_root / "playlists" / profile.profile` as a bare path with no
+resolver of its own — unlike every *other* pc_folder (music/audiobooks/
+external-library), which each go through a `resolve_*_folder()` helper
+that guarantees its own directory exists first. `music-stack-cli` owns
+`library/playlists/{profile}/`, but only ever creates it as a side
+effect of writing a real playlist's `.m3u8` file there — a profile with
+`playlists: []` (confirmed: `Tobie.yaml`, podcasts-only) legitimately
+never has anything to write, so `music-stack fetch` never creates that
+directory no matter how many times it's run. "No playlists yet" is a
+completely normal state; it was being treated as a hard failure.
+
+Fix: `plan_sync` now `mkdir(parents=True, exist_ok=True)`s the
+playlists folder itself, right before adding it to `pc_folders` —
+mirroring what every other pc_folder already does.
+
+**Verified**: new `test_plan_sync_creates_missing_playlists_folder`
+(confirms the directory gets created and `plan_sync` proceeds past the
+old "pc folder not found" check); full sync-orchestrator suite (190
+passed) and root workspace suite (551 passed). Not yet re-verified
+against the real `Tobie` profile on the homelab.
+
 ## library-manager dedup had genuinely never been run — run for real, found a real duplicate
 
 User noticed some songs on the device had multiple copies and asked to

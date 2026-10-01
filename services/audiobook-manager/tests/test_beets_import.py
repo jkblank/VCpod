@@ -22,6 +22,30 @@ def test_build_beets_config_text_substitutes_absolute_paths(tmp_path: Path) -> N
     assert "region: us" in text
 
 
+def test_build_beets_config_text_falls_back_to_asis_instead_of_skipping(tmp_path: Path) -> None:
+    # Regression: a real import stuck needing a manual metadata.yml every
+    # time Audible's search didn't turn up a near-exact match -- asis
+    # means it lands in the library anyway instead of sitting unimported.
+    # See notes.md.
+    text = beets_import.build_beets_config_text(
+        audiobooks_root=tmp_path / "library", beets_db_path=tmp_path / "library.db"
+    )
+
+    assert "quiet_fallback: asis" in text
+
+
+def test_build_beets_config_text_loosens_strong_match_threshold(tmp_path: Path) -> None:
+    # Regression: beets' own default (0.04) is tight enough that real
+    # near-matches (a dropped subtitle, narrator folded into the title)
+    # score as "medium" and get skipped in quiet mode instead of applied.
+    # See notes.md.
+    text = beets_import.build_beets_config_text(
+        audiobooks_root=tmp_path / "library", beets_db_path=tmp_path / "library.db"
+    )
+
+    assert "strong_rec_thresh: 0.15" in text
+
+
 def test_write_beets_config_creates_file(tmp_path: Path) -> None:
     config_dir = tmp_path / "beets-config"
     config_path = beets_import.write_beets_config(
@@ -68,6 +92,40 @@ def test_import_audiobook_reports_success_when_new_item_appears(
     assert result.imported is True
     assert len(result.imported_paths) == 1
     assert result.imported_paths[0] == fake_audio
+
+
+def test_import_audiobook_reports_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    beets_db_path = tmp_path / "state" / "beets-library.db"
+    source_dir = tmp_path / "staging"
+    source_dir.mkdir(parents=True)
+    fake_audio = source_dir / "merged.m4b"
+    fake_audio.write_bytes(b"not real audio, just a placeholder")
+
+    monkeypatch.setattr(beets_import, "find_beet", lambda: "beet")
+
+    def fake_run(cmd, **kwargs):
+        from beets.library import Item, Library
+
+        beets_db_path.parent.mkdir(parents=True, exist_ok=True)
+        lib = Library(str(beets_db_path))
+        lib.add(Item(path=str(fake_audio).encode("utf-8"), title="The Trial"))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(beets_import.subprocess, "run", fake_run)
+
+    messages: list[str] = []
+    beets_import.import_audiobook(
+        source_dir,
+        audiobooks_root=tmp_path / "library" / "audiobooks",
+        beets_db_path=beets_db_path,
+        beets_config_dir=tmp_path / "beets-config",
+        progress_callback=messages.append,
+    )
+
+    assert any("looking up on Audible" in m for m in messages)
+    assert any("1 file(s) imported" in m for m in messages)
 
 
 def test_import_audiobook_reports_skip_when_no_new_item(

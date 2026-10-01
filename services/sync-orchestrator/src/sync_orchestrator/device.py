@@ -348,6 +348,18 @@ def eject_device(device_info: DeviceInfo) -> None:
         raise EjectError(f"could not determine parent drive for {block_device!r}")
     drive = match.group(1)
 
-    eject = subprocess.run(["eject", drive], capture_output=True, text=True)
+    try:
+        eject = subprocess.run(["eject", drive], capture_output=True, text=True)
+    except FileNotFoundError as e:
+        # Confirmed live: web-gui-backend's minimal container image
+        # doesn't install util-linux's `eject` at all -- left uncaught,
+        # this crashes the whole process with an ugly traceback right
+        # after a real sync had *already* succeeded, since the caller's
+        # `except EjectError:` (cli.py) only ever catches this
+        # function's own EjectError, not a bare FileNotFoundError.
+        # Reporting it the same way every other real eject failure
+        # already is here keeps that one graceful "WARNING: could not
+        # eject" path the only one that ever needs to exist.
+        raise EjectError(f"eject not found on PATH: {e}") from e
     if eject.returncode != 0:
         raise EjectError(f"eject failed: {eject.stdout}{eject.stderr}")

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
+
+ProgressCallback = Callable[[str], None]
 
 
 class MergeError(Exception):
@@ -39,6 +43,13 @@ knocked down to a hardcoded 64k AAC by the old flat default -- see
 notes.md."""
 
 _MIN_SPOKEN_WORD_LOSSY_KBPS = 32
+
+_FAT32_SAFE_MAX_BYTES = 3 * 1024**3
+"""Safety margin below FAT32's real 4GiB-1 per-file limit (the same
+filesystem sync_orchestrator/sync.py already has to work around for
+ArtworkDB's own .ithmb chunking) -- a merged .m4b past this is treated
+as needing the lossy fallback in merge_parts_to_m4b, comfortably clear
+of the real ceiling rather than cutting it exactly at 4GiB."""
 
 
 def probe_bitrate_kbps(ffprobe_path: str, path: Path) -> float:
@@ -142,9 +153,63 @@ def probe_duration_seconds(ffprobe_path: str, path: Path) -> float:
     return float(result.stdout.strip())
 
 
+_RELEASE_NOISE_PATTERNS = [
+    re.compile(r"(?i)\(audiobook\)"),
+    re.compile(r"(?i)\((?:un)?abridged\)"),
+    re.compile(r"\[[^\]]*\]"),  # bracketed release/site tags: [RFKLibrary.org], [FerraBit]
+]
+
+
+def _strip_release_noise(name: str) -> str:
+    """Strips common scene/release-style noise from a raw drop-zone
+    folder name before it's used to derive an author/title or as
+    beets-audible's Audible search query -- "(Audiobook)"/"(Unabridged)"/
+    "(Abridged)" suffixes and bracketed site/release-group tags.
+    Confirmed live: two real audiobooks stuck in staging, unable to
+    confidently match, both had exactly this kind of noise in their
+    folder name (e.g. "... [RFKLibrary.org] Daniel Immerwahr") --
+    beets-audible's own query builder only strips CD/disc-number and
+    (un)abridged markers, nothing else. See notes.md. Collapses the
+    resulting extra whitespace."""
+    cleaned = name
+    for pattern in _RELEASE_NOISE_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    return " ".join(cleaned.split())
+
+
+def derive_author_and_title_from_folder_name(name: str) -> tuple[str | None, str]:
+    """(author, title) best-effort parse of a raw drop-zone folder name,
+    after stripping known noise (see _strip_release_noise). Tries, in
+    order:
+    1. "Author - Title" -- this project's own documented convention.
+    2. "Author_Title_Narrator_..." -- a common scene/release convention,
+       confirmed live against a real stuck import named "Thomas
+       Pynchon_Gravity's Rainbow_George Guidall_FerraBit": the first two
+       underscore-separated fields are exactly the real author/title,
+       the rest narrator/release-group noise this project has no use
+       for.
+    Falls back to (None, cleaned_name) if neither pattern matches -- not
+    every real capture follows a splittable convention (e.g. a
+    subtitle-heavy title with no author separator at all), and guessing
+    wrong here is worse than falling back to Audible's own full-text
+    search over the whole cleaned string."""
+    cleaned = _strip_release_noise(name)
+
+    author, sep, title = cleaned.partition(" - ")
+    if sep and author.strip() and title.strip():
+        return author.strip(), title.strip()
+
+    parts = [p.strip() for p in cleaned.split("_") if p.strip()]
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+
+    return None, cleaned
+
+
 def derive_title_from_folder_name(name: str) -> str:
-    """"Author - Title" -> "Title"; falls back to the whole name if no
-    " - " separator is present.
+    """"Author - Title" -> "Title"; falls back to the whole (noise-
+    stripped) name if no author could be split out -- see
+    derive_author_and_title_from_folder_name, which this delegates to.
 
     Only an initial/fallback title -- beets-audible's own Audible lookup
     may override it on a confident match, but it is copied through
@@ -152,17 +217,30 @@ def derive_title_from_folder_name(name: str) -> str:
     this, the merged file's own filename-derived tag -- literally
     "merged", since that's the staging filename -- ends up as the
     permanent track title). See notes.md."""
-    _, sep, rest = name.partition(" - ")
-    return rest.strip() if sep and rest.strip() else name
+    _, title = derive_author_and_title_from_folder_name(name)
+    return title
 
 
-def build_ffmetadata(parts_with_durations: list[tuple[Path, float]], *, title: str) -> str:
+def build_ffmetadata(
+    parts_with_durations: list[tuple[Path, float]], *, title: str, author: str | None = None
+) -> str:
     """One [CHAPTER] block per source part (boundaries from cumulative
-    durations), preceded by a global `title=` tag -- real tagging
-    (author/album/etc.) happens later via beets-audible, but title is
-    seeded here since beets-audible doesn't reliably override it (see
-    derive_title_from_folder_name)."""
-    lines = [";FFMETADATA1", f"title={title}", ""]
+    durations), preceded by global `title=`/`album=`/`artist=` tags --
+    real tagging happens later via beets-audible, but these are seeded
+    here since beets-audible doesn't reliably override them (see
+    derive_title_from_folder_name).
+
+    `album`/`artist` (not just `title`) matter beyond cosmetics: beets-
+    audible's own candidates() search only falls back to a folder-name-
+    based Audible query when an item has *no* album/artist tags at all
+    -- its primary path builds the query from those two tags directly.
+    Leaving them unset (as this project used to) meant every real import
+    took the weaker, unstripped-noise fallback path instead of a clean
+    "album artist" query. See notes.md."""
+    lines = [";FFMETADATA1", f"title={title}"]
+    if author:
+        lines += [f"artist={author}", f"album={title}"]
+    lines.append("")
     start_ms = 0
     for path, duration in parts_with_durations:
         end_ms = start_ms + round(duration * 1000)
@@ -184,19 +262,39 @@ def merge_parts_to_m4b(
     *,
     bitrate: str | None = None,
     title: str | None = None,
+    author: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> Path:
     """Concats every .mp3 part under parts_dir into one .m4b at
-    output_path, with one chapter per source part. `title` seeds the
-    output's own title tag -- defaults to derive_title_from_folder_name
-    of parts_dir's name if not given. Returns the resolved output_path.
+    output_path, with one chapter per source part. `title`/`author` seed
+    the output's own title/artist/album tags -- default to
+    derive_author_and_title_from_folder_name of parts_dir's name if not
+    given (best-effort: `author` may come back None if it can't be split
+    out, in which case only `title` is set, same as before this param
+    existed). Returns the resolved output_path.
 
     `bitrate` is normally left as None: the codec and bitrate are then
     auto-selected per select_encoding's source-matching/lossless-cutover
     policy. Pass an explicit value (e.g. "64k") only to force a flat
-    lossy AAC bitrate regardless of source, overriding that policy."""
+    lossy AAC bitrate regardless of source, overriding that policy.
+
+    `progress_callback`, if given, is called with one short human-readable
+    string per real stage -- this is a handful of coarse steps (probe,
+    encode, maybe a fallback re-encode), not a live percentage: ffmpeg
+    runs here with `-v error` and no `-progress` pipe, same as this
+    codebase's other subprocess.run(capture_output=True)-based progress
+    reporting (e.g. sync_orchestrator's own per-file callbacks), so a
+    caller streaming this to a browser (see web_gui_backend's Audiobooks
+    screen) can at least show *which* step is running and that it's not
+    hung, rather than nothing at all for what can be a multi-minute call
+    on a long book."""
     parts_dir = Path(parts_dir).resolve()
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _report(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
 
     pre_merged = find_pre_merged_m4b(parts_dir)
     if pre_merged is not None:
@@ -206,15 +304,21 @@ def merge_parts_to_m4b(
         # loss; lossless source: 16x the storage for no gain) and
         # replace whatever real per-chapter breakdown it may already
         # have embedded with a single synthetic whole-book chapter.
+        _report(f"found a single pre-merged {pre_merged.name} -- copying through unchanged")
         shutil.copyfile(pre_merged, output_path)
         return output_path
 
     ffmpeg_path = find_ffmpeg()
     ffprobe_path = find_ffprobe()
-    if title is None:
-        title = derive_title_from_folder_name(parts_dir.name)
+    if title is None or author is None:
+        derived_author, derived_title = derive_author_and_title_from_folder_name(parts_dir.name)
+        if title is None:
+            title = derived_title
+        if author is None:
+            author = derived_author
 
     parts = discover_parts(parts_dir)
+    _report(f"probing {len(parts)} part(s)...")
     durations = [probe_duration_seconds(ffprobe_path, p) for p in parts]
 
     if bitrate is not None:
@@ -222,36 +326,66 @@ def merge_parts_to_m4b(
     else:
         codec, bitrate_flag = select_encoding(parts, ffprobe_path)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        list_path = tmp_path / "parts.txt"
-        list_path.write_text(
-            "\n".join(f"file '{_concat_escape(p)}'" for p in parts) + "\n"
+    def _run_ffmpeg_merge(codec: str, bitrate_flag: str | None) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            list_path = tmp_path / "parts.txt"
+            list_path.write_text(
+                "\n".join(f"file '{_concat_escape(p)}'" for p in parts) + "\n"
+            )
+            meta_path = tmp_path / "chapters.txt"
+            meta_path.write_text(
+                build_ffmetadata(list(zip(parts, durations)), title=title, author=author)
+            )
+
+            cmd = [
+                ffmpeg_path,
+                "-y",
+                "-v", "error",
+                "-f", "concat", "-safe", "0", "-i", str(list_path),
+                "-f", "ffmetadata", "-i", str(meta_path),
+                "-map", "0:a",
+                "-map_metadata", "1",
+                "-map_chapters", "1",
+                "-c:a", codec,
+            ]
+            if bitrate_flag is not None:
+                cmd += ["-b:a", bitrate_flag]
+            cmd += ["-movflags", "+faststart", str(output_path)]
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise MergeError(f"ffmpeg exited {result.returncode}\n{result.stderr}")
+
+    bitrate_desc = bitrate_flag if bitrate_flag is not None else "lossless"
+    _report(f"merging {len(parts)} part(s) via ffmpeg (codec={codec}, {bitrate_desc})...")
+    _run_ffmpeg_merge(codec, bitrate_flag)
+
+    if (
+        bitrate is None
+        and codec == "alac"
+        and output_path.stat().st_size > _FAT32_SAFE_MAX_BYTES
+    ):
+        # select_encoding's lossless branch has no notion of total
+        # duration -- for a long enough audiobook, even a source just
+        # over the lossy cutoff can produce a lossless file well past
+        # FAT32's real 4GiB-per-file limit (confirmed live: a ~105kbps,
+        # 37-hour source produced a 16GB ALAC file iOpenPod correctly
+        # refused to write). Re-encoding lossy at the source's own
+        # bitrate here, only *after* actually measuring the real
+        # lossless output's size, avoids needing to predict ALAC's
+        # content-dependent compression ratio up front -- always
+        # correct regardless of how well a given book happens to
+        # compress, at the cost of a wasted encode on the rare book
+        # that actually needs this fallback. See notes.md.
+        source_kbps = round(max(probe_bitrate_kbps(ffprobe_path, p) for p in parts))
+        codec, bitrate_flag = "aac", f"{max(source_kbps, _MIN_SPOKEN_WORD_LOSSY_KBPS)}k"
+        size_mb = output_path.stat().st_size / 1024**2
+        _report(
+            f"lossless output ({size_mb:.0f} MB) exceeds the FAT32-safe limit -- "
+            f"re-encoding lossy at {bitrate_flag}..."
         )
-        meta_path = tmp_path / "chapters.txt"
-        meta_path.write_text(build_ffmetadata(list(zip(parts, durations)), title=title))
+        _run_ffmpeg_merge(codec, bitrate_flag)
 
-        cmd = [
-            ffmpeg_path,
-            "-y",
-            "-v", "error",
-            "-f", "concat", "-safe", "0", "-i", str(list_path),
-            "-f", "ffmetadata", "-i", str(meta_path),
-            "-map", "0:a",
-            "-map_metadata", "1",
-            "-map_chapters", "1",
-            "-c:a", codec,
-        ]
-        if bitrate_flag is not None:
-            cmd += ["-b:a", bitrate_flag]
-        cmd += ["-movflags", "+faststart", str(output_path)]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise MergeError(f"ffmpeg exited {result.returncode}\n{result.stderr}")
-
+    _report(f"merge complete: {output_path.stat().st_size / 1024**2:.0f} MB")
     return output_path

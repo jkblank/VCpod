@@ -21,7 +21,14 @@
 # udev's own process/cgroup lifecycle.
 #
 # If you sync a different iPod generation, add another ATTR{idProduct}=="..."
-# line for its PID (5th/5.5th gen share 0x1209; other generations use
-# different PIDs not yet catalogued by this project).
+# line for its PID. Two are confirmed live so far against real devices on
+# a real multi-profile deploy (see notes.md's 2026-09-29 entry): 5th/5.5th
+# gen iPod Video (0x1209) and 6th/7th gen iPod Classic (0x1261). A
+# profile's device.match_by/match_value (a real Apple product serial) is
+# unrelated to the USB PID family its iPod enumerates under, so a
+# correctly-matched profile still silently never triggers auto-sync if
+# its device's generation isn't listed below.
 ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="1209", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="music-stack-auto-sync.service"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="1261", \
     TAG+="systemd", ENV{SYSTEMD_WANTS}="music-stack-auto-sync.service"

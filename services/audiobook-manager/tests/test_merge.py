@@ -9,6 +9,7 @@ import pytest
 from audiobook_manager.merge import (
     MergeError,
     build_ffmetadata,
+    derive_author_and_title_from_folder_name,
     derive_title_from_folder_name,
     discover_parts,
     find_ffmpeg,
@@ -19,6 +20,7 @@ from audiobook_manager.merge import (
     select_encoding,
 )
 from audiobook_manager.merge import _concat_escape
+from audiobook_manager import merge as merge_module
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -131,6 +133,16 @@ def test_build_ffmetadata_chapter_boundaries() -> None:
     assert "END=5500" in text
     assert "title=01" in text
     assert "title=02" in text
+    assert "artist=" not in text
+    assert "album=" not in text
+
+
+def test_build_ffmetadata_sets_artist_and_album_when_author_given() -> None:
+    text = build_ffmetadata([(Path("01.mp3"), 2.5)], title="The Trial", author="Franz Kafka")
+
+    assert "title=The Trial" in text
+    assert "artist=Franz Kafka" in text
+    assert "album=The Trial" in text
 
 
 def test_derive_title_from_folder_name_splits_author_and_title() -> None:
@@ -139,6 +151,40 @@ def test_derive_title_from_folder_name_splits_author_and_title() -> None:
 
 def test_derive_title_from_folder_name_falls_back_to_whole_name() -> None:
     assert derive_title_from_folder_name("The Trial") == "The Trial"
+
+
+def test_derive_author_and_title_splits_on_dash() -> None:
+    assert derive_author_and_title_from_folder_name("Franz Kafka - The Trial") == (
+        "Franz Kafka", "The Trial"
+    )
+
+
+def test_derive_author_and_title_splits_on_underscores() -> None:
+    # Regression: a real stuck import named exactly this way -- the
+    # first two underscore-separated fields are the real author/title,
+    # the rest (narrator, release-group) is noise this project has no
+    # use for. See notes.md.
+    assert derive_author_and_title_from_folder_name(
+        "Thomas Pynchon_Gravity's Rainbow_George Guidall_FerraBit"
+    ) == ("Thomas Pynchon", "Gravity's Rainbow")
+
+
+def test_derive_author_and_title_falls_back_to_none_author() -> None:
+    assert derive_author_and_title_from_folder_name("The Trial") == (None, "The Trial")
+
+
+def test_derive_author_and_title_strips_release_noise() -> None:
+    # Regression: a real stuck import named exactly this way -- site tag
+    # in brackets plus an "(Audiobook)" suffix, both of which used to
+    # get sent straight through as part of the Audible search query. See
+    # notes.md.
+    author, title = derive_author_and_title_from_folder_name(
+        "How to Hide an Empire (Audiobook) [RFKLibrary.org] Daniel Immerwahr"
+    )
+    assert "(Audiobook)" not in title
+    assert "[RFKLibrary.org]" not in title
+    assert "RFKLibrary" not in (title or "")
+    assert author is None  # no " - " or "_" separator present in this real name
 
 
 def test_merge_parts_to_m4b_end_to_end(tmp_path: Path) -> None:
@@ -180,6 +226,59 @@ def test_merge_parts_to_m4b_end_to_end(tmp_path: Path) -> None:
         check=True,
     )
     assert 5.5 <= float(duration.stdout.strip()) <= 6.5
+
+
+def test_merge_parts_to_m4b_reports_progress(tmp_path: Path) -> None:
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    for name in ("part_01.mp3", "part_02.mp3", "part_03.mp3"):
+        shutil.copy(FIXTURES / name, parts_dir / name)
+
+    messages: list[str] = []
+    merge_parts_to_m4b(
+        parts_dir, tmp_path / "out.m4b", bitrate="32k", progress_callback=messages.append
+    )
+
+    assert any("probing 3 part" in m for m in messages)
+    assert any("merging 3 part" in m and "codec=aac" in m for m in messages)
+    assert any(m.startswith("merge complete") for m in messages)
+
+
+def test_merge_parts_to_m4b_pre_merged_m4b_reports_progress(tmp_path: Path) -> None:
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    _make_synthetic_m4b(parts_dir / "already-a-book.m4b", duration=1.0)
+
+    messages: list[str] = []
+    merge_parts_to_m4b(
+        parts_dir, tmp_path / "out.m4b", progress_callback=messages.append
+    )
+
+    assert any("pre-merged" in m and "copying through unchanged" in m for m in messages)
+
+
+def test_merge_parts_to_m4b_writes_real_artist_and_album_tags(tmp_path: Path) -> None:
+    # Regression: the merged file used to only ever get a `title` tag,
+    # never `artist`/`album` -- beets-audible's own Audible search only
+    # falls back to a (noisier) folder-name query when an item has *no*
+    # album/artist tags at all, so every real import here used to take
+    # that weaker path regardless of how clean the folder name actually
+    # was. See notes.md.
+    parts_dir = tmp_path / "Franz Kafka - The Trial"
+    parts_dir.mkdir()
+    for name in ("part_01.mp3", "part_02.mp3", "part_03.mp3"):
+        shutil.copy(FIXTURES / name, parts_dir / name)
+
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b", bitrate="32k")
+
+    tags = subprocess.run(
+        [find_ffprobe(), "-v", "error", "-show_entries", "format_tags=title,artist,album",
+         "-of", "default=noprint_wrappers=1", str(output)],
+        capture_output=True, text=True, check=True,
+    )
+    assert "TAG:title=The Trial" in tags.stdout
+    assert "TAG:artist=Franz Kafka" in tags.stdout
+    assert "TAG:album=The Trial" in tags.stdout
 
 
 def test_merge_parts_to_m4b_passes_through_a_lone_pre_merged_m4b(tmp_path: Path) -> None:
@@ -291,3 +390,47 @@ def test_merge_parts_to_m4b_auto_selects_lossless_when_source_exceeds_cap(
         capture_output=True, text=True, check=True,
     )
     assert probe.stdout.strip() == "alac"
+
+
+def test_merge_parts_to_m4b_falls_back_to_lossy_when_lossless_exceeds_fat32_safety_margin(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # Regression: select_encoding's lossless branch has no notion of
+    # total duration -- confirmed live, a real ~105kbps, 37-hour
+    # audiobook (just over the 96kbps lossy cutoff) produced a 16GB
+    # ALAC file, well past FAT32's real 4GiB-per-file limit, that
+    # iOpenPod correctly refused to write. Rather than generate a
+    # genuinely multi-GB fixture here, shrink the safety margin so a
+    # normal tiny test encode already exceeds it.
+    monkeypatch.setattr(merge_module, "_FAT32_SAFE_MAX_BYTES", 1000)
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    _make_synthetic_mp3(parts_dir / "01.mp3", bitrate_kbps=128)
+
+    messages: list[str] = []
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b", progress_callback=messages.append)
+
+    probe = subprocess.run(
+        [find_ffprobe(), "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_name", "-of",
+         "default=noprint_wrappers=1:nokey=1", str(output)],
+        capture_output=True, text=True, check=True,
+    )
+    assert probe.stdout.strip() == "aac"
+    assert any("exceeds the FAT32-safe limit" in m and "re-encoding lossy" in m for m in messages)
+
+
+def test_merge_parts_to_m4b_respects_explicit_bitrate_even_past_fat32_margin(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # The FAT32 fallback only ever second-guesses the *auto* (bitrate=
+    # None) policy -- an explicit --bitrate override is a deliberate
+    # user choice and must never be silently re-encoded a second time.
+    monkeypatch.setattr(merge_module, "_FAT32_SAFE_MAX_BYTES", 1000)
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    _make_synthetic_mp3(parts_dir / "01.mp3", bitrate_kbps=128)
+
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b", bitrate="128k")
+
+    assert output.is_file()

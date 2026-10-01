@@ -203,6 +203,23 @@ def _run_sync(
             progress_callback=_report_progress,
         )
     except SyncError as e:
+        # A plan-phase failure (e.g. a missing system dependency like
+        # fpcalc) is just as real an auto-sync outcome as an execute-phase
+        # one below -- confirmed live, a real unattended auto-sync run
+        # failed here and never showed up in the Activity screen at all,
+        # since only the execute-phase except block (below) used to call
+        # record_activity. See notes.md's 2026-09-29 entry.
+        record_activity(
+            args.state_root,
+            ActivityEntry(
+                started_at=datetime.now(timezone.utc),
+                service="sync-orchestrator",
+                profile=profile.profile,
+                description=f"sync — plan failed: {e}",
+                duration_seconds=time.monotonic() - start_time,
+                result="error",
+            ),
+        )
         return _fail(str(e))
 
     for selection in planned.unresolved_selections:
@@ -429,6 +446,18 @@ def _run_rockbox_sync(
             progress_callback=_report_progress,
         )
     except RockboxSyncError as e:
+        # See _run_sync's matching except block -- same gap, same fix.
+        record_activity(
+            args.state_root,
+            ActivityEntry(
+                started_at=datetime.now(timezone.utc),
+                service="sync-orchestrator",
+                profile=profile.profile,
+                description=f"sync (rockbox) — plan failed: {e}",
+                duration_seconds=time.monotonic() - start_time,
+                result="error",
+            ),
+        )
         return _fail(str(e))
 
     for selection in planned.unresolved_selections:

@@ -430,11 +430,6 @@ export const api = {
     request<BrowseResult>(`/api/audiobooks/browse?subpath=${encodeURIComponent(subpath)}`),
 
   discoverAudiobooks: () => request<DiscoverResult>('/api/audiobooks/discover'),
-  importDiscoveredAudiobook: (name: string) =>
-    request<{ status: string; imported_paths: string[] }>('/api/audiobooks/discover/import', {
-      method: 'POST',
-      body: JSON.stringify({ name }),
-    }),
 
   getAutoSyncSetup: () => request<AutoSyncSetup>('/api/auto-sync/setup'),
 
@@ -454,4 +449,18 @@ export function streamSyncPlan(body: SyncPlanBody): AsyncGenerator<SSEEvent> {
 
 export function streamSyncExecute(body: SyncExecuteBody): AsyncGenerator<SSEEvent> {
   return streamSSE('/api/sync/execute', body)
+}
+
+// A real multi-hour audiobook's ffmpeg concat/encode plus beets-audible's
+// Audible lookup can take minutes -- streamed the same way as sync above
+// (SSE progress/result/error events) rather than one blocking POST with
+// no feedback until it either finishes or the request just hangs.
+export type AudiobookImportResult = {
+  imported: boolean
+  imported_paths: string[]
+  staging_dir: string
+}
+
+export function streamImportAudiobook(name: string): AsyncGenerator<SSEEvent> {
+  return streamSSE('/api/audiobooks/discover/import', { name })
 }

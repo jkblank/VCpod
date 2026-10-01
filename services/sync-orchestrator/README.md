@@ -488,10 +488,19 @@ systemctl status music-stack-auto-sync.service
 journalctl -u music-stack-auto-sync.service -f
 ```
 
-If you sync a different iPod generation/PID, add another
-`ATTR{idProduct}=="..."` line to the `.rules` file (5th/5.5th gen share
-`0x1209`; other generations use different PIDs not yet catalogued by this
-project).
+The checked-in `.rules` file already covers both iPod generations
+confirmed live against real devices on a real multi-profile deploy:
+5th/5.5th gen iPod Video (`0x1209`) and 6th/7th gen iPod Classic
+(`0x1261`) — see `notes.md`'s 2026-09-29 entry. A profile's
+`device.match_by`/`match_value` is a real Apple product serial, unrelated
+to the USB PID family its iPod enumerates under, so a correctly-matched
+profile still silently never triggers if its device's *generation* isn't
+one of the `.rules` file's PIDs — confirmed live, exactly this way, with
+a hand-added PID getting clobbered on every regeneration before the web
+GUI's generator was fixed to emit both. If you connect a *third*
+generation, run `lsusb` for its real idVendor/idProduct and add another
+`ATTR{idProduct}=="..."` line in the same shape — nothing here derives a
+new PID automatically.
 
 ## Discovering a connected device's identity: `identify-device`
 
