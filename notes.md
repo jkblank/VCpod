@@ -1,5 +1,55 @@
 # Notes / Future Work
 
+## 2026-10-01: sidebar profile picker + Audiobooks table visual cleanup
+
+Requested directly: the sidebar's profile picker (a vertical list of
+per-profile rows with a colored dot) added visual clutter, and the
+Audiobooks screen's discover table could visibly break/reflow row to
+row.
+
+- `App.tsx`/`App.css`: the profile picker is now a single `<select>`
+  dropdown instead of a list of rows -- matches every other selection
+  UI in this app already using a plain `<select>` (`ScheduleEditor.tsx`,
+  `Podcasts.tsx`, `ExternalLibrary.tsx`, ...), and the per-profile
+  colored-dot styling (`profileColor()`) is dropped along with it, in
+  keeping with the stated goal of less visual noise, not more. The
+  redundant "editing: `<profile>`" line that used to sit at the bottom
+  of the sidebar is removed too, now that the dropdown's own selected
+  value is the one place that information lives. Its CSS had
+  `margin-top: auto` pinning it (and the status footer below it) to the
+  bottom of the sidebar's flex column -- moved onto the status footer's
+  own class so it stays pinned now that the line that used to carry it
+  is gone.
+- `AudiobookDiscovery.tsx`/`App.css`: the discover table's Status column
+  used `display: flex` directly on a `<td>`, which fights the browser's
+  normal table auto-layout -- combined with real row-to-row differences
+  in content length (a messy real drop-zone folder name can run 80+
+  characters; "Already imported (3 days ago)" vs. "New — needs
+  processing" are different lengths), columns visibly reflowed/broke
+  between rows. Fixed with `table-layout: fixed` + explicit per-column
+  widths, the flex layout moved onto a `<span>` inside the cell instead
+  of the cell itself, and long Book/Status text now truncates with an
+  ellipsis (full text still available via a `title` attribute/native
+  tooltip) rather than breaking the row. The button column is
+  deliberately excluded from the ellipsis treatment (`overflow: visible`)
+  since clipping a button mid-label looks broken, not tidy -- it's sized
+  wide enough that this shouldn't matter in practice.
+
+Live-verified: no browser automation tool was available in prior
+sessions this project touched the frontend in, so this is the first
+time a change here was actually screenshotted rather than reasoned
+about from CSS alone -- `chromium --headless` + `selenium` (both
+already present on this machine; `uv run --with selenium` pulled in the
+Python package on the fly) driving a locally-started backend serving
+the real built frontend, against real multi-profile config and a real
+drop-zone containing the actual 100+-character "How to Hide an
+Empire..." folder name from the 2026-09-30 entry above as a genuine
+worst-case. Confirmed: the dropdown renders and actually switches the
+selected profile/draft state on selection; the long real book name
+truncates cleanly with an ellipsis instead of breaking the table, and
+the "Process into library" button stays consistently sized/aligned
+across rows regardless of status-text length.
+
 ## 2026-09-30: real audiobook imports were getting stuck unmatched — messy real folder names, a too-strict match threshold, and no fallback
 
 Requested directly: real imports were failing on the actual homelab
