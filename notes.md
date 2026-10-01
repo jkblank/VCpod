@@ -1,5 +1,63 @@
 # Notes / Future Work
 
+## 2026-10-01: Music sources page — track counts silently showing 0, and an already-selected public YouTube playlist vanishing from the table
+
+Requested directly: two real bugs on the Music sources page.
+
+1. **Track counts often showed as 0/blank.** `fetcher_ytmusic.api.
+   list_playlists` read its `track_count` from `get_library_playlists()`'s
+   own `"count"` field, defaulting to `0` when absent
+   (`p.get("count", 0)`). Confirmed against ytmusicapi's real source
+   (`parsers/browsing.py`'s `parse_playlist`): that field is parsed from
+   YouTube Music's own UI subtitle text, and is only ever set when a
+   playlist's subtitle happens to have an exact 3-run shape (title +
+   count + author) — absent for plenty of real playlists (any without a
+   description, for one), which this project's own code then silently
+   read as a confident "0 tracks" instead of "unknown." Fixed: when the
+   cheap listing call doesn't already have a usable count, one extra
+   `get_playlist(id, limit=1)` call per such playlist fetches the real
+   `trackCount` field — the exact same field/call `get_playlist_summary`
+   (the "add a public playlist by link" path) already relied on, now
+   applied here too. New `_library_track_count()` helper + 5 new tests
+   covering present/missing/unparseable count, and the detail-fetch
+   itself failing.
+2. **A previously-selected public YouTube playlist (added via "Add a
+   public playlist by link," not in the account's own library) vanished
+   from the table on every reload/tab-revisit**, even though it was
+   still genuinely selected and saved in the profile's YAML. Root cause:
+   `Sources.tsx`'s table only ever rendered `listProfileYtmusicPlaylists`'s
+   result (the account's own library listing) plus whatever was added
+   *this session* via the URL-resolve flow — nothing re-populated an
+   already-saved-but-not-in-library entry on a fresh load. Fixed:
+   `loadPlaylists` now diffs `draft.playlists` against the fetched
+   library list for the ytmusic tab, and resolves (via the same
+   `resolveYtmusicPlaylist` call the "add by link" flow already uses)
+   any selected entry missing from it, merging the result in — falling
+   back to the name already on file (rather than disappearing again) if
+   the live resolve itself fails (playlist made private/deleted since).
+
+Both only affect YouTube Music — Apple Music's own `trackCount` comes
+from a real structured API field (not a UI-subtitle-parsed one), and
+there's no "add by link" flow for it to need this kind of merge.
+
+Live-verified (no frontend test framework exists in this project, same
+as the 2026-10-01 visual-cleanup entry above): `chromium --headless` +
+`selenium` driving a locally-started backend with a monkeypatched
+`list_ytmusic_playlists`/`get_ytmusic_playlist_summary` (real
+credentials aren't available in this environment) and a profile with a
+playlist pre-selected under a stale name/id not present in the fake
+library listing. Confirmed: the row appears, checked, with its current
+live-resolved name/track count/owner, not the stale saved name; real
+track counts render for every row. This same pass also caught a real,
+separate bug in the just-landed sidebar dropdown (see the entry above):
+a native `<select>` with no option matching its controlled `value`
+silently falls back to *displaying* its first real option as selected
+(a browser default, not a real selection event) -- `store.selected`
+was still `null` and the rest of the app still correctly treated no
+profile as selected, but the dropdown itself misleadingly looked
+chosen. Fixed by rendering a real, disabled placeholder `<option
+value="">` until a profile is actually selected.
+
 ## 2026-10-01: sidebar profile picker + Audiobooks table visual cleanup
 
 Requested directly: the sidebar's profile picker (a vertical list of

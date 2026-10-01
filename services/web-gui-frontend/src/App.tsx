@@ -163,6 +163,20 @@ export default function App() {
             value={store.selected ?? ''}
             onChange={(e) => store.select(e.target.value)}
           >
+            {/* A real <option value=""> is required here -- without it, a
+                native <select> with no matching option for the current
+                `value` silently falls back to displaying its *first* real
+                option as selected (a browser default, not a real .select()
+                call), which looked exactly like a profile had already been
+                chosen even though store.selected was still null and the
+                rest of the app still showed "select a profile first".
+                Confirmed live. Disabled, and only rendered pre-selection,
+                so it can't be re-chosen once a real profile is picked. */}
+            {!store.selected && (
+              <option value="" disabled>
+                Select a profile…
+              </option>
+            )}
             {Object.keys(store.profiles)
               .sort()
               .map((name) => (
