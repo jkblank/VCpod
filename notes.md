@@ -52,9 +52,15 @@ and an eject attempt.
    web GUI plans inside the container, which can't see `/mnt/storage`, so it
    dropped those tracks silently. A path that's right in one namespace is
    wrong in the other, so the fix can't be a per-writer rewrite.
-   - Fetchers now store **library-relative** entries (`music/Artist/...`).
-     Relative paths mean the same thing on the host and in the container, so
-     no environment variable is needed to write them.
+   - Fetchers now store **music-root-relative** entries (`Artist/...`, with
+     the music root being `library/music`). Relative paths mean the same thing
+     on the host and in the container, so no environment variable is needed
+     to write them.
+   - Follow-up (2026-10-03): the first version of the reader resolved entries
+     against `library/`, not `library/music/`, so every track came out as
+     `/data/library/gio_/...` and the plan found `to_add=0`. The reader now
+     stages against `library/music`. Checked: all 48 Rise Up entries resolve to
+     existing files in the container.
    - The sync resolves each entry against its own library root. Old absolute
      entries (container `/data/library/...` or host `HOST_LIBRARY_ROOT/...`)
      are rebased, so existing playlists still work. A staging copy of the

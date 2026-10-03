@@ -927,27 +927,28 @@ def test_stage_playlists_rebases_entries_to_local_library_root(monkeypatch, tmp_
     # Regression: playlists written by a containerized fetch carried container
     # paths, and then host paths, which the other side couldn't resolve, so
     # playlist tracks silently dropped out of the device plan. Entries must
-    # resolve against the library root the sync itself reads. See notes.md.
+    # resolve against the music root the fetchers write them relative to
+    # (library/music, not library/). See notes.md.
     from sync_orchestrator import sync as sync_module
 
     monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
     source = tmp_path / "source"
     source.mkdir()
     (source / "Rise Up.m3u8").write_text(
-        "#EXTM3U\n/data/library/music/A/01.m4a\n"
-        "/mnt/storage/vcpod/library/music/B/02.m4a\n"
-        "music/C/03.m4a\n"
+        "#EXTM3U\n/data/library/A/01.m4a\n"
+        "/mnt/storage/vcpod/library/B/02.m4a\n"
+        "C/03.m4a\n"
     )
-    library = tmp_path / "library"
+    music = tmp_path / "library" / "music"
 
-    staged = sync_module._stage_playlists(source, tmp_path / "staging", library)
+    staged = sync_module._stage_playlists(source, tmp_path / "staging", music)
 
     lines = (staged / "Rise Up.m3u8").read_text().splitlines()
     assert lines == [
         "#EXTM3U",
-        str(library / "music/A/01.m4a"),
-        str(library / "music/B/02.m4a"),
-        str(library / "music/C/03.m4a"),
+        str(music / "A/01.m4a"),
+        str(music / "B/02.m4a"),
+        str(music / "C/03.m4a"),
     ]
 
 

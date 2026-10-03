@@ -725,10 +725,11 @@ def _log_backup_file_changes(before: dict, after: dict) -> None:
         logger.warning("backup safety check: no file-level differences found")
 
 
-def _stage_playlists(source: Path, staging: Path, library_root: Path) -> Path:
+def _stage_playlists(source: Path, staging: Path, music_root: Path) -> Path:
     """Rebuilds `staging` from `source`, rewriting every .m3u8 entry to an
-    absolute path under library_root. Rebuilt every plan so the staging copy
-    never goes stale behind a fetch."""
+    absolute path under music_root (entries are relative to the music root,
+    the same root the fetchers write them against). Rebuilt every plan so the
+    staging copy never goes stale behind a fetch."""
     import os
     import shutil
 
@@ -744,7 +745,7 @@ def _stage_playlists(source: Path, staging: Path, library_root: Path) -> Path:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            entries.append(resolve_playlist_entry(line, library_root, host_root))
+            entries.append(resolve_playlist_entry(line, music_root, host_root))
         (staging / playlist.name).write_text("#EXTM3U\n" + "\n".join(entries) + "\n")
     return staging
 
@@ -820,7 +821,7 @@ def plan_sync(
     playlists_staging = _stage_playlists(
         playlists_folder,
         state_root / ".playlists_staging" / profile.profile,
-        library_root,
+        library_root / "music",
     )
 
     pc_folders = (
