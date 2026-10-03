@@ -44,8 +44,16 @@ New tests: 2 for `fetcher-apple` (bulk-listing's attribute explicitly
 ignored even if present; a failed per-playlist request falls back to
 0 rather than raising), 4 existing ones updated for the new fixture
 shape. 578/578 root workspace passing. Live-verified against the real
-account on `olive` after deploy: see the git history/Discord for the
-actual before/after track counts once confirmed.
+`john` account on `olive` after deploy: all 48 playlists now show real,
+non-zero counts (e.g. "ALT CTRL" → 81, exactly matching the raw
+`relationships.tracks.meta.total` value confirmed earlier against the
+same real playlist) — 0 out of 48 still reading 0. The whole listing
+(48 real extra per-playlist requests at 8-way bounded concurrency) took
+6.6 seconds end to end, not noticeably slower than before. The new
+playlist still hadn't appeared as of this check (count still exactly
+48) — consistent with the Apple-side propagation-lag explanation above,
+not a regression; the new Refresh button is there for the user to
+retry once it has.
 
 ## 2026-10-01: Music sources page — track counts silently showing 0, and an already-selected public YouTube playlist vanishing from the table
 
