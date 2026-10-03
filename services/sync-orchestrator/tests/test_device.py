@@ -291,13 +291,74 @@ def test_eject_device_calls_eject_on_parent_drive(monkeypatch):
 
     def _fake_run(cmd, capture_output, text, check=False):
         calls.append(cmd)
+        # udisksctl info fails here, so this exercises the plain-eject fallback.
+        if cmd[0] == "udisksctl":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no udisks")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
 
-    assert calls == [["eject", "/dev/sdc"]]
+    assert calls[-1] == ["eject", "/dev/sdc"]
+
+
+UDISKS_INFO = (
+    "/dev/sdc2:\n"
+    "  Drive:                      '/org/freedesktop/UDisks2/drives/IPOD_DRIVE'\n"
+)
+
+
+def test_eject_device_uses_udisks2_drive_eject_when_authorized(monkeypatch):
+    # The desktop's own eject path: UDisks2 Drive.Eject, no sudo needed for
+    # an authorized caller. `eject` must not run if this succeeds.
+    monkeypatch.setattr(
+        device_module,
+        "iter_candidate_mounts",
+        lambda: [("/dev/sdc2", "/run/media/john/JOHN_S IPOD", "vfat")],
+    )
+    calls = []
+
+    def _fake_run(cmd, capture_output, text, check=False):
+        calls.append(cmd)
+        if cmd[0] == "udisksctl":
+            return subprocess.CompletedProcess(cmd, 0, stdout=UDISKS_INFO, stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
+
+    assert calls[-1][:2] == ["busctl", "--system"]
+    assert "/org/freedesktop/UDisks2/drives/IPOD_DRIVE" in calls[-1]
+    assert "Eject" in calls[-1]
+    assert not any(c[0] == "eject" for c in calls)
+
+
+def test_eject_device_falls_back_to_eject_when_udisks2_refuses(monkeypatch):
+    # Over SSH polkit refuses Drive.Eject ("no agent"); the plain eject binary
+    # is the fallback, which needs root -- so it still runs, and its own
+    # failure is what gets reported.
+    monkeypatch.setattr(
+        device_module,
+        "iter_candidate_mounts",
+        lambda: [("/dev/sdc2", "/run/media/john/JOHN_S IPOD", "vfat")],
+    )
+    calls = []
+
+    def _fake_run(cmd, capture_output, text, check=False):
+        calls.append(cmd)
+        if cmd[0] == "udisksctl":
+            return subprocess.CompletedProcess(cmd, 0, stdout=UDISKS_INFO, stderr="")
+        if cmd[0] == "busctl":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Authorization requires authentication")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    eject_device(_FakeDeviceInfoForEject("/run/media/john/JOHN_S IPOD"))
+
+    assert calls[-1] == ["eject", "/dev/sdc"]
 
 
 def test_eject_device_raises_if_no_longer_mounted(monkeypatch):

@@ -966,6 +966,29 @@ def _cmd_auto_sync(args: argparse.Namespace) -> int:
         return _fail(str(e))
 
 
+def _cmd_eject(args: argparse.Namespace) -> int:
+    """Ejects the iPod matched by one profile's device.match_by/match_value,
+    if it's currently mounted -- the web GUI's "Eject iPod" button. Uses the
+    same UDisks2-first eject as the end of every sync run."""
+    try:
+        profile = load_profile_config(args.profile)
+    except ConfigError as e:
+        print(f"ERROR {e.path}")
+        for line in e.errors:
+            print(f"  {line}")
+        return 1
+    try:
+        device_info = find_matching_device(profile.device)
+    except DeviceNotFoundError as e:
+        return _fail(str(e))
+    try:
+        eject_device(device_info)
+    except EjectError as e:
+        return _fail(str(e))
+    print("Device ejected — safe to disconnect.")
+    return 0
+
+
 def _cmd_identify_device(args: argparse.Namespace) -> int:
     """Prints every currently-connected iPod's identity as JSON --
     exists for callers that need to *discover* a device's serial/
@@ -1240,6 +1263,13 @@ def main() -> None:
         "already mounted.",
     )
     identify_device_parser.set_defaults(func=_cmd_identify_device)
+
+    eject_parser = subparsers.add_parser(
+        "eject",
+        help="Eject the iPod matched by a profile, if mounted",
+    )
+    eject_parser.add_argument("--profile", required=True, help="Path to the profile YAML")
+    eject_parser.set_defaults(func=_cmd_eject)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

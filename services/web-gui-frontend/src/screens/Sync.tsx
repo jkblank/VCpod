@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type SyncStatus } from '../api'
+import { api, ApiError, type SyncStatus } from '../api'
 import AutoSyncSetupCard from '../components/AutoSyncSetupCard'
 import Dialog from '../components/Dialog'
 import {
@@ -46,6 +46,8 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
   const [dangerousMode, setDangerousMode] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [externalStatus, setExternalStatus] = useState<SyncStatus | null>(null)
+  const [ejecting, setEjecting] = useState(false)
+  const [ejectMessage, setEjectMessage] = useState<string | null>(null)
   const logRef = useRef<HTMLPreElement | null>(null)
 
   useEffect(() => {
@@ -86,6 +88,20 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
             : d.volume_label === draft.device.match_value,
         )
       : null
+
+  const ejectNow = async () => {
+    if (!draft) return
+    setEjecting(true)
+    setEjectMessage(null)
+    try {
+      const result = await api.ejectProfileDevice(draft.profile)
+      setEjectMessage(result.message)
+    } catch (e) {
+      setEjectMessage(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setEjecting(false)
+    }
+  }
 
   const resetLocal = () => setAllowRemovals(false)
 
@@ -157,7 +173,16 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
               <span className="muted">not connected</span>
             )}
           </span>
+          <button
+            className="btn secondary"
+            style={{ marginLeft: 'auto' }}
+            onClick={ejectNow}
+            disabled={!connected || running || ejecting}
+          >
+            {ejecting ? 'Ejecting…' : 'Eject iPod'}
+          </button>
         </p>
+        {ejectMessage && <p className="muted" style={{ marginTop: 0 }}>{ejectMessage}</p>}
 
         {externalRunning && (
           <div className="warning-banner">

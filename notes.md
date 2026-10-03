@@ -1,5 +1,33 @@
 # Notes / Future Work
 
+## 2026-10-03: UDisks2 ejection and a web GUI "Eject iPod" button
+
+The plain `eject` binary needs root, so ejecting from a normal user
+session needed sudo. UDisks2's `Drive.Eject` is the call a desktop file
+manager's eject button makes, and polkit authorizes it for a local
+desktop session and for root without a password. Confirmed live on
+olive: over SSH polkit answers "requires authentication but no agent
+is available", since an SSH session has no seat.
+
+- `device.py`: `eject_device` tries UDisks2 first (`udisksctl info` to
+  find the drive object, then `busctl call ... Drive Eject a{sv} 0`).
+  On any failure it falls back to the `eject` binary, which keeps the
+  current behavior for SSH users.
+- `sync-orchestrator eject --profile PATH`: ejects the matched iPod if
+  it's mounted. The web backend shells out to it.
+- `POST /api/profiles/{name}/eject`: refuses with 409 while a sync is
+  running for that profile, since an eject mid-sync is the unclean
+  unmount this prevents.
+- Sync screen: "Eject iPod" button beside the device status, enabled
+  only when the iPod is connected and no sync is running.
+
+Tests: 3 for the UDisks2 and fallback paths, 2 for the eject command,
+4 for the route. 590/590 workspace.
+
+Not yet verified live: a real eject through the button. The web
+container runs as root with the host D-Bus socket, so it should be
+authorized the same way the auto-sync unit is.
+
 ## 2026-10-03: iPod ejected only on success, so failed runs left it mounted and dirty
 
 The FAT corruption behind the repair sessions traces to the same gap.

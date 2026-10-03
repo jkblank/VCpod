@@ -26,6 +26,7 @@ from web_gui_backend.routers import (
     audiobooks_discover,
     auto_sync_setup,
     device,
+    eject,
     external_library,
     fetch_now,
     global_config,
@@ -121,6 +122,7 @@ def create_app(
         activity,
         homepage,
         fetch_now,
+        eject,
     ):
         app.include_router(router_module.router)
 

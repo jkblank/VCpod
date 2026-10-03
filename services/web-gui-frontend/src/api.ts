@@ -368,6 +368,11 @@ export const api = {
     request<PlaylistSummary[]>(
       `/api/profiles/${encodeURIComponent(profileName)}/sources/apple-music/playlists`,
     ),
+  ejectProfileDevice: (profileName: string) =>
+    request<{ ejected: boolean; message: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/eject`,
+      { method: 'POST' },
+    ),
   fetchProfileNow: (profileName: string) =>
     request<{ fetched: string[]; source_errors: string[]; errors: string[] }>(
       `/api/profiles/${encodeURIComponent(profileName)}/fetch-now`,

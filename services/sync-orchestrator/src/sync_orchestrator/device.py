@@ -306,6 +306,41 @@ class EjectError(Exception):
     pass
 
 
+_UDISKS_DRIVE_LINE_RE = re.compile(r"^\s*Drive:\s*'(/org/freedesktop/UDisks2/drives/[^']+)'", re.MULTILINE)
+
+
+def _udisks_eject(block_device: str) -> None:
+    """Ejects the drive holding block_device via UDisks2's Drive.Eject D-Bus
+    method. Raises EjectError on any failure (no udisks tools, polkit refusal,
+    the drive reporting it can't be ejected) so the caller can fall back."""
+    try:
+        info = subprocess.run(
+            ["udisksctl", "info", "-b", block_device], capture_output=True, text=True
+        )
+    except FileNotFoundError as e:
+        raise EjectError(f"udisksctl not found: {e}") from e
+    if info.returncode != 0:
+        raise EjectError(f"udisksctl info failed: {info.stderr.strip()}")
+    match = _UDISKS_DRIVE_LINE_RE.search(info.stdout)
+    if not match:
+        raise EjectError(f"no UDisks2 drive object for {block_device!r}")
+    drive_path = match.group(1)
+
+    try:
+        result = subprocess.run(
+            [
+                "busctl", "--system", "call", "org.freedesktop.UDisks2", drive_path,
+                "org.freedesktop.UDisks2.Drive", "Eject", "a{sv}", "0",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise EjectError(f"busctl not found: {e}") from e
+    if result.returncode != 0:
+        raise EjectError(f"UDisks2 Drive.Eject refused: {result.stderr.strip()}")
+
+
 def eject_device(device_info: DeviceInfo) -> None:
     """Ejects the drive via the classic `eject` utility (util-linux),
     not `udisksctl`.
@@ -342,6 +377,17 @@ def eject_device(device_info: DeviceInfo) -> None:
             break
     if block_device is None:
         raise EjectError(f"device no longer mounted at {device_info.path!r}; can't eject")
+
+    # UDisks2's Drive.Eject first: it's the same call a desktop file
+    # manager's eject button makes, so a local desktop session (and root,
+    # e.g. the auto-sync unit) is authorized by polkit without a password.
+    # Over SSH, polkit refuses it and we fall through to the plain `eject`
+    # binary below, which needs root. See notes.md.
+    try:
+        _udisks_eject(block_device)
+        return
+    except EjectError:
+        pass
 
     match = _PARENT_DRIVE_RE.match(block_device)
     if not match:

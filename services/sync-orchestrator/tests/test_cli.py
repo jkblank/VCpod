@@ -1414,3 +1414,34 @@ def test_run_sync_skips_eject_when_skip_eject_set(monkeypatch, tmp_path):
     )
 
     assert ejected == []
+
+
+def test_cmd_eject_ejects_the_matched_device(monkeypatch):
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    device = _connected_device(serial="X")
+    ejected = []
+    monkeypatch.setattr(cli_module, "load_profile_config", lambda path: profile)
+    monkeypatch.setattr(cli_module, "find_matching_device", lambda match: device)
+    monkeypatch.setattr(cli_module, "eject_device", lambda info: ejected.append(info))
+
+    result = cli_module._cmd_eject(argparse.Namespace(profile="/config/profiles/john.yaml"))
+
+    assert result == 0
+    assert ejected == [device]
+
+
+def test_cmd_eject_fails_when_no_matching_device(monkeypatch):
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    monkeypatch.setattr(cli_module, "load_profile_config", lambda path: profile)
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: (_ for _ in ()).throw(DeviceNotFoundError("no device")),
+    )
+
+    result = cli_module._cmd_eject(argparse.Namespace(profile="/config/profiles/john.yaml"))
+
+    assert result == 1
