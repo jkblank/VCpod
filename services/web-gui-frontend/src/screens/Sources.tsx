@@ -165,6 +165,15 @@ export default function Sources({ store }: { store: ProfileStore }) {
 
       {tab !== 'spotify' && (
         <>
+          <div className="row" style={{ marginBottom: 0 }}>
+            <button
+              className="btn secondary"
+              onClick={() => loadPlaylists(tab)}
+              disabled={loading}
+            >
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </div>
           {saveErrors && <div className="error-banner">{saveErrors.join('\n')}</div>}
           {loadError && (
             <div className="error-banner">

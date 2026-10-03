@@ -1,5 +1,52 @@
 # Notes / Future Work
 
+## 2026-10-03: Apple Music track counts always 0, and no way to retry a newly-created playlist without switching tabs
+
+Reported as "I just added a new playlist on Apple Music, it doesn't
+show up as selectable." Investigated live against the real `john`
+profile's real Apple Music account on `olive` (real cookies, real API
+calls) rather than guessing -- two separate, real findings:
+
+1. **The missing new playlist itself is not a bug in this project.**
+   `get_library_playlists`' own response included `"meta": {"total":
+   48}`, and this project's own listing returned exactly 48 playlists —
+   i.e. Apple's own `/v1/me/library/playlists` endpoint genuinely hasn't
+   indexed the just-created playlist yet at the moment it was checked.
+   This is a known, real Apple Music API eventual-consistency gap, not
+   something `fetcher_apple`/the web GUI can fix. The real, missing
+   piece was that `Sources.tsx` had no way to retry at all beyond
+   switching tabs away and back (which happens to force a re-fetch via
+   its own `useEffect`, but isn't an obvious or intentional affordance)
+   — added an explicit "Refresh" button.
+2. **Every Apple Music playlist's track count showed as 0, always** —
+   confirmed live: `get_library_playlists`' response items never carry
+   a `trackCount` attribute *at all* (not conditionally absent like
+   ytmusicapi's equivalent field, see the 2026-10-01 entry above —
+   genuinely never present in the real response shape), so
+   `fetcher_apple.api.list_playlists`'s `attrs.get("trackCount", 0)`
+   was unconditionally reading the default every single time. The real
+   count only exists via a separate per-playlist request
+   (`get_library_playlist(library_id, include="tracks", limit=1)`,
+   whose `relationships.tracks.meta.total` gives it without needing to
+   fetch more than one actual track) — confirmed live, and confirmed
+   that request needs the library-internal `p.*` id
+   (`item["id"]`), not the `pl.*` catalog id `_playlist_source_id`
+   prefers for the id returned to callers (404s on the latter).
+
+Fixed: `list_playlists` now issues one bounded-concurrency (8 at a
+time — unbounded risks Apple's own rate limiting, fully sequential
+noticeably slows a large library) per-playlist request for the real
+count, same shape as the YTMusic fix. `Sources.tsx` gained a "Refresh"
+button (previously nonexistent — the only way to re-fetch was an
+incidental side effect of switching tabs).
+
+New tests: 2 for `fetcher-apple` (bulk-listing's attribute explicitly
+ignored even if present; a failed per-playlist request falls back to
+0 rather than raising), 4 existing ones updated for the new fixture
+shape. 578/578 root workspace passing. Live-verified against the real
+account on `olive` after deploy: see the git history/Discord for the
+actual before/after track counts once confirmed.
+
 ## 2026-10-01: Music sources page — track counts silently showing 0, and an already-selected public YouTube playlist vanishing from the table
 
 Requested directly: two real bugs on the Music sources page.
