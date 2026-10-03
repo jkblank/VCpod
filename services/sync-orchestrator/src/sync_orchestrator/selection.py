@@ -165,6 +165,8 @@ def resolve_audiobooks_folder(
     if not audiobooks_root.is_dir():
         return (), []
 
+    if config is not None and config.mode == "none":
+        return (), []
     if config is None or (config.mode == "include" and not config.selections):
         return (str(audiobooks_root),), []
 

@@ -45,7 +45,9 @@ export type SelectionConfig = {
 }
 
 export type ExternalLibraryConfig = SelectionConfig & { path: string }
-export type AudiobooksConfig = SelectionConfig
+export type AudiobooksConfig = Omit<SelectionConfig, 'mode'> & {
+  mode: 'include' | 'exclude' | 'none'
+}
 
 // Profile carries one more nested section (music, the general-library
 // scoping) -- passed through untyped via the index signature, since

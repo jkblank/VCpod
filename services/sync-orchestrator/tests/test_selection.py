@@ -214,6 +214,17 @@ def test_resolve_audiobooks_folder_default_config_includes_everything_unfiltered
     assert not (tmp_path / "staging").exists()
 
 
+def test_resolve_audiobooks_folder_mode_none_syncs_no_audiobooks(tmp_path):
+    # Regression: an empty include meant "every audiobook", so a profile
+    # could not say it wants none. See notes.md.
+    library = _make_audiobooks_library(tmp_path)
+    folders, unresolved = resolve_audiobooks_folder(
+        library, AudiobooksConfig(mode="none"), tmp_path / "staging"
+    )
+    assert folders == ()
+    assert unresolved == []
+
+
 def test_resolve_audiobooks_folder_include_with_selections_builds_staging_dir(tmp_path):
     library = _make_audiobooks_library(tmp_path)
     staging = tmp_path / "staging"

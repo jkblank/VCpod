@@ -1416,6 +1416,28 @@ def test_run_sync_skips_eject_when_skip_eject_set(monkeypatch, tmp_path):
     assert ejected == []
 
 
+def test_plan_only_run_leaves_the_ipod_mounted_for_the_execute_step(monkeypatch):
+    # Regression: the web GUI plans and then executes against the same
+    # mount; ejecting after a plan made the execute fail. See notes.md.
+    def _body(args, profile, *, profile_path, config_root, detach_target):
+        detach_target.append(_connected_device(serial="X"))
+        return 0
+
+    ejected = []
+    monkeypatch.setattr(cli_module, "_run_sync_body", _body)
+    monkeypatch.setattr(cli_module, "eject_device", lambda info: ejected.append(info))
+    profile = SimpleNamespace(profile="john")
+
+    cli_module._run_sync(
+        _run_sync_args(execute=False, skip_eject=False),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert ejected == []
+
+
 def test_detach_warning_goes_to_stderr_not_stdout(monkeypatch, capsys):
     # Regression: the plan's --json stdout is parsed by the web GUI, and a
     # stray eject warning on stdout broke the parse. See notes.md.

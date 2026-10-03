@@ -163,7 +163,7 @@ def _run_sync(
             detach_target=detach_target,
         )
     finally:
-        if detach_target and not args.skip_eject:
+        if detach_target and args.execute and not args.skip_eject:
             _detach_after_run(detach_target[0])
 
 
@@ -445,7 +445,7 @@ def _run_rockbox_sync(
             detach_target=detach_target,
         )
     finally:
-        if detach_target and not args.skip_eject:
+        if detach_target and args.execute and not args.skip_eject:
             _detach_after_run(detach_target[0])
 
 

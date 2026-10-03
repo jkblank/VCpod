@@ -273,8 +273,10 @@ class AudiobooksConfig(StrictModel):
     # profiles don't need per-book curation, so audiobooks default to
     # "just sync everything" (same behavior as `audiobooks` being left
     # unset entirely). "exclude": every audiobook is synced EXCEPT those
-    # matching a `selections` entry.
-    mode: Literal["include", "exclude"] = "include"
+    # matching a `selections` entry. "none": no audiobooks at all -- the
+    # only way to say so, since unset/None and empty include both mean
+    # "everything".
+    mode: Literal["include", "exclude", "none"] = "include"
     # Relative path fragments under library_root/audiobooks, matched by
     # prefix — same convention as ExternalLibraryConfig.selections.
     # beets-audible's own layout is {Author}/{Album}/{Title}.m4b:
