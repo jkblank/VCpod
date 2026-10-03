@@ -1416,6 +1416,23 @@ def test_run_sync_skips_eject_when_skip_eject_set(monkeypatch, tmp_path):
     assert ejected == []
 
 
+def test_detach_warning_goes_to_stderr_not_stdout(monkeypatch, capsys):
+    # Regression: the plan's --json stdout is parsed by the web GUI, and a
+    # stray eject warning on stdout broke the parse. See notes.md.
+    from sync_orchestrator.device import EjectError
+
+    def _busy(info):
+        raise EjectError("eject failed: Device or resource busy")
+
+    monkeypatch.setattr(cli_module, "eject_device", _busy)
+
+    cli_module._detach_after_run(_connected_device(serial="X"))
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "still mounted" in captured.err
+
+
 def test_cmd_eject_ejects_the_connected_ipod(monkeypatch):
     ejected = []
     monkeypatch.setattr(cli_module, "find_ipod_block_devices", lambda: ["/dev/sdh"])

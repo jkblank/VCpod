@@ -177,11 +177,14 @@ def _detach_after_run(device_info) -> None:
     a quiet no-op."""
     try:
         eject_device(device_info)
-        print("Device ejected — safe to disconnect.")
+        print("Device ejected — safe to disconnect.", file=sys.stderr)
     except EjectError as e:
         if "no longer mounted" in str(e):
             return
-        print(f"WARNING: iPod still mounted after the run; not safe to unplug: {e}")
+        print(
+            f"WARNING: iPod still mounted after the run; not safe to unplug: {e}",
+            file=sys.stderr,
+        )
 
 
 def _run_sync_body(
