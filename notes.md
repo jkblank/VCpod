@@ -1,5 +1,19 @@
 # Notes / Future Work
 
+## 2026-10-03: the backup safety check now names the files that changed
+
+The 09:40 abort said only that "the iPod filesystem changed while its backup
+was being created". iOpenPod's check compares each file's size, mtime, ctime,
+device, and inode, plus the overall file set, and it reports neither which
+file nor which field. The sync now records a metadata snapshot (`stat` calls
+only, nothing read or written on the device) before the backup. If the check
+aborts, it takes another snapshot and logs every ADDED, REMOVED, or CHANGED
+file and the fields that changed, so the next abort says what moved.
+
+Earlier tests ruled out the read-write mount (the FAT stayed byte-identical
+through a read-write mount and unmount, and the clean flag held) and
+firmware-on-connect (a before and after manifest matched exactly).
+
 ## 2026-10-03: playlist paths were namespace-specific, and eject needed a mount the container couldn't see
 
 Two regressions from the earlier fixes today, found with a plan-only sync

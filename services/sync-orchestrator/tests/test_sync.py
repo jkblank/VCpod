@@ -949,3 +949,27 @@ def test_stage_playlists_rebases_entries_to_local_library_root(monkeypatch, tmp_
         str(library / "music/B/02.m4a"),
         str(library / "music/C/03.m4a"),
     ]
+
+
+def test_log_backup_file_changes_names_added_removed_and_changed_files(caplog):
+    from sync_orchestrator import sync as sync_module
+
+    before = {
+        "iPod_Control/iTunes/iTunesDB": (100, 1, 1, 9, 5),
+        "iPod_Control/iTunes/Play Counts": (8, 2, 2, 9, 6),
+        "iPod_Control/Music/F00/A.m4a": (50, 3, 3, 9, 7),
+    }
+    after = {
+        "iPod_Control/iTunes/iTunesDB": (100, 1, 1, 9, 5),
+        "iPod_Control/Music/F00/A.m4a": (50, 3, 4, 9, 7),
+        "iPod_Control/Music/F01/new.m4a": (60, 4, 4, 9, 8),
+    }
+
+    with caplog.at_level("WARNING", logger=sync_module.logger.name):
+        sync_module._log_backup_file_changes(before, after)
+
+    text = caplog.text
+    assert "REMOVED iPod_Control/iTunes/Play Counts" in text
+    assert "ADDED iPod_Control/Music/F01/new.m4a" in text
+    assert "CHANGED iPod_Control/Music/F00/A.m4a (ctime_ns)" in text
+    assert "iTunesDB" not in text

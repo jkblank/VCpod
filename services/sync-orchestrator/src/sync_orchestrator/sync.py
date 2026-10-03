@@ -66,6 +66,7 @@ from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
 from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
 from iopenpod.podcasts.podcast_sync import build_podcast_sync_plan
 from iopenpod.sync.audio_fingerprint import FingerprintCache
+from iopenpod.device.write_guard import DeviceWriteSafetyError
 from iopenpod.sync.backup_manager import BackupManager, BackupProgress, SnapshotInfo
 from iopenpod.sync.core.engine import SyncEngine
 from iopenpod.sync.core.models import (
@@ -672,6 +673,46 @@ def _transcode_options_for(profile: ProfileConfig) -> TranscodeOptions:
     return TranscodeOptions(prefer_lossy=prefer_lossy)
 
 
+def _device_file_states(root: Path) -> dict[str, tuple[int, int, int, int, int]]:
+    """Metadata for every file on the iPod, keyed by its path relative to
+    the root. Only stat() calls -- nothing is read or written on the device.
+    Used to name exactly which files a safety abort saw change."""
+    import os
+
+    states: dict[str, tuple[int, int, int, int, int]] = {}
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                st = os.stat(full, follow_symlinks=False)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, root)
+            states[rel] = (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino)
+    return states
+
+
+def _log_backup_file_changes(before: dict, after: dict) -> None:
+    """Names every file that was added, removed, or changed (and which field)
+    between two _device_file_states snapshots, so a backup safety abort says
+    what actually moved instead of only that something did."""
+    fields = ("size", "mtime_ns", "ctime_ns", "dev", "ino")
+    lines: list[str] = []
+    for rel in sorted(set(before) | set(after)):
+        if rel not in after:
+            lines.append(f"  REMOVED {rel}")
+        elif rel not in before:
+            lines.append(f"  ADDED {rel}")
+        elif before[rel] != after[rel]:
+            changed = [f for f, a, b in zip(fields, before[rel], after[rel]) if a != b]
+            lines.append(f"  CHANGED {rel} ({', '.join(changed)})")
+    if lines:
+        logger.warning("backup safety check: %d file(s) changed during backup:\n%s",
+                       len(lines), "\n".join(lines))
+    else:
+        logger.warning("backup safety check: no file-level differences found")
+
+
 def _stage_playlists(source: Path, staging: Path, library_root: Path) -> Path:
     """Rebuilds `staging` from `source`, rewriting every .m3u8 entry to an
     absolute path under library_root. Rebuilt every plan so the staging copy
@@ -789,14 +830,19 @@ def plan_sync(
     )
     snapshot: SnapshotInfo | None = None
     if not skip_backup:
-        snapshot = backup_mgr.create_backup(
-            ipod_path,
-            progress_callback=(
-                _backup_progress_adapter(progress_callback) if progress_callback else None
-            ),
-            reported_volume_format=device_info.reported_volume_format,
-            expected_volume_identity_key=device_info.volume_identity_key,
-        )
+        before_backup = _device_file_states(Path(ipod_path))
+        try:
+            snapshot = backup_mgr.create_backup(
+                ipod_path,
+                progress_callback=(
+                    _backup_progress_adapter(progress_callback) if progress_callback else None
+                ),
+                reported_volume_format=device_info.reported_volume_format,
+                expected_volume_identity_key=device_info.volume_identity_key,
+            )
+        except DeviceWriteSafetyError:
+            _log_backup_file_changes(before_backup, _device_file_states(Path(ipod_path)))
+            raise
         if snapshot is None:
             raise SyncError("backup did not produce a snapshot; refusing to write")
 
