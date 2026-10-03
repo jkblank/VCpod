@@ -154,6 +154,38 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 def _run_sync(
     args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path
 ) -> int:
+    detach_target: list = []
+    try:
+        return _run_sync_body(
+            args, profile, profile_path=profile_path, config_root=config_root,
+            detach_target=detach_target,
+        )
+    finally:
+        if detach_target and not args.skip_eject:
+            _detach_after_run(detach_target[0])
+
+
+def _detach_after_run(device_info) -> None:
+    """Ejects the iPod after a sync run, whatever its outcome. Eject used to
+    happen only on the success path, so any early return (plan refused,
+    backup aborted, a missing dependency) left the iPod mounted, and the
+    user then unplugged it dirty -- the FAT corruption behind real repair
+    sessions. eject_device already unmounts before ejecting; if it has
+    already run successfully, the device is no longer mounted and this is
+    a quiet no-op."""
+    try:
+        eject_device(device_info)
+        print("Device ejected — safe to disconnect.")
+    except EjectError as e:
+        if "no longer mounted" in str(e):
+            return
+        print(f"WARNING: iPod still mounted after the run; not safe to unplug: {e}")
+
+
+def _run_sync_body(
+    args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path,
+    detach_target: list,
+) -> int:
     # full-sync/auto-sync's argparse namespaces never define --json (only
     # the plain `sync` subparser does) -- getattr, not args.json, so this
     # function still works unmodified as their shared dispatch target.
@@ -179,6 +211,7 @@ def _run_sync(
         _out(f"  auto-mounted {block_device}")
     try:
         device_info = find_matching_device(profile.device)
+        detach_target.append(device_info)
     except DeviceNotFoundError as e:
         return _fail(str(e))
     _out(
@@ -400,6 +433,21 @@ def _print_rockbox_plan(plan) -> None:
 def _run_rockbox_sync(
     args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path
 ) -> int:
+    detach_target: list = []
+    try:
+        return _run_rockbox_sync_body(
+            args, profile, profile_path=profile_path, config_root=config_root,
+            detach_target=detach_target,
+        )
+    finally:
+        if detach_target and not args.skip_eject:
+            _detach_after_run(detach_target[0])
+
+
+def _run_rockbox_sync_body(
+    args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path,
+    detach_target: list,
+) -> int:
     """Rockbox-mode sibling of _run_sync: same flags, same meaning
     (--execute/--allow-removals/--skip-backup/--skip-podcasts/--skip-eject
     all behave identically), but a plain filesystem mirror instead of an
@@ -425,6 +473,7 @@ def _run_rockbox_sync(
         print(f"  auto-mounted {block_device}")
     try:
         device_info = find_matching_device(profile.device)
+        detach_target.append(device_info)
     except DeviceNotFoundError as e:
         return _fail(str(e))
     print(f"  path={device_info.path} (Rockbox mode — plain file mirror, no iTunesDB)")

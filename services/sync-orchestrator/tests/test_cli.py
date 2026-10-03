@@ -1359,3 +1359,58 @@ def test_identify_device_skips_auto_mount_when_no_mount_flag_set(monkeypatch, ca
     result = cli_module._cmd_identify_device(argparse.Namespace(no_mount=True))
 
     assert result == 0
+
+
+def test_run_sync_ejects_device_even_when_plan_fails(monkeypatch, tmp_path):
+    # Regression: eject used to run only on the success path, so a failed
+    # plan (or backup abort, etc.) left the iPod mounted, and the user then
+    # unplugged it dirty -- the FAT corruption behind real repair sessions.
+    from sync_orchestrator.sync import SyncError
+
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    device = _connected_device(serial="X")
+    ejected = []
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(cli_module, "find_matching_device", lambda match: device)
+    monkeypatch.setattr(cli_module, "eject_device", lambda info: ejected.append(info))
+    monkeypatch.setattr(
+        cli_module, "plan_sync",
+        lambda **kwargs: (_ for _ in ()).throw(SyncError("backup aborted")),
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(state_root=str(tmp_path), skip_eject=False),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 1
+    assert ejected == [device]
+
+
+def test_run_sync_skips_eject_when_skip_eject_set(monkeypatch, tmp_path):
+    from sync_orchestrator.sync import SyncError
+
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    ejected = []
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(cli_module, "find_matching_device", lambda match: _connected_device(serial="X"))
+    monkeypatch.setattr(cli_module, "eject_device", lambda info: ejected.append(info))
+    monkeypatch.setattr(
+        cli_module, "plan_sync",
+        lambda **kwargs: (_ for _ in ()).throw(SyncError("backup aborted")),
+    )
+
+    cli_module._run_sync(
+        _run_sync_args(state_root=str(tmp_path), skip_eject=True),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert ejected == []

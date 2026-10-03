@@ -1,5 +1,26 @@
 # Notes / Future Work
 
+## 2026-10-03: iPod ejected only on success, so failed runs left it mounted and dirty
+
+The FAT corruption behind the repair sessions traces to the same gap.
+`_run_sync` and `_run_rockbox_sync` ejected the iPod only at the very
+end of a successful run. Every early return (plan refused, backup
+aborted, a missing dependency) left the iPod mounted, and the user then
+unplugged it while dirty. The kernel logs show this exact pattern
+repeatedly: the "Volume was not properly unmounted" warnings on
+Sep 10, Sep 11, and Sep 29, each after a disconnect while mounted.
+
+Fix: both sync entry points now run their body inside a `try/finally`
+that calls `eject_device` on every exit path, unless `--skip-eject` is
+set. The success path's own eject is unchanged. If the device has
+already been ejected, the finally is a quiet no-op. Covered by two new
+tests: ejection on a failed plan, and no ejection when `--skip-eject`
+is set.
+
+Known gap, not yet addressed: auto-sync can auto-mount a device whose
+profile doesn't match, and leave it mounted when it gives up. That
+path needs its own eject before this is fully closed.
+
 ## 2026-10-03: containerized playlist fetches wrote container paths, so bare-metal device syncs dropped every playlist track
 
 Found after an auto-sync wiped a real iPod down to 3 tracks. The
