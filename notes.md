@@ -1,5 +1,42 @@
 # Notes / Future Work
 
+## 2026-10-03: playlist paths were namespace-specific, and eject needed a mount the container couldn't see
+
+Two regressions from the earlier fixes today, found with a plan-only sync
+and an eject attempt.
+
+1. **Plan didn't add the four nienie playlists.** Fetchers wrote host paths
+   (`/mnt/storage/vcpod/library/...`) to fix the bare-metal device sync. The
+   web GUI plans inside the container, which can't see `/mnt/storage`, so it
+   dropped those tracks silently. A path that's right in one namespace is
+   wrong in the other, so the fix can't be a per-writer rewrite.
+   - Fetchers now store **library-relative** entries (`music/Artist/...`).
+     Relative paths mean the same thing on the host and in the container, so
+     no environment variable is needed to write them.
+   - The sync resolves each entry against its own library root. Old absolute
+     entries (container `/data/library/...` or host `HOST_LIBRARY_ROOT/...`)
+     are rebased, so existing playlists still work. A staging copy of the
+     playlists, with every entry absolute, is what iOpenPod reads.
+   - Note: the sync-orchestrator venv holds a copy of `common`, not a live
+     link. After any change to `common`, run
+     `uv sync --frozen --reinstall-package common` in that project, or the
+     old code keeps running.
+
+2. **Eject didn't find the iPod in the web GUI.** The eject route identified
+   the device by mount point, and the container doesn't see mounts made on
+   the host outside its bind mounts. The container does see the device itself
+   through sysfs (vendor "Apple", model "iPod"), plus `/dev/sdX`, `udisksctl`,
+   `busctl`, and `eject`.
+   - `find_ipod_block_devices()` finds iPods through sysfs and works whether or
+     not they're mounted. `eject_block_device()` tries UDisks2 Drive.Eject,
+     then the `eject` binary.
+   - `sync-orchestrator eject` ejects the connected iPod. It refuses with
+     more than one connected, since guessing would be risky.
+
+Tests: 2 new for staging and rebasing, 3 for the eject command and sysfs
+lookup, and the two fetcher tests that asserted absolute entries now assert
+library-relative ones. 593/593 workspace.
+
 ## 2026-10-03: the web GUI's background polling could mount an iPod during a sync
 
 The first auto-sync after the eject change stopped at the backup safety

@@ -921,3 +921,31 @@ def test_ithmb_max_size_raised_to_fat32_file_limit():
     from iopenpod.artworkdb_writer import artwork_writer as artwork_writer_module
 
     assert artwork_writer_module.ITHMB_MAX_SIZE_BYTES == 4 * 1024**3 - 1
+
+
+def test_stage_playlists_rebases_entries_to_local_library_root(monkeypatch, tmp_path):
+    # Regression: playlists written by a containerized fetch carried container
+    # paths, and then host paths, which the other side couldn't resolve, so
+    # playlist tracks silently dropped out of the device plan. Entries must
+    # resolve against the library root the sync itself reads. See notes.md.
+    from sync_orchestrator import sync as sync_module
+
+    monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "Rise Up.m3u8").write_text(
+        "#EXTM3U\n/data/library/music/A/01.m4a\n"
+        "/mnt/storage/vcpod/library/music/B/02.m4a\n"
+        "music/C/03.m4a\n"
+    )
+    library = tmp_path / "library"
+
+    staged = sync_module._stage_playlists(source, tmp_path / "staging", library)
+
+    lines = (staged / "Rise Up.m3u8").read_text().splitlines()
+    assert lines == [
+        "#EXTM3U",
+        str(library / "music/A/01.m4a"),
+        str(library / "music/B/02.m4a"),
+        str(library / "music/C/03.m4a"),
+    ]

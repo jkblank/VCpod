@@ -4,7 +4,12 @@ import pytest
 
 from common.models import PlaylistEntry
 
-from common.playlist import playlist_entry_path, prune_removed_playlists, write_m3u8
+from common.playlist import (
+    playlist_entry_path,
+    prune_removed_playlists,
+    resolve_playlist_entry,
+    write_m3u8,
+)
 
 
 def test_write_m3u8_creates_parent_dirs_and_header(tmp_path: Path):
@@ -125,46 +130,49 @@ def test_prune_removed_playlists_missing_profile_dir_returns_nothing(tmp_path: P
     assert pruned == []
 
 
-def test_playlist_entry_path_unchanged_without_host_root(monkeypatch, tmp_path):
-    monkeypatch.delenv("HOST_LIBRARY_ROOT", raising=False)
-    track = tmp_path / "library" / "music" / "Artist" / "Album" / "01.m4a"
+def test_playlist_entry_path_is_relative_to_library_root():
+    track = Path("/data/library/music/Artist/Album/01.m4a")
 
-    assert playlist_entry_path(track, tmp_path / "library") == str(track)
-
-
-def test_playlist_entry_path_rewrites_container_root_to_host_root(monkeypatch, tmp_path):
-    # Regression: containerized fetches wrote /data/library/... entries that
-    # the bare-metal device sync could never resolve -- every playlist track
-    # silently dropped out of a real sync. See notes.md.
-    monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
-
-    result = playlist_entry_path(
-        "/data/library/music/Artist/Album/01.m4a", "/data/library"
-    )
-
-    assert result == "/mnt/storage/vcpod/library/music/Artist/Album/01.m4a"
+    assert playlist_entry_path(track, "/data/library") == "music/Artist/Album/01.m4a"
 
 
-def test_playlist_entry_path_leaves_paths_outside_library_root_alone(monkeypatch):
-    monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
-
+def test_playlist_entry_path_leaves_paths_outside_library_root_alone():
     assert playlist_entry_path("/elsewhere/01.m4a", "/data/library") == "/elsewhere/01.m4a"
 
 
-def test_write_m3u8_additive_normalizes_existing_container_entries(monkeypatch, tmp_path):
+def test_resolve_playlist_entry_joins_relative_entries_onto_local_root():
+    assert resolve_playlist_entry("music/A/B/01.m4a", "/mnt/storage/vcpod/library") == (
+        "/mnt/storage/vcpod/library/music/A/B/01.m4a"
+    )
+
+
+def test_resolve_playlist_entry_rebases_legacy_container_paths():
+    # Playlists written before this change carry /data/library/... paths.
+    assert resolve_playlist_entry(
+        "/data/library/music/A/B/01.m4a", "/mnt/storage/vcpod/library"
+    ) == "/mnt/storage/vcpod/library/music/A/B/01.m4a"
+
+
+def test_resolve_playlist_entry_rebases_host_root_onto_container_root():
+    # The container reading an entry written with the host path.
+    assert resolve_playlist_entry(
+        "/mnt/storage/vcpod/library/music/A/01.m4a",
+        "/data/library",
+        host_root="/mnt/storage/vcpod/library",
+    ) == "/data/library/music/A/01.m4a"
+
+
+def test_write_m3u8_additive_normalizes_existing_entries_to_relative(monkeypatch, tmp_path):
     monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
     target = tmp_path / "Chill.m3u8"
     target.write_text("#EXTM3U\n/data/library/music/A/01.m4a\n")
 
     write_m3u8(
         target,
-        ["/mnt/storage/vcpod/library/music/B/02.m4a"],
+        ["music/B/02.m4a"],
         mode="additive",
         library_root="/data/library",
     )
 
     entries = [l for l in target.read_text().splitlines() if l and not l.startswith("#")]
-    assert entries == [
-        "/mnt/storage/vcpod/library/music/A/01.m4a",
-        "/mnt/storage/vcpod/library/music/B/02.m4a",
-    ]
+    assert entries == ["music/A/01.m4a", "music/B/02.m4a"]

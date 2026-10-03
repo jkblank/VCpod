@@ -672,6 +672,30 @@ def _transcode_options_for(profile: ProfileConfig) -> TranscodeOptions:
     return TranscodeOptions(prefer_lossy=prefer_lossy)
 
 
+def _stage_playlists(source: Path, staging: Path, library_root: Path) -> Path:
+    """Rebuilds `staging` from `source`, rewriting every .m3u8 entry to an
+    absolute path under library_root. Rebuilt every plan so the staging copy
+    never goes stale behind a fetch."""
+    import os
+    import shutil
+
+    from common.playlist import resolve_playlist_entry
+
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    host_root = os.environ.get("HOST_LIBRARY_ROOT") or None
+    for playlist in sorted(source.glob("*.m3u8")):
+        entries = []
+        for line in playlist.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            entries.append(resolve_playlist_entry(line, library_root, host_root))
+        (staging / playlist.name).write_text("#EXTM3U\n" + "\n".join(entries) + "\n")
+    return staging
+
+
 def plan_sync(
     *,
     device_info: DeviceInfo,
@@ -736,10 +760,19 @@ def plan_sync(
     # without this mkdir. Confirmed live: config/profiles/Tobie.yaml.
     playlists_folder = library_root / "playlists" / profile.profile
     playlists_folder.mkdir(parents=True, exist_ok=True)
+    # Playlists are read from a staging copy with every entry resolved to
+    # this sync's own library root -- the fetch may have written them
+    # relative, or with a container or host path, and this process can only
+    # open the files at its own mount. See notes.md.
+    playlists_staging = _stage_playlists(
+        playlists_folder,
+        state_root / ".playlists_staging" / profile.profile,
+        library_root,
+    )
 
     pc_folders = (
         *music_folders,
-        str(playlists_folder),
+        str(playlists_staging),
         *external_library_folders,
         *audiobooks_folders,
         *extra_pc_folders,

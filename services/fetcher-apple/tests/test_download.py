@@ -332,7 +332,8 @@ def test_fetch_per_track_m3u8_paths_are_absolute_even_with_relative_library_root
 
     lines = result.m3u8_path.read_text().splitlines()
     for line in lines[1:]:
-        assert Path(line).is_absolute(), f"expected absolute path, got {line!r}"
+        assert not Path(line).is_absolute(), f"expected a library-relative entry, got {line!r}"
+        assert (Path(Path('library').resolve()) / line).is_absolute()
 
 
 def test_fetch_per_track_skips_already_known_without_reinvoking_gamdl(monkeypatch, tmp_path):

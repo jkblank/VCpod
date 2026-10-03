@@ -23,7 +23,9 @@ from sync_orchestrator.device import (
     AmbiguousDeviceMatchError,
     DeviceNotFoundError,
     EjectError,
+    eject_block_device,
     eject_device,
+    find_ipod_block_devices,
     find_matching_device,
     find_matching_profile,
     iter_connected_devices,
@@ -967,22 +969,19 @@ def _cmd_auto_sync(args: argparse.Namespace) -> int:
 
 
 def _cmd_eject(args: argparse.Namespace) -> int:
-    """Ejects the iPod matched by one profile's device.match_by/match_value,
-    if it's currently mounted -- the web GUI's "Eject iPod" button. Uses the
-    same UDisks2-first eject as the end of every sync run."""
+    """Ejects the connected iPod -- the web GUI's "Eject iPod" button. Finds
+    the iPod through sysfs, so it works whether or not it's mounted. Refuses
+    when more than one iPod is connected rather than guessing which one."""
+    devices = find_ipod_block_devices()
+    if not devices:
+        return _fail("no iPod connected")
+    if len(devices) > 1:
+        return _fail(
+            f"more than one iPod connected ({', '.join(devices)}); "
+            "unplug all but the one to eject"
+        )
     try:
-        profile = load_profile_config(args.profile)
-    except ConfigError as e:
-        print(f"ERROR {e.path}")
-        for line in e.errors:
-            print(f"  {line}")
-        return 1
-    try:
-        device_info = find_matching_device(profile.device)
-    except DeviceNotFoundError as e:
-        return _fail(str(e))
-    try:
-        eject_device(device_info)
+        eject_block_device(devices[0])
     except EjectError as e:
         return _fail(str(e))
     print("Device ejected — safe to disconnect.")
@@ -1268,7 +1267,10 @@ def main() -> None:
         "eject",
         help="Eject the iPod matched by a profile, if mounted",
     )
-    eject_parser.add_argument("--profile", required=True, help="Path to the profile YAML")
+    eject_parser.add_argument(
+        "--profile", default=None,
+        help="Accepted for compatibility; the connected iPod is found by hardware",
+    )
     eject_parser.set_defaults(func=_cmd_eject)
 
     args = parser.parse_args()

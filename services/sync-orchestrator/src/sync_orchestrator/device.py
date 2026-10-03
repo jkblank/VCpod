@@ -341,6 +341,39 @@ def _udisks_eject(block_device: str) -> None:
         raise EjectError(f"UDisks2 Drive.Eject refused: {result.stderr.strip()}")
 
 
+def find_ipod_block_devices(sys_block: str = "/sys/block") -> list[str]:
+    """Every connected Apple iPod's whole-disk block device (e.g. /dev/sdh),
+    found through sysfs. Doesn't depend on the iPod being mounted, which is
+    what lets an eject still work after a failed or skipped mount."""
+    found: list[str] = []
+    for entry in sorted(Path(sys_block).iterdir()):
+        try:
+            vendor = (entry / "device" / "vendor").read_text().strip()
+            model = (entry / "device" / "model").read_text().strip()
+        except OSError:
+            continue
+        if vendor == "Apple" and model.startswith("iPod"):
+            found.append(f"/dev/{entry.name}")
+    return found
+
+
+def eject_block_device(block_device: str) -> None:
+    """Ejects a whole-disk block device: UDisks2 Drive.Eject first (authorized
+    for a local session and root), then the plain eject binary. Raises
+    EjectError if both fail."""
+    try:
+        _udisks_eject(block_device)
+        return
+    except EjectError:
+        pass
+    try:
+        eject = subprocess.run(["eject", block_device], capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise EjectError(f"eject not found on PATH: {e}") from e
+    if eject.returncode != 0:
+        raise EjectError(f"eject failed: {eject.stdout}{eject.stderr}")
+
+
 def eject_device(device_info: DeviceInfo) -> None:
     """Ejects the drive via the classic `eject` utility (util-linux),
     not `udisksctl`.

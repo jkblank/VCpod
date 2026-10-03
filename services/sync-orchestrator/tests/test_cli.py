@@ -1416,20 +1416,34 @@ def test_run_sync_skips_eject_when_skip_eject_set(monkeypatch, tmp_path):
     assert ejected == []
 
 
-def test_cmd_eject_ejects_the_matched_device(monkeypatch):
-    profile = SimpleNamespace(
-        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
-    )
-    device = _connected_device(serial="X")
+def test_cmd_eject_ejects_the_connected_ipod(monkeypatch):
     ejected = []
-    monkeypatch.setattr(cli_module, "load_profile_config", lambda path: profile)
-    monkeypatch.setattr(cli_module, "find_matching_device", lambda match: device)
-    monkeypatch.setattr(cli_module, "eject_device", lambda info: ejected.append(info))
+    monkeypatch.setattr(cli_module, "find_ipod_block_devices", lambda: ["/dev/sdh"])
+    monkeypatch.setattr(cli_module, "eject_block_device", lambda dev: ejected.append(dev))
 
-    result = cli_module._cmd_eject(argparse.Namespace(profile="/config/profiles/john.yaml"))
+    result = cli_module._cmd_eject(argparse.Namespace(profile=None))
 
     assert result == 0
-    assert ejected == [device]
+    assert ejected == ["/dev/sdh"]
+
+
+def test_cmd_eject_fails_when_no_ipod_connected(monkeypatch):
+    monkeypatch.setattr(cli_module, "find_ipod_block_devices", lambda: [])
+
+    result = cli_module._cmd_eject(argparse.Namespace(profile=None))
+
+    assert result == 1
+
+
+def test_cmd_eject_refuses_when_more_than_one_ipod_connected(monkeypatch):
+    ejected = []
+    monkeypatch.setattr(cli_module, "find_ipod_block_devices", lambda: ["/dev/sdh", "/dev/sdi"])
+    monkeypatch.setattr(cli_module, "eject_block_device", lambda dev: ejected.append(dev))
+
+    result = cli_module._cmd_eject(argparse.Namespace(profile=None))
+
+    assert result == 1
+    assert ejected == []
 
 
 def test_cmd_eject_fails_when_no_matching_device(monkeypatch):

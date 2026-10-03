@@ -527,3 +527,12 @@ def test_mount_candidate_devices_swallows_failure_for_one_device(monkeypatch):
     # sdb1 failed to mount — swallowed, not raised — but sdc1 still
     # succeeds; a stuck/unrelated device must never block the real iPod.
     assert mounted == ["/dev/sdc1"]
+
+
+def test_find_ipod_block_devices_matches_apple_ipod_in_sysfs(tmp_path):
+    for name, vendor, model in [("sda", "ATA", "TOSHIBA"), ("sdh", "Apple", "iPod"), ("sdi", "Apple", "iPod Nano")]:
+        (tmp_path / name / "device").mkdir(parents=True)
+        (tmp_path / name / "device" / "vendor").write_text(f"{vendor}\n")
+        (tmp_path / name / "device" / "model").write_text(f"{model}\n")
+
+    assert device_module.find_ipod_block_devices(str(tmp_path)) == ["/dev/sdh", "/dev/sdi"]

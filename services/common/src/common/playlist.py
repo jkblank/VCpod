@@ -6,27 +6,52 @@ from pathlib import Path
 from common.models import PlaylistEntry
 
 
-def _host_entry(entry: str, library_root: Path | str) -> str:
-    host_root = os.environ.get("HOST_LIBRARY_ROOT")
-    if not host_root:
-        return entry
-    root = str(Path(library_root))
-    if entry == root or entry.startswith(root + "/"):
-        return host_root + entry[len(root):]
+# Playlist entries are stored relative to the library root (e.g.
+# "music/Artist/Album/01.m4a"), so the same file works from the container
+# and from the host. Entries written before this (container or host
+# absolute paths) are still understood by resolve_playlist_entry.
+LEGACY_CONTAINER_LIBRARY_ROOT = "/data/library"
+
+
+def library_relative_entry(track_path: Path | str, library_root: Path | str) -> str:
+    """A track's path as a portable, root-relative playlist entry."""
+    try:
+        return Path(track_path).relative_to(Path(library_root)).as_posix()
+    except ValueError:
+        return str(track_path)
+
+
+def resolve_playlist_entry(
+    entry: str,
+    library_root: Path | str,
+    host_root: str | None = None,
+) -> str:
+    """Resolves one stored playlist entry to an absolute path under the
+    local library_root. Relative entries are joined onto it. Absolute
+    entries from another namespace (the container's /data/library, or the
+    host path in HOST_LIBRARY_ROOT) are rebased onto it. Anything else is
+    returned unchanged."""
+    entry = entry.strip()
+    local = str(Path(library_root))
+    if not entry.startswith("/"):
+        return str(Path(local) / entry)
+    for known_root in (host_root, LEGACY_CONTAINER_LIBRARY_ROOT):
+        if known_root and (entry == known_root or entry.startswith(known_root + "/")):
+            return local + entry[len(known_root):]
     return entry
 
 
+def _to_relative_entry(entry: str, library_root: Path | str) -> str:
+    host_root = os.environ.get("HOST_LIBRARY_ROOT") or None
+    resolved = resolve_playlist_entry(entry, library_root, host_root)
+    return library_relative_entry(resolved, library_root)
+
+
 def playlist_entry_path(track_path: Path | str, library_root: Path | str) -> str:
-    """The path a .m3u8 entry should record for a track. Inside a
-    container, library_root is the container's own mount point (e.g.
-    /data/library), which doesn't exist on the host that runs the
-    device sync -- so when HOST_LIBRARY_ROOT is set (the real host path
-    the same library is mounted from), entries are rewritten to that
-    root instead. Unset (the default, and every bare-metal install), the
-    track's own path is used unchanged. Without this, every playlist
-    written by a containerized fetch silently resolved to nothing on
-    the device sync. See notes.md."""
-    return _host_entry(str(track_path), library_root)
+    """The entry a .m3u8 should store for a track: root-relative, so it
+    resolves on whichever host or container reads the playlist. See
+    notes.md."""
+    return library_relative_entry(track_path, library_root)
 
 
 def _read_existing_entries(path: Path) -> list[str]:
@@ -69,7 +94,7 @@ def write_m3u8(
     elif mode == "additive":
         entries = _read_existing_entries(path)
         if library_root is not None:
-            entries = [_host_entry(e, library_root) for e in entries]
+            entries = [_to_relative_entry(e, library_root) for e in entries]
         seen = set(entries)
         for entry in new_entries:
             if entry not in seen:
