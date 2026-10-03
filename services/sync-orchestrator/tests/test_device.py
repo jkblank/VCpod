@@ -460,24 +460,37 @@ def test_find_matching_profile_raises_ambiguous_when_two_profiles_both_match(mon
         find_matching_profile([_profile("alice", "SAME"), _profile("bob", "SAME")])
 
 
+def _lsblk_and_blkid(partitions: dict[str, str], *, other=None):
+    """Fake subprocess.run for device discovery: lsblk lists the device
+    paths, blkid reports each one's filesystem type. `other` handles any
+    remaining command (e.g. udisksctl)."""
+    def _run(cmd, capture_output, text, check=False):
+        if cmd[0] == "lsblk":
+            return subprocess.CompletedProcess(cmd, 0, stdout="".join(p + "\n" for p in partitions), stderr="")
+        if cmd[0] == "blkid":
+            return subprocess.CompletedProcess(cmd, 0, stdout=partitions[cmd[-1]] + "\n", stderr="")
+        return other(cmd)
+    return _run
+
+
 # --- mount_candidate_devices --------------------------------------------------
 
 
 def test_mount_candidate_devices_mounts_each_unmounted_vfat_hfsplus_partition(monkeypatch):
     monkeypatch.setattr(device_module, "iter_candidate_mounts", lambda: [])
 
-    def _fake_run(cmd, capture_output, text, check=False):
-        if cmd[0] == "lsblk":
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                stdout="/dev/sda \n/dev/sdb1 vfat\n/dev/sdb2 btrfs\n/dev/sdc1 hfsplus\n",
-                stderr="",
-            )
+    def _mount(cmd):
         assert cmd[:2] == ["udisksctl", "mount"]
         return subprocess.CompletedProcess(cmd, 0, stdout="Mounted", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _lsblk_and_blkid(
+            {"/dev/sda": "", "/dev/sdb1": "vfat", "/dev/sdb2": "btrfs", "/dev/sdc1": "hfsplus"},
+            other=_mount,
+        ),
+    )
 
     mounted = mount_candidate_devices()
 
@@ -494,13 +507,11 @@ def test_mount_candidate_devices_skips_already_mounted_partitions(monkeypatch):
     )
     calls = []
 
-    def _fake_run(cmd, capture_output, text, check=False):
-        if cmd[0] == "lsblk":
-            return subprocess.CompletedProcess(cmd, 0, stdout="/dev/sdb1 vfat\n", stderr="")
+    def _mount(cmd):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(subprocess, "run", _lsblk_and_blkid({"/dev/sdb1": "vfat"}, other=_mount))
 
     mounted = mount_candidate_devices()
 
@@ -511,16 +522,14 @@ def test_mount_candidate_devices_skips_already_mounted_partitions(monkeypatch):
 def test_mount_candidate_devices_swallows_failure_for_one_device(monkeypatch):
     monkeypatch.setattr(device_module, "iter_candidate_mounts", lambda: [])
 
-    def _fake_run(cmd, capture_output, text, check=False):
-        if cmd[0] == "lsblk":
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout="/dev/sdb1 vfat\n/dev/sdc1 hfsplus\n", stderr=""
-            )
+    def _mount(cmd):
         if cmd[3] == "/dev/sdb1":
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not authorized")
         return subprocess.CompletedProcess(cmd, 0, stdout="Mounted", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        subprocess, "run", _lsblk_and_blkid({"/dev/sdb1": "vfat", "/dev/sdc1": "hfsplus"}, other=_mount)
+    )
 
     mounted = mount_candidate_devices()
 
@@ -536,3 +545,13 @@ def test_find_ipod_block_devices_matches_apple_ipod_in_sysfs(tmp_path):
         (tmp_path / name / "device" / "model").write_text(f"{model}\n")
 
     assert device_module.find_ipod_block_devices(str(tmp_path)) == ["/dev/sdh", "/dev/sdi"]
+
+
+def test_iter_unmounted_removable_partitions_uses_blkid_not_lsblk_fstype(monkeypatch):
+    # Regression: in the web-gui-backend container lsblk reports an empty
+    # FSTYPE for a plugged-in iPod, so it was never offered for mounting.
+    # blkid -p reads the real type there. See notes.md.
+    monkeypatch.setattr(subprocess, "run", _lsblk_and_blkid({"/dev/sdh": "", "/dev/sdh1": "", "/dev/sdh2": "vfat", "/dev/sdc1": "ext4"}))
+    monkeypatch.setattr(device_module, "iter_candidate_mounts", lambda: [])
+
+    assert device_module._iter_unmounted_removable_partitions() == ["/dev/sdh2"]

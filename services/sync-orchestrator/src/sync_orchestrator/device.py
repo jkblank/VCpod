@@ -67,20 +67,22 @@ def iter_candidate_mounts(mounts_path: str = _MOUNTS_PATH) -> list[tuple[str, st
 
 def _iter_unmounted_removable_partitions() -> list[str]:
     """Every vfat/hfsplus-formatted partition currently on the system
-    that ISN'T already in /proc/mounts — via `lsblk`, which (unlike
-    /proc/mounts) also sees partitions that exist but aren't mounted yet.
-    Used by mount_candidate_devices() to find things worth auto-mounting."""
-    result = subprocess.run(
-        ["lsblk", "-rno", "PATH,FSTYPE"], capture_output=True, text=True, check=False
-    )
+    that ISN'T already in /proc/mounts. Lists devices via `lsblk`, but
+    takes each filesystem type from `blkid -p`: inside the web-gui-backend
+    container `lsblk` reports an empty FSTYPE for a freshly plugged iPod, so
+    the iPod was never offered for mounting there. Used by
+    mount_candidate_devices() to find things worth auto-mounting."""
+    result = subprocess.run(["lsblk", "-rno", "PATH"], capture_output=True, text=True, check=False)
     already_mounted = {device_path for device_path, _mount_point, _fstype in iter_candidate_mounts()}
     unmounted = []
-    for line in result.stdout.splitlines():
-        parts = line.split(maxsplit=1)
-        if len(parts) != 2:
+    for device_path in result.stdout.split():
+        if device_path in already_mounted:
             continue
-        device_path, fstype = parts
-        if fstype in _MOUNT_FSTYPES and device_path not in already_mounted:
+        probe = subprocess.run(
+            ["blkid", "-p", "-o", "value", "-s", "TYPE", device_path],
+            capture_output=True, text=True, check=False,
+        )
+        if probe.stdout.strip() in _MOUNT_FSTYPES:
             unmounted.append(device_path)
     return unmounted
 
