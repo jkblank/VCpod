@@ -1,5 +1,36 @@
 # Notes / Future Work
 
+## 2026-10-03: containerized playlist fetches wrote container paths, so bare-metal device syncs dropped every playlist track
+
+Found after an auto-sync wiped a real iPod down to 3 tracks. The
+nienie profile's playlists were all fetched, but the device plan saw
+only `to_add=3` with `playlists_to_add=4`: the 317 playlist entries
+resolved to nothing.
+
+Root cause: the fetchers (fetcher-apple, fetcher-ytmusic) run inside
+the Docker container, where the library is mounted at `/data/library`,
+and they wrote that container path into every .m3u8 entry. The
+bare-metal sync-orchestrator runs on the host, where `/data/library`
+does not exist, so it could not resolve any playlist track. Every
+profile's playlist files on the server (john: 1,528 entries, nienie:
+317) were affected. The earlier 1,028-track sync worked only because
+it ran from inside the container.
+
+Fix, config-driven rather than hardcoded so it works on any host:
+- `common/playlist.py`: `playlist_entry_path()` maps a track path under
+  the container's library root to `HOST_LIBRARY_ROOT` when that is set
+  (unset means identity, so every bare-metal install is unchanged).
+  `write_m3u8` also normalizes existing entries in additive mode, which
+  john's playlists use, so they don't keep dead container paths next
+  to the new host paths.
+- fetcher-apple / fetcher-ytmusic write host-mapped entries.
+- docker-compose: `HOST_LIBRARY_ROOT` passed to fetcher-apple,
+  fetcher-ytmusic, music-stack, fetch-scheduler, web-gui-backend (the
+  same host path the web GUI already uses for its own `HOST_*` values).
+
+Tests: 3 new for the helper, 1 for additive normalization. 216
+fetcher/common tests pass.
+
 ## 2026-10-03: "Fetch now" button for the web GUI
 
 Requested after finding that the missing Apple Music playlist was

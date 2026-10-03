@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from common.models import PlaylistEntry
+
+
+def _host_entry(entry: str, library_root: Path | str) -> str:
+    host_root = os.environ.get("HOST_LIBRARY_ROOT")
+    if not host_root:
+        return entry
+    root = str(Path(library_root))
+    if entry == root or entry.startswith(root + "/"):
+        return host_root + entry[len(root):]
+    return entry
+
+
+def playlist_entry_path(track_path: Path | str, library_root: Path | str) -> str:
+    """The path a .m3u8 entry should record for a track. Inside a
+    container, library_root is the container's own mount point (e.g.
+    /data/library), which doesn't exist on the host that runs the
+    device sync -- so when HOST_LIBRARY_ROOT is set (the real host path
+    the same library is mounted from), entries are rewritten to that
+    root instead. Unset (the default, and every bare-metal install), the
+    track's own path is used unchanged. Without this, every playlist
+    written by a containerized fetch silently resolved to nothing on
+    the device sync. See notes.md."""
+    return _host_entry(str(track_path), library_root)
 
 
 def _read_existing_entries(path: Path) -> list[str]:
@@ -20,6 +44,7 @@ def write_m3u8(
     track_paths: list[Path | str],
     *,
     mode: str = "absolute",
+    library_root: Path | str | None = None,
 ) -> None:
     """Writes a .m3u8 playlist file.
 
@@ -43,6 +68,8 @@ def write_m3u8(
         entries = new_entries
     elif mode == "additive":
         entries = _read_existing_entries(path)
+        if library_root is not None:
+            entries = [_host_entry(e, library_root) for e in entries]
         seen = set(entries)
         for entry in new_entries:
             if entry not in seen:

@@ -35,6 +35,8 @@ services:
       context: .
       dockerfile: services/fetcher-apple/Dockerfile
     env_file: .env
+    environment:
+      - HOST_LIBRARY_ROOT=${HOST_LIBRARY_ROOT:-}
     volumes:
       - ./config:/config:ro
       - ${LIBRARY_ROOT:-./library}:/data/library
@@ -57,6 +59,8 @@ services:
       context: .
       dockerfile: services/fetcher-ytmusic/Dockerfile
     env_file: .env
+    environment:
+      - HOST_LIBRARY_ROOT=${HOST_LIBRARY_ROOT:-}
     volumes:
       - ./config:/config:ro
       - ${LIBRARY_ROOT:-./library}:/data/library
@@ -78,6 +82,8 @@ services:
       context: .
       dockerfile: services/music-stack-cli/Dockerfile
     env_file: .env
+    environment:
+      - HOST_LIBRARY_ROOT=${HOST_LIBRARY_ROOT:-}
     volumes:
       - ./config:/config:ro
       - ${LIBRARY_ROOT:-./library}:/data/library
@@ -135,6 +141,8 @@ services:
     env_file: .env
     restart: unless-stopped
     command: ["--config-root", "/config", "--library-root", "/data/library", "--state-root", "/data/state"]
+    environment:
+      - HOST_LIBRARY_ROOT=${HOST_LIBRARY_ROOT:-}
     volumes:
       - ./config:/config:ro
       - ${LIBRARY_ROOT:-./library}:/data/library
@@ -194,6 +202,8 @@ services:
       - "--host-sync-orchestrator-dir=${HOST_SYNC_ORCHESTRATOR_DIR:-}"
     ports:
       - "${WEB_GUI_PORT:-8420}:8420"
+    environment:
+      - HOST_LIBRARY_ROOT=${HOST_LIBRARY_ROOT:-}
     volumes:
       - ./config:/config
       - ${LIBRARY_ROOT:-./library}:/data/library

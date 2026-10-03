@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 
 from common.models import PlaylistEntry
-from common.playlist import prune_removed_playlists, write_m3u8
+
+from common.playlist import playlist_entry_path, prune_removed_playlists, write_m3u8
 
 
 def test_write_m3u8_creates_parent_dirs_and_header(tmp_path: Path):
@@ -122,3 +123,48 @@ def test_prune_removed_playlists_missing_profile_dir_returns_nothing(tmp_path: P
         [_playlist_entry("Chill")], playlists_root=tmp_path, profile_name="nobody"
     )
     assert pruned == []
+
+
+def test_playlist_entry_path_unchanged_without_host_root(monkeypatch, tmp_path):
+    monkeypatch.delenv("HOST_LIBRARY_ROOT", raising=False)
+    track = tmp_path / "library" / "music" / "Artist" / "Album" / "01.m4a"
+
+    assert playlist_entry_path(track, tmp_path / "library") == str(track)
+
+
+def test_playlist_entry_path_rewrites_container_root_to_host_root(monkeypatch, tmp_path):
+    # Regression: containerized fetches wrote /data/library/... entries that
+    # the bare-metal device sync could never resolve -- every playlist track
+    # silently dropped out of a real sync. See notes.md.
+    monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
+
+    result = playlist_entry_path(
+        "/data/library/music/Artist/Album/01.m4a", "/data/library"
+    )
+
+    assert result == "/mnt/storage/vcpod/library/music/Artist/Album/01.m4a"
+
+
+def test_playlist_entry_path_leaves_paths_outside_library_root_alone(monkeypatch):
+    monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
+
+    assert playlist_entry_path("/elsewhere/01.m4a", "/data/library") == "/elsewhere/01.m4a"
+
+
+def test_write_m3u8_additive_normalizes_existing_container_entries(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
+    target = tmp_path / "Chill.m3u8"
+    target.write_text("#EXTM3U\n/data/library/music/A/01.m4a\n")
+
+    write_m3u8(
+        target,
+        ["/mnt/storage/vcpod/library/music/B/02.m4a"],
+        mode="additive",
+        library_root="/data/library",
+    )
+
+    entries = [l for l in target.read_text().splitlines() if l and not l.startswith("#")]
+    assert entries == [
+        "/mnt/storage/vcpod/library/music/A/01.m4a",
+        "/mnt/storage/vcpod/library/music/B/02.m4a",
+    ]
