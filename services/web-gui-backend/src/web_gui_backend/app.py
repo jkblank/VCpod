@@ -27,6 +27,7 @@ from web_gui_backend.routers import (
     auto_sync_setup,
     device,
     external_library,
+    fetch_now,
     global_config,
     homepage,
     overview,
@@ -119,6 +120,7 @@ def create_app(
         overview,
         activity,
         homepage,
+        fetch_now,
     ):
         app.include_router(router_module.router)
 

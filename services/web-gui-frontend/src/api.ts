@@ -368,6 +368,11 @@ export const api = {
     request<PlaylistSummary[]>(
       `/api/profiles/${encodeURIComponent(profileName)}/sources/apple-music/playlists`,
     ),
+  fetchProfileNow: (profileName: string) =>
+    request<{ fetched: string[]; source_errors: string[]; errors: string[] }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/fetch-now`,
+      { method: 'POST' },
+    ),
   listProfileYtmusicPlaylists: (profileName: string) =>
     request<PlaylistSummary[]>(
       `/api/profiles/${encodeURIComponent(profileName)}/sources/ytmusic/playlists`,

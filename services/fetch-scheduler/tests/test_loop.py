@@ -501,3 +501,47 @@ def test_run_tick_one_profile_exception_does_not_abort_the_rest(monkeypatch, tmp
 
     assert result.errors == ["alice"]
     assert result.fetched["bob"] == ["Chill", "__all__"]
+
+
+def test_fetch_profile_now_fetches_even_when_nothing_is_due(monkeypatch, tmp_path):
+    # Regression for the web GUI's "Fetch now": run_tick would skip this
+    # profile (its one daily target was just fetched), but a manual fetch
+    # must still run it -- that's the whole point of the button.
+    config_root = _setup(tmp_path, profiles={"john": "0 0 * * *"})
+    with StateDB(tmp_path / "state" / "john.sqlite") as db:
+        db.record_fetch("playlist", "Chill", NOW)
+        db.record_fetch("podcast_show", "__all__", NOW)
+    captured = {}
+
+    def fake_run_fetch(**kwargs):
+        captured["called"] = True
+        return FetchAllResult()
+
+    monkeypatch.setattr(loop_module, "run_fetch", fake_run_fetch)
+
+    result = loop_module.fetch_profile_now(
+        profile_name="john",
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+    )
+
+    assert captured.get("called") is True
+    assert result.fetched["john"] == ["Chill", "__all__"]
+
+
+def test_fetch_profile_now_records_completion_like_a_scheduled_fetch(monkeypatch, tmp_path):
+    config_root = _setup(tmp_path, profiles={"john": "0 0 * * *"})
+    monkeypatch.setattr(loop_module, "run_fetch", lambda **kwargs: FetchAllResult())
+
+    loop_module.fetch_profile_now(
+        profile_name="john",
+        config_root=config_root,
+        library_root=tmp_path / "library",
+        state_root=tmp_path / "state",
+        now=NOW,
+    )
+
+    with StateDB(tmp_path / "state" / "john.sqlite") as db:
+        assert db.get_last_fetched("playlist", "Chill") == NOW

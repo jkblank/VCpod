@@ -1,5 +1,34 @@
 # Notes / Future Work
 
+## 2026-10-03: "Fetch now" button for the web GUI
+
+Requested after finding that the missing Apple Music playlist was
+the Apple mobile app not adding it to the library (the web app did,
+and it showed up immediately), so there was no way to force a fetch
+from the UI short of waiting for the scheduler.
+
+- `fetch-scheduler/loop.py`: `_process_profile` gained `force` (skips
+  only the is-due check, nothing else); new public `fetch_profile_now`
+  wraps it. Completion is recorded exactly as a scheduled fetch is, so
+  the scheduler doesn't immediately re-fetch the same targets.
+- `web-gui-backend`: `POST /api/profiles/{name}/fetch-now` (new
+  `routers/fetch_now.py`) — 404 for unknown profiles, 409 if the
+  profile's fetch lock is already held (same `FileLock` the scheduler
+  uses, so a manual fetch can't overlap a scheduled one). Depends on
+  `fetch-scheduler` as a workspace package; Dockerfile now also copies
+  `library-manager`, `music-stack-cli`, `fetch-scheduler` into the
+  image so the workspace sync resolves.
+- `Sources.tsx`: "Fetch now" button next to Refresh, busy state while
+  the request runs, short result summary afterward.
+
+Tests: 2 new in `fetch-scheduler` (forced fetch runs when nothing is
+due; completion recorded), 2 new route tests in `web-gui-backend`.
+582/582 root workspace.
+
+Not live-clicked on the real server: a forced fetch genuinely downloads
+the profile's full selection, so triggering it against real data is
+left to the user rather than done as a verification step.
+
 ## 2026-10-03: Apple Music track counts always 0, and no way to retry a newly-created playlist without switching tabs
 
 Reported as "I just added a new playlist on Apple Music, it doesn't

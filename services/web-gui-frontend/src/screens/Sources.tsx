@@ -28,6 +28,8 @@ export default function Sources({ store }: { store: ProfileStore }) {
   // the YouTube Music tab). Only the most recently *requested* load's
   // result is ever committed to state.
   const requestIdRef = useRef(0)
+  const [fetching, setFetching] = useState(false)
+  const [fetchMessage, setFetchMessage] = useState<string | null>(null)
 
   const loadPlaylists = async (source: SourceId) => {
     if (source === 'spotify' || !draft) return
@@ -123,6 +125,22 @@ export default function Sources({ store }: { store: ProfileStore }) {
 
   const selectedCount = draft.playlists.filter((p) => p.source === tab).length
 
+  const fetchNow = async () => {
+    setFetching(true)
+    setFetchMessage(null)
+    try {
+      const result = await api.fetchProfileNow(draft.profile)
+      const parts = [`${result.fetched.length} target(s) fetched`]
+      if (result.source_errors.length) parts.push(`${result.source_errors.length} source error(s)`)
+      if (result.errors.length) parts.push('unexpected error (see server log)')
+      setFetchMessage(parts.join(' · '))
+    } catch (e) {
+      setFetchMessage(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setFetching(false)
+    }
+  }
+
   const resolveByUrl = async () => {
     setResolving(true)
     setResolveError(null)
@@ -169,10 +187,18 @@ export default function Sources({ store }: { store: ProfileStore }) {
             <button
               className="btn secondary"
               onClick={() => loadPlaylists(tab)}
-              disabled={loading}
+              disabled={loading || fetching}
             >
               {loading ? 'Refreshing…' : 'Refresh'}
             </button>
+            <button
+              className="btn secondary"
+              onClick={fetchNow}
+              disabled={fetching || loading}
+            >
+              {fetching ? 'Fetching…' : 'Fetch now'}
+            </button>
+            {fetchMessage && <span className="muted">{fetchMessage}</span>}
           </div>
           {saveErrors && <div className="error-banner">{saveErrors.join('\n')}</div>}
           {loadError && (
