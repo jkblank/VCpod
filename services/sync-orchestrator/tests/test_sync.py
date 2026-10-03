@@ -973,3 +973,35 @@ def test_log_backup_file_changes_names_added_removed_and_changed_files(caplog):
     assert "ADDED iPod_Control/Music/F01/new.m4a" in text
     assert "CHANGED iPod_Control/Music/F00/A.m4a (ctime_ns)" in text
     assert "iTunesDB" not in text
+
+
+def test_backup_no_changes_uses_newest_existing_snapshot():
+    # Regression: iOpenPod returns None when the device is unchanged since its
+    # newest snapshot (a success path). Treating None as failure refused every
+    # plan on an unchanged iPod. See notes.md.
+    from sync_orchestrator import sync as sync_module
+
+    class _Info:
+        def __init__(self, id):
+            self.id = id
+
+    class _Mgr:
+        def list_snapshots(self):
+            return [_Info("20260929T090851_154912Z"), _Info("20261003T085629_004656Z")]
+
+    chosen = sync_module._resolve_backup_snapshot(_Mgr(), None)
+
+    assert chosen.id == "20261003T085629_004656Z"
+
+
+def test_backup_refuses_when_no_snapshot_exists():
+    import pytest
+    from sync_orchestrator import sync as sync_module
+    from sync_orchestrator.sync import SyncError
+
+    class _Mgr:
+        def list_snapshots(self):
+            return []
+
+    with pytest.raises(SyncError, match="refusing to write"):
+        sync_module._resolve_backup_snapshot(_Mgr(), None)

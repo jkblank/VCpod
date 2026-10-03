@@ -673,6 +673,18 @@ def _transcode_options_for(profile: ProfileConfig) -> TranscodeOptions:
     return TranscodeOptions(prefer_lossy=prefer_lossy)
 
 
+def _resolve_backup_snapshot(backup_mgr, snapshot):
+    """iOpenPod returns None (not an error) when the device is unchanged since
+    its newest snapshot -- that snapshot is then the rollback point. Refuse
+    only when there is no snapshot at all. See notes.md."""
+    if snapshot is not None:
+        return snapshot
+    existing = backup_mgr.list_snapshots()
+    if not existing:
+        raise SyncError("backup did not produce a snapshot; refusing to write")
+    return max(existing, key=lambda info: info.id)
+
+
 def _device_file_states(root: Path) -> dict[str, tuple[int, int, int, int, int]]:
     """Metadata for every file on the iPod, keyed by its path relative to
     the root. Only stat() calls -- nothing is read or written on the device.
@@ -843,8 +855,7 @@ def plan_sync(
         except DeviceWriteSafetyError:
             _log_backup_file_changes(before_backup, _device_file_states(Path(ipod_path)))
             raise
-        if snapshot is None:
-            raise SyncError("backup did not produce a snapshot; refusing to write")
+        snapshot = _resolve_backup_snapshot(backup_mgr, snapshot)
 
     before = load_ipod_library(itunesdb_path)
     if before is None:

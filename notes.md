@@ -1,5 +1,14 @@
 # Notes / Future Work
 
+## 2026-10-03: plans refused on an unchanged iPod ("backup did not produce a snapshot")
+
+iOpenPod's backup returns None, not an error, when the device is unchanged
+since its newest snapshot (the "no changes since last snapshot" path). Our
+sync treated None as failure and refused to write, so every plan on an
+unchanged iPod failed, which is what the Compute plan run showed. Now None
+resolves to the newest existing snapshot (the rollback point). The sync
+still refuses when no snapshot exists at all.
+
 ## 2026-10-03: the backup safety check now names the files that changed
 
 The 09:40 abort said only that "the iPod filesystem changed while its backup
