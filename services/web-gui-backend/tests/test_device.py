@@ -68,7 +68,7 @@ def test_identify_connected_devices_builds_expected_command(monkeypatch):
 
     assert captured["cmd"] == [
         "uv", "run", "--project", "services/sync-orchestrator",
-        "sync-orchestrator", "identify-device",
+        "sync-orchestrator", "identify-device", "--no-mount",
     ]
 
 
@@ -84,3 +84,27 @@ def test_identify_connected_devices_defaults_project_dir_to_sibling(monkeypatch)
     identify_connected_devices()
 
     assert captured["cmd"][3].endswith("services/sync-orchestrator")
+
+
+def test_identify_connected_devices_never_mounts_by_default(monkeypatch):
+    # Regression: background polling used to run identify-device with
+    # auto-mount, so the web GUI could mount an iPod while a sync was
+    # backing it up -- the safety check then aborted with "filesystem
+    # changed while its backup was being created". See notes.md.
+    import subprocess
+
+    from web_gui_backend import device as device_module
+
+    seen = []
+
+    def _fake_run(cmd, capture_output, text, check):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"devices": []}', stderr="")
+
+    monkeypatch.setattr(device_module.subprocess, "run", _fake_run)
+
+    device_module.identify_connected_devices("/sync")
+    device_module.identify_connected_devices("/sync", mount=True)
+
+    assert seen[0][-1] == "--no-mount"
+    assert "--no-mount" not in seen[1]

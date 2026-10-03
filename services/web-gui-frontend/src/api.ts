@@ -328,7 +328,8 @@ export const api = {
   getGlobalConfig: () => request<GlobalConfig>('/api/global-config'),
   putGlobalConfig: (config: GlobalConfig) =>
     request<GlobalConfig>('/api/global-config', { method: 'PUT', body: JSON.stringify(config) }),
-  identifyDevice: () => request<{ devices: ConnectedDevice[] }>('/api/device/identify'),
+  identifyDevice: (mount = false) =>
+    request<{ devices: ConnectedDevice[] }>(`/api/device/identify?mount=${mount}`),
 
   listAppleMusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/apple-music/playlists'),
   listYtmusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/ytmusic/playlists'),

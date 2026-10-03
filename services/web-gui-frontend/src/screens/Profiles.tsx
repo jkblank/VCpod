@@ -42,7 +42,7 @@ export default function Profiles({ store }: { store: ProfileStore }) {
     setDetecting(true)
     setDetectError(null)
     try {
-      const { devices } = await api.identifyDevice()
+      const { devices } = await api.identifyDevice(true)
       setDetected(devices)
     } catch (e) {
       setDetectError(e instanceof ApiError ? e.message : String(e))

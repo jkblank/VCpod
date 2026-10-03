@@ -1,5 +1,30 @@
 # Notes / Future Work
 
+## 2026-10-03: the web GUI's background polling could mount an iPod during a sync
+
+The first auto-sync after the eject change stopped at the backup safety
+check: "The iPod filesystem changed while its backup was being created".
+The eject-on-every-exit change worked (the iPod was ejected, and the
+"Device ejected" line printed before the traceback). The filesystem
+change itself had no read errors or resets behind it, so the drive was
+healthy.
+
+One candidate on our side: the web GUI polls `identify-device` for the
+sidebar footer and the Sync screen, and `identify-device` auto-mounts
+by default. A poll could mount the iPod while auto-sync was backing it
+up. The mount itself, a read-write mount that can update the FAT dirty
+flag, was another candidate. I couldn't confirm which one caused it.
+
+Fix: `identify_connected_devices` now passes `--no-mount` unless
+`mount=True`. `GET /api/device/identify` is read-only by default. Only
+the explicit "detect device" action on the Profiles screen mounts.
+Covered by a test that pins the default.
+
+Still open: whether the iPod's own firmware changes files on connect.
+If it does, the safety check will keep catching the device. That needs
+a before-and-after file comparison on a connect, and it's left for the
+next session.
+
 ## 2026-10-03: UDisks2 ejection and a web GUI "Eject iPod" button
 
 The plain `eject` binary needs root, so ejecting from a normal user
