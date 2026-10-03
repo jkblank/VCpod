@@ -1,5 +1,24 @@
 # Notes / Future Work
 
+## Current state and open items (2026-10-03)
+
+- **Branch:** `web-gui-visual-refresh` holds all current work (latest pushed
+  commit `cf18051`). Main has PR #16 merged. Olive checks out the same branch.
+- **Deployed on olive:** the web backend is rebuilding for `cf18051` (playlist
+  relative entries, sysfs eject, backup-None fix). Verify the container is
+  recreated and running the build before testing.
+- **Open, waiting on the user:** a Compute plan for nienie on the Sync screen
+  (confirm `playlists_to_add` is 4 and `to_add` includes roughly 300 playlist
+  tracks) before any real sync.
+- **iPod state:** currently mounted read-only at `/media/ipod` on olive, which
+  blocks eject until it's unmounted. Firmware-on-connect is ruled out (snapshot
+  comparison matched). A read-write mount doesn't dirty the FAT (checked). The
+  09:40 backup abort is not yet explained. The safety check now logs exactly
+  which files changed, so the next abort will name them.
+- **udev auto-sync rules:** disabled on olive. Re-enable only after the plan
+  check above.
+- **Operational gotchas:** see `/home/john/Music/CLAUDE.md`.
+
 ## 2026-10-03: plans refused on an unchanged iPod ("backup did not produce a snapshot")
 
 iOpenPod's backup returns None, not an error, when the device is unchanged
