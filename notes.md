@@ -1,5 +1,17 @@
 # Notes / Future Work
 
+## 2026-10-05: podcast show notes sent to the iPod as plain text
+
+- **What changed:** episode descriptions are stored as the feed's HTML, but
+  the iPod displays "Description Text" as plain text, so tags showed up
+  literally. `shownotes.html_to_plaintext` converts at the device boundary
+  (`sync.py`'s `_load_podcast_feeds`): paragraphs and line breaks become
+  newlines, list items become `- ` lines, entities are decoded, script and
+  style content is dropped. The stored description keeps the original HTML.
+- **Open:** a sync only writes episodes it adds, so episodes already on a
+  device keep their HTML notes until they are re-added. Not verified live.
+- **Tests:** `tests/test_shownotes.py`.
+
 ## 2026-10-05: per-profile music index with a per-iPod first-sync decision
 
 - **What changed:** music on a device is no longer the whole `library/music`

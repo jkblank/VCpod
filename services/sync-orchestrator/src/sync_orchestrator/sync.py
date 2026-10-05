@@ -92,6 +92,7 @@ from sync_orchestrator.podcast_artwork_backfill import (
     exclude_conflicting_with_removal,
 )
 from sync_orchestrator.podcast_removal import build_podcast_removal_items
+from sync_orchestrator.shownotes import html_to_plaintext
 from sync_orchestrator.selection import (
     build_media_folders,
     build_staging_dir,
@@ -398,7 +399,7 @@ def _load_podcast_feeds(
             PodcastEpisode(
                 guid=row["episode_uuid"],
                 title=row["title"] or Path(row["local_path"]).stem,
-                description=row["description"],
+                description=html_to_plaintext(row["description"]),
                 audio_url=row["audio_url"],
                 duration_seconds=row["duration_seconds"],
                 episode_number=row["episode_number"],
