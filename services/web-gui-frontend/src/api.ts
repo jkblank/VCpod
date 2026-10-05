@@ -164,6 +164,9 @@ export type SyncPlanSummary = {
   to_remove_sample_more: number
   metadata_field_changes: Record<string, number>
   duplicates_count: number
+  seeding_device_key: string
+  seeding_required_count: number
+  seeding_required_sample: string[]
   playlists_to_add: string[]
   playlists_to_edit: string[]
   playlists_to_remove: string[]
@@ -370,6 +373,11 @@ export const api = {
   listProfileAppleMusicPlaylists: (profileName: string) =>
     request<PlaylistSummary[]>(
       `/api/profiles/${encodeURIComponent(profileName)}/sources/apple-music/playlists`,
+    ),
+  setDeviceDecision: (profileName: string, serial: string, decision: 'remove' | 'adopt') =>
+    request<{ recorded: boolean; decision: string; serial: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/device-decision`,
+      { method: 'POST', body: JSON.stringify({ serial, decision }) },
     ),
   ejectProfileDevice: (profileName: string) =>
     request<{ ejected: boolean; message: string }>(

@@ -1,5 +1,30 @@
 # Notes / Future Work
 
+## 2026-10-05: per-profile music index with a per-iPod first-sync decision
+
+- **What changed:** music on a device is no longer the whole `library/music`
+  pool. Each profile keeps an additive `music_index` (every track it has ever
+  written), and each device serial has a `device_decisions` row: `remove` or
+  `adopt`. Undecided devices show their untracked tracks in the plan and
+  refuse to execute until the user chooses. The user's decision was: index
+  never shrinks; one index per profile; one decision per iPod; Rockbox skipped.
+- **Index scope:** `profile.music` is ignored for music on decided devices.
+  The index replaces it. Undecided devices still scan the whole pool, so the
+  plan sees what is really on them.
+- **Recording:** only tracks written by a successful execute are added to the
+  index (`record_index_writes`). Plan-only runs record nothing.
+- **Gates:** `_run_sync_body` refuses to execute while
+  `planned.seeding_required` is non-empty. The web GUI gets the same result
+  from `POST /api/profiles/{name}/device-decision`, which runs
+  `sync-orchestrator device-decision`.
+- **Known limit:** the decision is keyed by device serial, falling back to
+  FireWire GUID. Two identical iPods with no serial would share one decision.
+- **Tests:** `tests/test_music_index.py` covers the pure logic. The plan-level
+  path (engine matching, the full-pool first plan) still needs a live check on
+  nienie's iPod before it's trusted.
+- **Also fixed:** `test_activity` pruned against a fixed 2026-09-04 date, so it
+  started failing as the clock moved on. It now uses the current time.
+
 ## Current state and open items (2026-10-03)
 
 - **Branch:** `web-gui-visual-refresh` holds all current work (latest pushed

@@ -33,7 +33,8 @@ from sync_orchestrator.device import (
 )
 from sync_orchestrator.plan_json import plan_summary, result_summary
 from sync_orchestrator.rockbox_sync import RockboxSyncError, execute_rockbox_sync, plan_rockbox_sync
-from sync_orchestrator.sync import SyncError, execute_sync, plan_sync
+from sync_orchestrator.music_index import DECISIONS, apply_device_decision
+from sync_orchestrator.sync import SyncError, execute_sync, plan_sync, record_index_writes
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +342,13 @@ def _run_sync_body(
             "--allow-removals (review the removal list above first)"
         )
 
+    if planned.seeding_required:
+        return _fail(
+            f"{len(planned.seeding_required)} track(s) on this iPod are not in "
+            f"{profile.profile!r}'s index; choose remove or adopt for this device "
+            "before executing"
+        )
+
     _out("== Executing ==")
     try:
         result, after = execute_sync(planned, progress_callback=_report_progress)
@@ -358,6 +366,7 @@ def _run_sync_body(
         )
         return _fail(str(e))
 
+    record_index_writes(planned)
     _out(f"  {result.summary}")
     after_count = len(after.get("mhlt", []))
     _out(f"  {after_count} tracks now on device (was {planned.before_track_count})")
@@ -971,6 +980,22 @@ def _cmd_auto_sync(args: argparse.Namespace) -> int:
         return _fail(str(e))
 
 
+def _cmd_device_decision(args: argparse.Namespace) -> int:
+    """Records the first-sync decision for one iPod against its profile's
+    index. Run by the web GUI's device decision buttons."""
+    profile_name = Path(args.profile).stem
+    db_path = Path(args.state_root) / f"{profile_name}.sqlite"
+    with StateDB(db_path) as db:
+        try:
+            covered = apply_device_decision(
+                db, args.serial, args.decision, datetime.now(timezone.utc)
+            )
+        except ValueError as e:
+            return _fail(str(e))
+    print(json.dumps({"serial": args.serial, "decision": args.decision, "tracks": len(covered)}))
+    return 0
+
+
 def _cmd_eject(args: argparse.Namespace) -> int:
     """Ejects the connected iPod -- the web GUI's "Eject iPod" button. Finds
     the iPod through sysfs, so it works whether or not it's mounted. Refuses
@@ -1275,6 +1300,16 @@ def main() -> None:
         help="Accepted for compatibility; the connected iPod is found by hardware",
     )
     eject_parser.set_defaults(func=_cmd_eject)
+
+    decision_parser = subparsers.add_parser(
+        "device-decision",
+        help="Record the first-sync decision (remove or adopt) for one iPod",
+    )
+    decision_parser.add_argument("--profile", required=True)
+    decision_parser.add_argument("--state-root", required=True)
+    decision_parser.add_argument("--serial", required=True)
+    decision_parser.add_argument("--decision", required=True, choices=DECISIONS)
+    decision_parser.set_defaults(func=_cmd_device_decision)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

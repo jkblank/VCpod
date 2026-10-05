@@ -60,8 +60,9 @@ def test_list_activity_respects_limit(tmp_path: Path):
 
 
 def test_prune_activity_deletes_only_older_entries(tmp_path: Path):
-    record_activity(tmp_path, _entry(started_at=NOW - timedelta(days=40), description="ancient"))
-    record_activity(tmp_path, _entry(started_at=NOW, description="recent"))
+    now = datetime.now(timezone.utc)
+    record_activity(tmp_path, _entry(started_at=now - timedelta(days=40), description="ancient"))
+    record_activity(tmp_path, _entry(started_at=now, description="recent"))
 
     deleted = prune_activity(tmp_path, older_than_days=30)
 

@@ -209,50 +209,6 @@ def test_plan_sync_creates_missing_playlists_folder(tmp_path):
     assert playlists_folder.is_dir()
 
 
-def test_plan_sync_uses_resolve_music_folder_for_pc_folders(monkeypatch, tmp_path):
-    # plan_sync must build its pc_folders from resolve_music_folder's
-    # return value, not a hardcoded library_root/music — asserted by
-    # having the fake return a folder that doesn't exist and confirming
-    # plan_sync's own "pc folder not found" check fires on exactly that
-    # path (reachable without mocking the full iTunesDB/SyncEngine
-    # pipeline, same trick test_plan_sync_raises_when_external_library_
-    # path_missing above uses).
-    import re
-
-    mount = _make_ipod_mount(tmp_path)
-    library_root = tmp_path / "library"
-    (library_root / "music").mkdir(parents=True)
-    (library_root / "playlists" / "test").mkdir(parents=True)
-    state_root = tmp_path / "state"
-    state_root.mkdir()
-
-    profile = _make_profile(tmp_path, str(tmp_path))
-    profile = profile.model_copy(
-        update={"music": MusicLibraryConfig(mode="include", selections=["Some Artist"])}
-    )
-
-    calls = []
-    fake_folder = str(tmp_path / "does-not-exist-music-scope")
-
-    def fake_resolve_music_folder(music_root, config, staging_dir):
-        calls.append((music_root, config, staging_dir))
-        return (fake_folder,), []
-
-    monkeypatch.setattr(sync_module, "resolve_music_folder", fake_resolve_music_folder)
-
-    with pytest.raises(SyncError, match=re.escape(f"pc folder not found: {fake_folder}")):
-        plan_sync(
-            device_info=_FakeDeviceInfo(str(mount)),
-            library_root=library_root,
-            state_root=state_root,
-            profile=profile,
-        )
-
-    assert calls == [
-        (library_root / "music", profile.music, state_root / ".music_staging" / "test")
-    ]
-
-
 def test_transcode_options_for_alac_prefers_lossless(tmp_path):
     profile = _make_profile(tmp_path, str(tmp_path), transcode_format="alac")
     assert _transcode_options_for(profile) == TranscodeOptions(prefer_lossy=False)

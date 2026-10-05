@@ -146,6 +146,13 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
   }
 
   const hasRemovals = plan != null && (plan.to_remove_count > 0 || plan.playlists_to_remove.length > 0)
+  const seedingPending = (plan?.seeding_required_count ?? 0) > 0
+
+  const decideDevice = async (decision: 'remove' | 'adopt') => {
+    if (!draft || !plan) return
+    await api.setDeviceDecision(draft.profile, plan.seeding_device_key, decision)
+    computePlan()
+  }
   const externalRunning = externalStatus?.running ?? false
   const running = runningAction !== null || externalRunning
 
@@ -199,6 +206,27 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
           </div>
         )}
 
+        {seedingPending && plan && (
+          <div className="warning-banner">
+            <p>
+              {plan.seeding_required_count} track(s) are on this iPod but not in this profile's
+              index. This iPod has no decision yet, so nothing can be synced to it until you choose:
+            </p>
+            <p className="muted">
+              {plan.seeding_required_sample.slice(0, 10).join(' · ')}
+              {plan.seeding_required_count > 10 ? ' …' : ''}
+            </p>
+            <div className="row">
+              <button className="btn danger" onClick={() => void decideDevice('remove')} disabled={running}>
+                Remove them from this iPod
+              </button>
+              <button className="btn secondary" onClick={() => void decideDevice('adopt')} disabled={running}>
+                Keep them (add to the index)
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="row">
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
             <input
@@ -245,7 +273,7 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
             <button
               className="btn"
               onClick={() => setConfirmOpen(true)}
-              disabled={running || !plan || (hasRemovals && !allowRemovals)}
+              disabled={running || !plan || seedingPending || (hasRemovals && !allowRemovals)}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
             >
               {runningAction === 'execute' && <Spinner size={14} />}

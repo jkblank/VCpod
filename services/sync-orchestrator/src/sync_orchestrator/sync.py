@@ -30,7 +30,7 @@ import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +78,14 @@ from iopenpod.sync.core.models import (
 from iopenpod.sync.mapping import MappingManager
 from iopenpod.sync.transcoder import TranscodeOptions
 
+from sync_orchestrator.music_index import (
+    DECISION_ADOPT,
+    build_index_staging,
+    playlist_track_keys,
+    record_music_writes,
+    under_music_root,
+    untracked_tracks,
+)
 from sync_orchestrator.playstate import resolve_played_states
 from sync_orchestrator.podcast_artwork_backfill import (
     build_podcast_artwork_backfill_items,
@@ -88,7 +96,6 @@ from sync_orchestrator.selection import (
     build_media_folders,
     build_staging_dir,
     resolve_audiobooks_folder,
-    resolve_music_folder,
     resolve_selected_files,
 )
 
@@ -641,6 +648,12 @@ class PlannedSync:
     # Count of local episodes whose play state changed vs. what was
     # already recorded, per resolve_played_states — see playstate.py.
     play_states_updated: int = 0
+    # Tracks on the device with no first-sync decision yet; execute refuses
+    # while this is non-empty. See music_index.py.
+    seeding_required: list[str] = dataclasses.field(default_factory=list)
+    index_db_path: str = ""
+    device_key: str = ""
+    music_root: str = ""
 
 
 # common.models.SyncSettings.transcode_format is an unconstrained `str` in
@@ -793,15 +806,6 @@ def plan_sync(
         state_root / ".audiobooks_staging" / profile.profile,
     )
 
-    # Only narrows the device's *general* library beyond this profile's
-    # own playlists — a playlist's own tracks are always included
-    # regardless (see resolve_music_folder's docstring for why removing
-    # library/music from pc_folders never drops a playlist's tracks).
-    music_folders, unresolved_music_selections = resolve_music_folder(
-        library_root / "music",
-        profile.music,
-        state_root / ".music_staging" / profile.profile,
-    )
 
     # Unlike every other pc_folder above, this one has no resolve_*
     # helper of its own to guarantee it exists first -- music-stack-cli
@@ -823,6 +827,25 @@ def plan_sync(
         state_root / ".playlists_staging" / profile.profile,
         library_root / "music",
     )
+
+    # Music on a device is this profile's index (see music_index.py), not
+    # profile.music. Until a device has a first-sync decision, the whole pool
+    # is scanned so the plan sees what is already on it.
+    music_root = library_root / "music"
+    device_key = device_info.serial or device_info.firewire_guid or ""
+    index_db_path = state_root / f"{profile.profile}.sqlite"
+    with StateDB(index_db_path) as index_db:
+        device_decision = index_db.get_device_decision(device_key)
+        index_tracks = index_db.index_tracks()
+    unresolved_music_selections: list[str] = []
+    if device_decision is None:
+        music_folders: tuple[str, ...] = (str(music_root),) if music_root.is_dir() else ()
+    else:
+        index_staging = state_root / ".music_index_staging" / profile.profile
+        missing_indexed = build_index_staging(index_staging, music_root, index_tracks)
+        for key in missing_indexed:
+            logger.warning("indexed track missing from library, not synced: %s", key)
+        music_folders = (str(index_staging),)
 
     pc_folders = (
         *music_folders,
@@ -1001,6 +1024,22 @@ def plan_sync(
                     if item.ipod_track
                 )
 
+    seeding_required: list[str] = []
+    if device_decision is None:
+        matched = {
+            key
+            for pc_path in plan.matched_pc_paths.values()
+            if (key := under_music_root(pc_path, music_root))
+        }
+        seeding_required = untracked_tracks(
+            matched, index_tracks, playlist_track_keys(playlists_staging, music_root)
+        )
+        with StateDB(index_db_path) as index_db:
+            if seeding_required:
+                index_db.set_pending_untracked(device_key, seeding_required)
+            else:
+                index_db.set_device_decision(device_key, DECISION_ADOPT, datetime.now(timezone.utc))
+
     return PlannedSync(
         plan=plan,
         device_info=device_info,
@@ -1014,7 +1053,25 @@ def plan_sync(
         unresolved_music_selections=unresolved_music_selections,
         unresolved_audiobook_selections=unresolved_audiobook_selections,
         play_states_updated=play_states_updated,
+        seeding_required=seeding_required,
+        index_db_path=str(index_db_path),
+        device_key=device_key,
+        music_root=str(music_root),
     )
+
+
+def record_index_writes(planned: PlannedSync) -> int:
+    """Adds the music this run wrote to the profile's index. Called only
+    after a successful execute."""
+    if not planned.index_db_path:
+        return 0
+    with StateDB(planned.index_db_path) as db:
+        return record_music_writes(
+            db,
+            (item.source_path for item in planned.plan.to_add),
+            Path(planned.music_root),
+            datetime.now(timezone.utc),
+        )
 
 
 def execute_sync(

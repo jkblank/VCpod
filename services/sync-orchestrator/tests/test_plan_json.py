@@ -33,6 +33,8 @@ def _planned(**overrides) -> SimpleNamespace:
         snapshot=None,
         unresolved_selections=[],
         unresolved_audiobook_selections=[],
+        seeding_required=[],
+        device_key="",
         unresolved_music_selections=[],
         play_states_updated=0,
     )
@@ -112,6 +114,8 @@ def test_plan_summary_includes_storage_and_unresolved_selections():
         ),
         unresolved_selections=["Typo Artist"],
         unresolved_audiobook_selections=["Typo Author"],
+        seeding_required=[],
+        device_key="",
         unresolved_music_selections=["Typo Band"],
         play_states_updated=3,
         before_track_count=42,

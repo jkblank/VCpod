@@ -555,6 +555,10 @@ def _fake_planned(**overrides) -> SimpleNamespace:
         snapshot=None,
         unresolved_selections=[],
         unresolved_audiobook_selections=[],
+        seeding_required=[],
+        device_key="",
+        index_db_path="",
+        music_root="",
         unresolved_music_selections=[],
         play_states_updated=0,
     )
