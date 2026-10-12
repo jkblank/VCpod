@@ -1,5 +1,20 @@
 # Notes / Future Work
 
+## 2026-10-12: seeding-gate message had a stray quote; first real hit of the gate
+
+- **What happened:** john's real iPod hit the per-device seeding gate for the
+  first time (`FAIL: 641 track(s) on this iPod are not in 'john''s index;
+  choose remove or adopt...`) — expected, since every track synced before the
+  music-index feature existed counts as untracked until a decision is made.
+  The doubled `''` was a real bug: `cli.py` built the message with
+  `f"{profile.profile!r}'s index"` — `!r` already quotes the name (`'john'`),
+  so the literal `'s` right after produced `'john''s`.
+- **Fix:** drop the `!r`; the profile name needs no quoting here.
+- **Still open:** the decision for john's iPod (remove vs. adopt the 641
+  tracks) hasn't been made yet.
+- **Tests:** `test_run_sync_seeding_required_message_has_no_stray_quote` in
+  `tests/test_cli.py`.
+
 ## 2026-10-05: podcast show notes sent to the iPod as plain text
 
 - **What changed:** episode descriptions are stored as the feed's HTML, but

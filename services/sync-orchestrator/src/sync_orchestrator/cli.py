@@ -345,7 +345,7 @@ def _run_sync_body(
     if planned.seeding_required:
         return _fail(
             f"{len(planned.seeding_required)} track(s) on this iPod are not in "
-            f"{profile.profile!r}'s index; choose remove or adopt for this device "
+            f"{profile.profile}'s index; choose remove or adopt for this device "
             "before executing"
         )
 

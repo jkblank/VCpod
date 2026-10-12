@@ -658,6 +658,43 @@ def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
     assert len(execute_calls) == 1
 
 
+def test_run_sync_seeding_required_message_has_no_stray_quote(monkeypatch, capsys):
+    # Regression: the message used f"{profile.profile!r}'s index", which for
+    # profile "john" rendered "'john''s index" -- repr()'s own quotes plus
+    # the literal "'s" glued on right after. See notes.md.
+    profile = SimpleNamespace(
+        profile="john",
+        device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+    )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: SimpleNamespace(
+            path="/mnt/ipod", model_family="iPod", generation="5.5th Gen",
+            model_number="MA450", capacity="80GB",
+        ),
+    )
+    planned = _fake_planned(seeding_required=["A/1.m4a"] * 641)
+    monkeypatch.setattr(cli_module, "plan_sync", lambda **kwargs: planned)
+    execute_calls = []
+    monkeypatch.setattr(
+        cli_module, "execute_sync", lambda *a, **k: execute_calls.append(a) or (None, None)
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(allow_removals=True),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    out = capsys.readouterr().out
+    assert result == 1
+    assert execute_calls == []
+    assert "john's index" in out
+    assert "''" not in out
+
+
 def test_run_sync_auto_mounts_before_finding_device(monkeypatch, capsys):
     # Regression: `sync`/`full-sync` used to assume a human had already
     # seen the device auto-mount by the time they ran the command --
