@@ -28,6 +28,8 @@ export default function Sources({ store }: { store: ProfileStore }) {
   // the YouTube Music tab). Only the most recently *requested* load's
   // result is ever committed to state.
   const requestIdRef = useRef(0)
+  const [fetching, setFetching] = useState(false)
+  const [fetchMessage, setFetchMessage] = useState<string | null>(null)
 
   const loadPlaylists = async (source: SourceId) => {
     if (source === 'spotify' || !draft) return
@@ -46,7 +48,38 @@ export default function Sources({ store }: { store: ProfileStore }) {
           ? await api.listProfileAppleMusicPlaylists(draft.profile)
           : await api.listProfileYtmusicPlaylists(draft.profile)
       if (requestId !== requestIdRef.current) return // superseded by a newer tab switch
-      setPlaylists(list)
+
+      // A YouTube playlist added via "Add a public playlist by link"
+      // (below) is, by definition, one listProfileYtmusicPlaylists can
+      // never see -- that call only ever lists the authenticated
+      // account's own library, not an arbitrary public playlist someone
+      // pasted a link to. Confirmed live: already-selected public
+      // playlists simply vanished from this table (though still saved
+      // in the profile) on every reload/tab-revisit, since the table
+      // only ever rendered what this one listing call returned. Resolve
+      // each selected-but-missing one the same way the "Add by link"
+      // flow already does, so it shows up (checked) here too.
+      const missingSelected =
+        source === 'ytmusic'
+          ? draft.playlists.filter(
+              (p) => p.source === 'ytmusic' && !list.some((l) => l.source_id === p.source_id),
+            )
+          : []
+      const resolved = await Promise.all(
+        missingSelected.map(async (p): Promise<PlaylistSummary> => {
+          try {
+            return await api.resolveYtmusicPlaylist(p.source_id)
+          } catch {
+            // Still selected and saved even if it can no longer be
+            // resolved live (made private, deleted, a transient API
+            // error) -- shown with the name already on file rather than
+            // silently disappearing again, which is the bug being fixed.
+            return { source_id: p.source_id, name: p.name, track_count: 0, owner: null }
+          }
+        }),
+      )
+      if (requestId !== requestIdRef.current) return
+      setPlaylists([...resolved, ...list])
     } catch (e) {
       if (requestId !== requestIdRef.current) return
       setLoadError(e instanceof ApiError ? e.message : String(e))
@@ -92,6 +125,22 @@ export default function Sources({ store }: { store: ProfileStore }) {
 
   const selectedCount = draft.playlists.filter((p) => p.source === tab).length
 
+  const fetchNow = async () => {
+    setFetching(true)
+    setFetchMessage(null)
+    try {
+      const result = await api.fetchProfileNow(draft.profile)
+      const parts = [`${result.fetched.length} target(s) fetched`]
+      if (result.source_errors.length) parts.push(`${result.source_errors.length} source error(s)`)
+      if (result.errors.length) parts.push('unexpected error (see server log)')
+      setFetchMessage(parts.join(' · '))
+    } catch (e) {
+      setFetchMessage(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setFetching(false)
+    }
+  }
+
   const resolveByUrl = async () => {
     setResolving(true)
     setResolveError(null)
@@ -134,6 +183,23 @@ export default function Sources({ store }: { store: ProfileStore }) {
 
       {tab !== 'spotify' && (
         <>
+          <div className="row" style={{ marginBottom: 0 }}>
+            <button
+              className="btn secondary"
+              onClick={() => loadPlaylists(tab)}
+              disabled={loading || fetching}
+            >
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <button
+              className="btn secondary"
+              onClick={fetchNow}
+              disabled={fetching || loading}
+            >
+              {fetching ? 'Fetching…' : 'Fetch now'}
+            </button>
+            {fetchMessage && <span className="muted">{fetchMessage}</span>}
+          </div>
           {saveErrors && <div className="error-banner">{saveErrors.join('\n')}</div>}
           {loadError && (
             <div className="error-banner">

@@ -58,6 +58,26 @@ class TrackMeta:
     thumbnail_url: str | None = None
 
 
+def _library_track_count(raw: object) -> int | None:
+    # get_library_playlists' own "count" field comes from ytmusicapi
+    # parsing YouTube Music's own UI subtitle text (parsers/browsing.py's
+    # parse_playlist), not a real structured field -- confirmed against
+    # the real ytmusicapi 1.12.1 source: it's only ever set when a
+    # playlist's subtitle happens to have exactly a 3-run shape (title +
+    # count + author), and is simply absent otherwise, which real
+    # accounts hit often (e.g. any playlist with no description). A
+    # missing dict key plus this project's own `.get("count", 0)` used
+    # to silently read as a real "0 tracks" for every one of those,
+    # rather than "unknown" -- confirmed live, this made the track count
+    # column look broken/empty across most playlists in a real account.
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def list_playlists(
     oauth_path: str,
     limit: int | None = None,
@@ -74,15 +94,27 @@ def list_playlists(
         oauth_credentials=_oauth_credentials(oauth_client_id, oauth_client_secret),
     )
     playlists = yt.get_library_playlists(limit=limit)
-    return [
-        PlaylistSummary(
-            source_id=p["playlistId"],
-            name=p.get("title", ""),
-            track_count=p.get("count", 0),
-            owner=None,
+    summaries = []
+    for p in playlists:
+        track_count = _library_track_count(p.get("count"))
+        if track_count is None:
+            # Same real trackCount field get_playlist_summary below
+            # already relies on for a public playlist -- one extra
+            # request, only for playlists the cheap listing call above
+            # didn't already give a usable count for.
+            try:
+                track_count = yt.get_playlist(p["playlistId"], limit=1).get("trackCount", 0)
+            except Exception:
+                track_count = 0
+        summaries.append(
+            PlaylistSummary(
+                source_id=p["playlistId"],
+                name=p.get("title", ""),
+                track_count=track_count,
+                owner=None,
+            )
         )
-        for p in playlists
-    ]
+    return summaries
 
 
 def get_playlist_summary(

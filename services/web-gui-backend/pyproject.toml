@@ -8,6 +8,7 @@ dependencies = [
     "fetcher-ytmusic",
     "podcast-manager",
     "audiobook-manager",
+    "fetch-scheduler",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "python-multipart>=0.0.12",
@@ -22,6 +23,7 @@ fetcher-apple = { workspace = true }
 fetcher-ytmusic = { workspace = true }
 podcast-manager = { workspace = true }
 audiobook-manager = { workspace = true }
+fetch-scheduler = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

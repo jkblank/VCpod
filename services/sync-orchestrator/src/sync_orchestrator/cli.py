@@ -23,7 +23,9 @@ from sync_orchestrator.device import (
     AmbiguousDeviceMatchError,
     DeviceNotFoundError,
     EjectError,
+    eject_block_device,
     eject_device,
+    find_ipod_block_devices,
     find_matching_device,
     find_matching_profile,
     iter_connected_devices,
@@ -31,7 +33,8 @@ from sync_orchestrator.device import (
 )
 from sync_orchestrator.plan_json import plan_summary, result_summary
 from sync_orchestrator.rockbox_sync import RockboxSyncError, execute_rockbox_sync, plan_rockbox_sync
-from sync_orchestrator.sync import SyncError, execute_sync, plan_sync
+from sync_orchestrator.music_index import DECISION_REMOVE, DECISIONS, apply_device_decision
+from sync_orchestrator.sync import SyncError, execute_sync, plan_sync, record_index_writes
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +157,41 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 def _run_sync(
     args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path
 ) -> int:
+    detach_target: list = []
+    try:
+        return _run_sync_body(
+            args, profile, profile_path=profile_path, config_root=config_root,
+            detach_target=detach_target,
+        )
+    finally:
+        if detach_target and args.execute and not args.skip_eject:
+            _detach_after_run(detach_target[0])
+
+
+def _detach_after_run(device_info) -> None:
+    """Ejects the iPod after a sync run, whatever its outcome. Eject used to
+    happen only on the success path, so any early return (plan refused,
+    backup aborted, a missing dependency) left the iPod mounted, and the
+    user then unplugged it dirty -- the FAT corruption behind real repair
+    sessions. eject_device already unmounts before ejecting; if it has
+    already run successfully, the device is no longer mounted and this is
+    a quiet no-op."""
+    try:
+        eject_device(device_info)
+        print("Device ejected — safe to disconnect.", file=sys.stderr)
+    except EjectError as e:
+        if "no longer mounted" in str(e):
+            return
+        print(
+            f"WARNING: iPod still mounted after the run; not safe to unplug: {e}",
+            file=sys.stderr,
+        )
+
+
+def _run_sync_body(
+    args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path,
+    detach_target: list,
+) -> int:
     # full-sync/auto-sync's argparse namespaces never define --json (only
     # the plain `sync` subparser does) -- getattr, not args.json, so this
     # function still works unmodified as their shared dispatch target.
@@ -179,6 +217,7 @@ def _run_sync(
         _out(f"  auto-mounted {block_device}")
     try:
         device_info = find_matching_device(profile.device)
+        detach_target.append(device_info)
     except DeviceNotFoundError as e:
         return _fail(str(e))
     _out(
@@ -191,36 +230,42 @@ def _run_sync(
         _out(f"  {message}")
 
     extra_pc_folders = tuple(args.pc_folders) if args.pc_folders else ()
-    try:
-        planned = plan_sync(
-            device_info=device_info,
-            library_root=args.library_root,
-            state_root=args.state_root,
-            profile=profile,
-            extra_pc_folders=extra_pc_folders,
-            skip_backup=args.skip_backup,
-            skip_podcasts=args.skip_podcasts,
-            progress_callback=_report_progress,
-        )
-    except SyncError as e:
-        # A plan-phase failure (e.g. a missing system dependency like
-        # fpcalc) is just as real an auto-sync outcome as an execute-phase
-        # one below -- confirmed live, a real unattended auto-sync run
-        # failed here and never showed up in the Activity screen at all,
-        # since only the execute-phase except block (below) used to call
-        # record_activity. See notes.md's 2026-09-29 entry.
-        record_activity(
-            args.state_root,
-            ActivityEntry(
-                started_at=datetime.now(timezone.utc),
-                service="sync-orchestrator",
-                profile=profile.profile,
-                description=f"sync — plan failed: {e}",
-                duration_seconds=time.monotonic() - start_time,
-                result="error",
-            ),
-        )
-        return _fail(str(e))
+
+    def _compute_plan():
+        try:
+            return plan_sync(
+                device_info=device_info,
+                library_root=args.library_root,
+                state_root=args.state_root,
+                profile=profile,
+                extra_pc_folders=extra_pc_folders,
+                skip_backup=args.skip_backup,
+                skip_podcasts=args.skip_podcasts,
+                progress_callback=_report_progress,
+            )
+        except SyncError as e:
+            # A plan-phase failure (e.g. a missing system dependency like
+            # fpcalc) is just as real an auto-sync outcome as an execute-phase
+            # one below -- confirmed live, a real unattended auto-sync run
+            # failed here and never showed up in the Activity screen at all,
+            # since only the execute-phase except block (below) used to call
+            # record_activity. See notes.md's 2026-09-29 entry.
+            record_activity(
+                args.state_root,
+                ActivityEntry(
+                    started_at=datetime.now(timezone.utc),
+                    service="sync-orchestrator",
+                    profile=profile.profile,
+                    description=f"sync — plan failed: {e}",
+                    duration_seconds=time.monotonic() - start_time,
+                    result="error",
+                ),
+            )
+            return _fail(str(e))
+
+    planned = _compute_plan()
+    if isinstance(planned, int):
+        return planned
 
     for selection in planned.unresolved_selections:
         _out(f"  WARNING: external_library selection {selection!r} matched 0 files")
@@ -303,6 +348,41 @@ def _run_sync(
             "--allow-removals (review the removal list above first)"
         )
 
+    if planned.seeding_required:
+        if not args.allow_removals:
+            return _fail(
+                f"{len(planned.seeding_required)} track(s) on this iPod are not in "
+                f"{profile.profile}'s index; choose remove or adopt for this device "
+                "before executing"
+            )
+        # --allow-removals is "dangerous mode" -- the user has already opted
+        # into this run touching removals, so an undecided device defaults
+        # to "remove" rather than refusing outright. "remove" is the safer
+        # default of the two: it only drops tracks that are still sitting
+        # untouched in the library pool (recoverable by re-adding), where
+        # "adopt" would silently commit them to the index forever.
+        _out(
+            f"  WARNING: {len(planned.seeding_required)} track(s) on this iPod "
+            f"are not in {profile.profile}'s index; --allow-removals is set, so "
+            "defaulting to remove for this device"
+        )
+        db_path = Path(args.state_root) / f"{profile.profile}.sqlite"
+        with StateDB(db_path) as db:
+            apply_device_decision(
+                db, planned.device_key, DECISION_REMOVE, datetime.now(timezone.utc)
+            )
+        planned = _compute_plan()
+        if isinstance(planned, int):
+            return planned
+        if planned.seeding_required:
+            return _fail(
+                "the default remove decision didn't clear the device's "
+                "untracked tracks; refusing to execute"
+            )
+        if not json_mode:
+            print(f"== Updated plan for {profile.profile!r} (defaulted to remove) ==")
+            _print_plan(planned.plan)
+
     _out("== Executing ==")
     try:
         result, after = execute_sync(planned, progress_callback=_report_progress)
@@ -320,6 +400,7 @@ def _run_sync(
         )
         return _fail(str(e))
 
+    record_index_writes(planned)
     _out(f"  {result.summary}")
     after_count = len(after.get("mhlt", []))
     _out(f"  {after_count} tracks now on device (was {planned.before_track_count})")
@@ -400,6 +481,21 @@ def _print_rockbox_plan(plan) -> None:
 def _run_rockbox_sync(
     args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path
 ) -> int:
+    detach_target: list = []
+    try:
+        return _run_rockbox_sync_body(
+            args, profile, profile_path=profile_path, config_root=config_root,
+            detach_target=detach_target,
+        )
+    finally:
+        if detach_target and args.execute and not args.skip_eject:
+            _detach_after_run(detach_target[0])
+
+
+def _run_rockbox_sync_body(
+    args: argparse.Namespace, profile, *, profile_path: Path, config_root: Path,
+    detach_target: list,
+) -> int:
     """Rockbox-mode sibling of _run_sync: same flags, same meaning
     (--execute/--allow-removals/--skip-backup/--skip-podcasts/--skip-eject
     all behave identically), but a plain filesystem mirror instead of an
@@ -425,6 +521,7 @@ def _run_rockbox_sync(
         print(f"  auto-mounted {block_device}")
     try:
         device_info = find_matching_device(profile.device)
+        detach_target.append(device_info)
     except DeviceNotFoundError as e:
         return _fail(str(e))
     print(f"  path={device_info.path} (Rockbox mode — plain file mirror, no iTunesDB)")
@@ -917,6 +1014,42 @@ def _cmd_auto_sync(args: argparse.Namespace) -> int:
         return _fail(str(e))
 
 
+def _cmd_device_decision(args: argparse.Namespace) -> int:
+    """Records the first-sync decision for one iPod against its profile's
+    index. Run by the web GUI's device decision buttons."""
+    profile_name = Path(args.profile).stem
+    db_path = Path(args.state_root) / f"{profile_name}.sqlite"
+    with StateDB(db_path) as db:
+        try:
+            covered = apply_device_decision(
+                db, args.serial, args.decision, datetime.now(timezone.utc)
+            )
+        except ValueError as e:
+            return _fail(str(e))
+    print(json.dumps({"serial": args.serial, "decision": args.decision, "tracks": len(covered)}))
+    return 0
+
+
+def _cmd_eject(args: argparse.Namespace) -> int:
+    """Ejects the connected iPod -- the web GUI's "Eject iPod" button. Finds
+    the iPod through sysfs, so it works whether or not it's mounted. Refuses
+    when more than one iPod is connected rather than guessing which one."""
+    devices = find_ipod_block_devices()
+    if not devices:
+        return _fail("no iPod connected")
+    if len(devices) > 1:
+        return _fail(
+            f"more than one iPod connected ({', '.join(devices)}); "
+            "unplug all but the one to eject"
+        )
+    try:
+        eject_block_device(devices[0])
+    except EjectError as e:
+        return _fail(str(e))
+    print("Device ejected — safe to disconnect.")
+    return 0
+
+
 def _cmd_identify_device(args: argparse.Namespace) -> int:
     """Prints every currently-connected iPod's identity as JSON --
     exists for callers that need to *discover* a device's serial/
@@ -1191,6 +1324,26 @@ def main() -> None:
         "already mounted.",
     )
     identify_device_parser.set_defaults(func=_cmd_identify_device)
+
+    eject_parser = subparsers.add_parser(
+        "eject",
+        help="Eject the iPod matched by a profile, if mounted",
+    )
+    eject_parser.add_argument(
+        "--profile", default=None,
+        help="Accepted for compatibility; the connected iPod is found by hardware",
+    )
+    eject_parser.set_defaults(func=_cmd_eject)
+
+    decision_parser = subparsers.add_parser(
+        "device-decision",
+        help="Record the first-sync decision (remove or adopt) for one iPod",
+    )
+    decision_parser.add_argument("--profile", required=True)
+    decision_parser.add_argument("--state-root", required=True)
+    decision_parser.add_argument("--serial", required=True)
+    decision_parser.add_argument("--decision", required=True, choices=DECISIONS)
+    decision_parser.set_defaults(func=_cmd_device_decision)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

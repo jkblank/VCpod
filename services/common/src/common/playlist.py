@@ -1,8 +1,57 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from common.models import PlaylistEntry
+
+
+# Playlist entries are stored relative to the library root (e.g.
+# "music/Artist/Album/01.m4a"), so the same file works from the container
+# and from the host. Entries written before this (container or host
+# absolute paths) are still understood by resolve_playlist_entry.
+LEGACY_CONTAINER_LIBRARY_ROOT = "/data/library"
+
+
+def library_relative_entry(track_path: Path | str, library_root: Path | str) -> str:
+    """A track's path as a portable, root-relative playlist entry."""
+    try:
+        return Path(track_path).relative_to(Path(library_root)).as_posix()
+    except ValueError:
+        return str(track_path)
+
+
+def resolve_playlist_entry(
+    entry: str,
+    library_root: Path | str,
+    host_root: str | None = None,
+) -> str:
+    """Resolves one stored playlist entry to an absolute path under the
+    local library_root. Relative entries are joined onto it. Absolute
+    entries from another namespace (the container's /data/library, or the
+    host path in HOST_LIBRARY_ROOT) are rebased onto it. Anything else is
+    returned unchanged."""
+    entry = entry.strip()
+    local = str(Path(library_root))
+    if not entry.startswith("/"):
+        return str(Path(local) / entry)
+    for known_root in (host_root, LEGACY_CONTAINER_LIBRARY_ROOT):
+        if known_root and (entry == known_root or entry.startswith(known_root + "/")):
+            return local + entry[len(known_root):]
+    return entry
+
+
+def _to_relative_entry(entry: str, library_root: Path | str) -> str:
+    host_root = os.environ.get("HOST_LIBRARY_ROOT") or None
+    resolved = resolve_playlist_entry(entry, library_root, host_root)
+    return library_relative_entry(resolved, library_root)
+
+
+def playlist_entry_path(track_path: Path | str, library_root: Path | str) -> str:
+    """The entry a .m3u8 should store for a track: root-relative, so it
+    resolves on whichever host or container reads the playlist. See
+    notes.md."""
+    return library_relative_entry(track_path, library_root)
 
 
 def _read_existing_entries(path: Path) -> list[str]:
@@ -20,6 +69,7 @@ def write_m3u8(
     track_paths: list[Path | str],
     *,
     mode: str = "absolute",
+    library_root: Path | str | None = None,
 ) -> None:
     """Writes a .m3u8 playlist file.
 
@@ -43,6 +93,8 @@ def write_m3u8(
         entries = new_entries
     elif mode == "additive":
         entries = _read_existing_entries(path)
+        if library_root is not None:
+            entries = [_to_relative_entry(e, library_root) for e in entries]
         seen = set(entries)
         for entry in new_entries:
             if entry not in seen:

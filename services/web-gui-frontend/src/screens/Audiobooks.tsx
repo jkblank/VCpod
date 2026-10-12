@@ -56,14 +56,17 @@ export default function Audiobooks({ store }: { store: ProfileStore }) {
                 >
                   <option value="include">Include only what's ticked below</option>
                   <option value="exclude">Sync everything except what's ticked below</option>
+                  <option value="none">Sync no audiobooks</option>
                 </select>
               </div>
 
-              <DirectoryPicker
-                browse={(subpath) => api.browseAudiobooks(subpath)}
-                selections={config.selections}
-                onSelectionsChange={(selections) => setConfig({ ...config, selections })}
-              />
+              {config.mode !== 'none' && (
+                <DirectoryPicker
+                  browse={(subpath) => api.browseAudiobooks(subpath)}
+                  selections={config.selections}
+                  onSelectionsChange={(selections) => setConfig({ ...config, selections })}
+                />
+              )}
 
               <div className="row" style={{ marginTop: '16px' }}>
                 <button className="btn" onClick={() => save()} disabled={saving}>

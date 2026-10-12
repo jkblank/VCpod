@@ -8,9 +8,11 @@ router = APIRouter()
 
 
 @router.get("/api/device/identify")
-def identify_device(request: Request) -> dict:
+def identify_device(request: Request, mount: bool = False) -> dict:
     try:
-        devices = identify_connected_devices(request.app.state.sync_orchestrator_dir)
+        devices = identify_connected_devices(
+            request.app.state.sync_orchestrator_dir, mount=mount
+        )
     except DeviceIdentifyError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     return {"devices": devices}

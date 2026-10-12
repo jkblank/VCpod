@@ -153,13 +153,19 @@ export default function AudiobookDiscovery() {
           <tbody>
             {books.map((book) => (
               <tr key={book.name}>
-                <td>{book.name}</td>
+                <td title={book.name}>{book.name}</td>
                 <td>{book.audio_file_count}</td>
-                <td style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  {book.already_imported ? <SyncedIcon size={16} /> : <ToAddIcon size={16} />}
-                  {book.already_imported
+                <td title={
+                  book.already_imported
                     ? `Already imported (${formatRelativeTime(book.imported_at)})`
-                    : 'New — needs processing'}
+                    : 'New — needs processing'
+                }>
+                  <span className="discover-status">
+                    {book.already_imported ? <SyncedIcon size={16} /> : <ToAddIcon size={16} />}
+                    {book.already_imported
+                      ? `Already imported (${formatRelativeTime(book.imported_at)})`
+                      : 'New — needs processing'}
+                  </span>
                 </td>
                 <td>
                   {!book.already_imported && (

@@ -11,7 +11,7 @@ import httpx
 
 from common.lock import FileLock, LockTimeoutError
 from common.models import PlaylistEntry
-from common.playlist import write_m3u8
+from common.playlist import playlist_entry_path, write_m3u8
 from common.state import StateDB, TrackRecord
 
 from fetcher_ytmusic.api import TrackMeta, get_playlist_tracks
@@ -236,7 +236,12 @@ def fetch_playlist(
     ]
 
     m3u8_path = playlists_root / profile / f"{playlist_name}.m3u8"
-    write_m3u8(m3u8_path, final_paths, mode=sync_mode)
+    write_m3u8(
+        m3u8_path,
+        [playlist_entry_path(p, library_root) for p in final_paths],
+        mode=sync_mode,
+        library_root=library_root,
+    )
 
     return FetchResult(
         m3u8_path=m3u8_path,

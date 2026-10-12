@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type SyncStatus } from '../api'
+import { api, ApiError, type SyncStatus } from '../api'
 import AutoSyncSetupCard from '../components/AutoSyncSetupCard'
 import Dialog from '../components/Dialog'
 import {
@@ -46,6 +46,8 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
   const [dangerousMode, setDangerousMode] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [externalStatus, setExternalStatus] = useState<SyncStatus | null>(null)
+  const [ejecting, setEjecting] = useState(false)
+  const [ejectMessage, setEjectMessage] = useState<string | null>(null)
   const logRef = useRef<HTMLPreElement | null>(null)
 
   useEffect(() => {
@@ -86,6 +88,20 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
             : d.volume_label === draft.device.match_value,
         )
       : null
+
+  const ejectNow = async () => {
+    if (!draft) return
+    setEjecting(true)
+    setEjectMessage(null)
+    try {
+      const result = await api.ejectProfileDevice(draft.profile)
+      setEjectMessage(result.message)
+    } catch (e) {
+      setEjectMessage(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setEjecting(false)
+    }
+  }
 
   const resetLocal = () => setAllowRemovals(false)
 
@@ -130,6 +146,13 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
   }
 
   const hasRemovals = plan != null && (plan.to_remove_count > 0 || plan.playlists_to_remove.length > 0)
+  const seedingPending = (plan?.seeding_required_count ?? 0) > 0
+
+  const decideDevice = async (decision: 'remove' | 'adopt') => {
+    if (!draft || !plan) return
+    await api.setDeviceDecision(draft.profile, plan.seeding_device_key, decision)
+    computePlan()
+  }
   const externalRunning = externalStatus?.running ?? false
   const running = runningAction !== null || externalRunning
 
@@ -157,7 +180,16 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
               <span className="muted">not connected</span>
             )}
           </span>
+          <button
+            className="btn secondary"
+            style={{ marginLeft: 'auto' }}
+            onClick={ejectNow}
+            disabled={!connected || running || ejecting}
+          >
+            {ejecting ? 'Ejecting…' : 'Eject iPod'}
+          </button>
         </p>
+        {ejectMessage && <p className="muted" style={{ marginTop: 0 }}>{ejectMessage}</p>}
 
         {externalRunning && (
           <div className="warning-banner">
@@ -171,6 +203,27 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
                 {externalStatus.log_tail.join('\n')}
               </pre>
             )}
+          </div>
+        )}
+
+        {seedingPending && plan && (
+          <div className="warning-banner">
+            <p>
+              {plan.seeding_required_count} track(s) are on this iPod but not in this profile's
+              index. This iPod has no decision yet, so nothing can be synced to it until you choose:
+            </p>
+            <p className="muted">
+              {plan.seeding_required_sample.slice(0, 10).join(' · ')}
+              {plan.seeding_required_count > 10 ? ' …' : ''}
+            </p>
+            <div className="row">
+              <button className="btn danger" onClick={() => void decideDevice('remove')} disabled={running}>
+                Remove them from this iPod
+              </button>
+              <button className="btn secondary" onClick={() => void decideDevice('adopt')} disabled={running}>
+                Keep them (add to the index)
+              </button>
+            </div>
           </div>
         )}
 
@@ -220,7 +273,7 @@ export default function Sync({ store, sync }: { store: ProfileStore; sync: SyncS
             <button
               className="btn"
               onClick={() => setConfirmOpen(true)}
-              disabled={running || !plan || (hasRemovals && !allowRemovals)}
+              disabled={running || !plan || seedingPending || (hasRemovals && !allowRemovals)}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
             >
               {runningAction === 'execute' && <Spinner size={14} />}

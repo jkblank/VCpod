@@ -555,6 +555,10 @@ def _fake_planned(**overrides) -> SimpleNamespace:
         snapshot=None,
         unresolved_selections=[],
         unresolved_audiobook_selections=[],
+        seeding_required=[],
+        device_key="",
+        index_db_path="",
+        music_root="",
         unresolved_music_selections=[],
         play_states_updated=0,
     )
@@ -651,6 +655,95 @@ def test_run_sync_allows_execute_with_playlist_removal_when_allow_removals_set(
     )
 
     assert result == 0
+    assert len(execute_calls) == 1
+
+
+def test_run_sync_seeding_required_message_has_no_stray_quote(monkeypatch, capsys):
+    # Regression: the message used f"{profile.profile!r}'s index", which for
+    # profile "john" rendered "'john''s index" -- repr()'s own quotes plus
+    # the literal "'s" glued on right after. See notes.md.
+    profile = SimpleNamespace(
+        profile="john",
+        device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+    )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: SimpleNamespace(
+            path="/mnt/ipod", model_family="iPod", generation="5.5th Gen",
+            model_number="MA450", capacity="80GB",
+        ),
+    )
+    planned = _fake_planned(seeding_required=["A/1.m4a"] * 641)
+    monkeypatch.setattr(cli_module, "plan_sync", lambda **kwargs: planned)
+    execute_calls = []
+    monkeypatch.setattr(
+        cli_module, "execute_sync", lambda *a, **k: execute_calls.append(a) or (None, None)
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(allow_removals=False),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    out = capsys.readouterr().out
+    assert result == 1
+    assert execute_calls == []
+    assert "john's index" in out
+    assert "''" not in out
+
+
+def test_run_sync_defaults_to_remove_for_seeding_gate_under_allow_removals(
+    monkeypatch, tmp_path
+):
+    # "Dangerous mode" (--allow-removals) must never be blocked by an
+    # undecided device: it defaults to "remove" and proceeds, rather than
+    # refusing like a plain --execute does. See notes.md.
+    profile = SimpleNamespace(
+        profile="john",
+        device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+        sync=SimpleNamespace(push_play_status_back=False),
+    )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: SimpleNamespace(
+            path="/mnt/ipod", model_family="iPod", generation="5.5th Gen",
+            model_number="MA450", capacity="80GB",
+        ),
+    )
+    undecided = _fake_planned(seeding_required=["A/1.m4a"] * 641, device_key="SER1")
+    decided = _fake_planned(device_key="SER1")
+    plan_calls = []
+    monkeypatch.setattr(
+        cli_module, "plan_sync",
+        lambda **kwargs: plan_calls.append(1) or (undecided if len(plan_calls) == 1 else decided),
+    )
+    decision_calls = []
+    monkeypatch.setattr(
+        cli_module, "apply_device_decision",
+        lambda db, device_key, decision, when: decision_calls.append((device_key, decision)),
+    )
+    execute_calls = []
+    monkeypatch.setattr(
+        cli_module, "execute_sync",
+        lambda *a, **k: execute_calls.append(a) or (
+            SimpleNamespace(summary="done", tracks_added=0), {"mhlt": []}
+        ),
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(allow_removals=True, state_root=str(tmp_path)),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 0
+    assert decision_calls == [("SER1", "remove")]
+    assert len(plan_calls) == 2
     assert len(execute_calls) == 1
 
 
@@ -1359,3 +1452,142 @@ def test_identify_device_skips_auto_mount_when_no_mount_flag_set(monkeypatch, ca
     result = cli_module._cmd_identify_device(argparse.Namespace(no_mount=True))
 
     assert result == 0
+
+
+def test_run_sync_ejects_device_even_when_plan_fails(monkeypatch, tmp_path):
+    # Regression: eject used to run only on the success path, so a failed
+    # plan (or backup abort, etc.) left the iPod mounted, and the user then
+    # unplugged it dirty -- the FAT corruption behind real repair sessions.
+    from sync_orchestrator.sync import SyncError
+
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    device = _connected_device(serial="X")
+    ejected = []
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(cli_module, "find_matching_device", lambda match: device)
+    monkeypatch.setattr(cli_module, "eject_device", lambda info: ejected.append(info))
+    monkeypatch.setattr(
+        cli_module, "plan_sync",
+        lambda **kwargs: (_ for _ in ()).throw(SyncError("backup aborted")),
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(state_root=str(tmp_path), skip_eject=False),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 1
+    assert ejected == [device]
+
+
+def test_run_sync_skips_eject_when_skip_eject_set(monkeypatch, tmp_path):
+    from sync_orchestrator.sync import SyncError
+
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    ejected = []
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(cli_module, "find_matching_device", lambda match: _connected_device(serial="X"))
+    monkeypatch.setattr(cli_module, "eject_device", lambda info: ejected.append(info))
+    monkeypatch.setattr(
+        cli_module, "plan_sync",
+        lambda **kwargs: (_ for _ in ()).throw(SyncError("backup aborted")),
+    )
+
+    cli_module._run_sync(
+        _run_sync_args(state_root=str(tmp_path), skip_eject=True),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert ejected == []
+
+
+def test_plan_only_run_leaves_the_ipod_mounted_for_the_execute_step(monkeypatch):
+    # Regression: the web GUI plans and then executes against the same
+    # mount; ejecting after a plan made the execute fail. See notes.md.
+    def _body(args, profile, *, profile_path, config_root, detach_target):
+        detach_target.append(_connected_device(serial="X"))
+        return 0
+
+    ejected = []
+    monkeypatch.setattr(cli_module, "_run_sync_body", _body)
+    monkeypatch.setattr(cli_module, "eject_device", lambda info: ejected.append(info))
+    profile = SimpleNamespace(profile="john")
+
+    cli_module._run_sync(
+        _run_sync_args(execute=False, skip_eject=False),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert ejected == []
+
+
+def test_detach_warning_goes_to_stderr_not_stdout(monkeypatch, capsys):
+    # Regression: the plan's --json stdout is parsed by the web GUI, and a
+    # stray eject warning on stdout broke the parse. See notes.md.
+    from sync_orchestrator.device import EjectError
+
+    def _busy(info):
+        raise EjectError("eject failed: Device or resource busy")
+
+    monkeypatch.setattr(cli_module, "eject_device", _busy)
+
+    cli_module._detach_after_run(_connected_device(serial="X"))
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "still mounted" in captured.err
+
+
+def test_cmd_eject_ejects_the_connected_ipod(monkeypatch):
+    ejected = []
+    monkeypatch.setattr(cli_module, "find_ipod_block_devices", lambda: ["/dev/sdh"])
+    monkeypatch.setattr(cli_module, "eject_block_device", lambda dev: ejected.append(dev))
+
+    result = cli_module._cmd_eject(argparse.Namespace(profile=None))
+
+    assert result == 0
+    assert ejected == ["/dev/sdh"]
+
+
+def test_cmd_eject_fails_when_no_ipod_connected(monkeypatch):
+    monkeypatch.setattr(cli_module, "find_ipod_block_devices", lambda: [])
+
+    result = cli_module._cmd_eject(argparse.Namespace(profile=None))
+
+    assert result == 1
+
+
+def test_cmd_eject_refuses_when_more_than_one_ipod_connected(monkeypatch):
+    ejected = []
+    monkeypatch.setattr(cli_module, "find_ipod_block_devices", lambda: ["/dev/sdh", "/dev/sdi"])
+    monkeypatch.setattr(cli_module, "eject_block_device", lambda dev: ejected.append(dev))
+
+    result = cli_module._cmd_eject(argparse.Namespace(profile=None))
+
+    assert result == 1
+    assert ejected == []
+
+
+def test_cmd_eject_fails_when_no_matching_device(monkeypatch):
+    profile = SimpleNamespace(
+        profile="john", device=SimpleNamespace(match_by="serial", match_value="X")
+    )
+    monkeypatch.setattr(cli_module, "load_profile_config", lambda path: profile)
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: (_ for _ in ()).throw(DeviceNotFoundError("no device")),
+    )
+
+    result = cli_module._cmd_eject(argparse.Namespace(profile="/config/profiles/john.yaml"))
+
+    assert result == 1

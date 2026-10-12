@@ -69,7 +69,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 WORKDIR /app
 
 # Root workspace member (common/fetcher-apple/fetcher-ytmusic/
-# podcast-manager/audiobook-manager/web-gui-backend) -- same shape as
+# podcast-manager/audiobook-manager/fetch-scheduler/web-gui-backend) -- same shape as
 # every other Dockerfile here.
 COPY pyproject.toml uv.lock /app/
 COPY services/common /app/services/common
@@ -77,6 +77,9 @@ COPY services/fetcher-apple /app/services/fetcher-apple
 COPY services/fetcher-ytmusic /app/services/fetcher-ytmusic
 COPY services/podcast-manager /app/services/podcast-manager
 COPY services/audiobook-manager /app/services/audiobook-manager
+COPY services/library-manager /app/services/library-manager
+COPY services/music-stack-cli /app/services/music-stack-cli
+COPY services/fetch-scheduler /app/services/fetch-scheduler
 COPY services/web-gui-backend /app/services/web-gui-backend
 RUN uv sync --frozen --no-dev --package web-gui-backend
 

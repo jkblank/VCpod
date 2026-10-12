@@ -29,17 +29,22 @@ def _default_sync_orchestrator_dir() -> Path:
 
 def identify_connected_devices(
     sync_orchestrator_dir: Path | str | None = None,
+    *,
+    mount: bool = False,
 ) -> list[dict]:
     """Returns every currently-connected iPod's identity (path,
     volume_label, serial, firewire_guid, model_family, generation,
     model_number, capacity), via `sync-orchestrator identify-device`.
+    Read-only by default: mount=False passes --no-mount, so background
+    polling never auto-mounts an iPod while a sync may be using it.
     Empty list when nothing's connected -- never raises for that case,
     only for an actual failure to run the subprocess or parse its
     output."""
     project_dir = Path(sync_orchestrator_dir) if sync_orchestrator_dir else _default_sync_orchestrator_dir()
 
     result = subprocess.run(
-        ["uv", "run", "--project", str(project_dir), "sync-orchestrator", "identify-device"],
+        ["uv", "run", "--project", str(project_dir), "sync-orchestrator", "identify-device"]
+        + ([] if mount else ["--no-mount"]),
         capture_output=True,
         text=True,
         check=False,

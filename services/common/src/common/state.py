@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -98,7 +99,92 @@ class StateDB:
             )
             """
         )
+        # Music this profile has ever written to a device, as music-root-
+        # relative paths. Additive: rows are only ever added, never removed.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS music_index (
+                track TEXT PRIMARY KEY,
+                first_written TEXT NOT NULL,
+                last_written TEXT NOT NULL
+            )
+            """
+        )
+        # One first-sync decision per device serial: "remove" or "adopt".
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_decisions (
+                device_serial TEXT PRIMARY KEY,
+                decision TEXT NOT NULL,
+                decided_at TEXT NOT NULL
+            )
+            """
+        )
+        # Tracks found on a device with no decision yet, shown to the user
+        # before they choose. Cleared once the decision is recorded.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_untracked (
+                device_serial TEXT NOT NULL,
+                track TEXT NOT NULL,
+                PRIMARY KEY (device_serial, track)
+            )
+            """
+        )
         self._conn.commit()
+
+    def index_tracks(self) -> set[str]:
+        return {row[0] for row in self._conn.execute("SELECT track FROM music_index")}
+
+    def index_add(self, tracks: Iterable[str], when: datetime) -> None:
+        stamp = when.isoformat()
+        self._conn.executemany(
+            """
+            INSERT INTO music_index (track, first_written, last_written)
+            VALUES (?, ?, ?)
+            ON CONFLICT (track) DO UPDATE SET last_written = excluded.last_written
+            """,
+            [(track, stamp, stamp) for track in tracks],
+        )
+        self._conn.commit()
+
+    def get_device_decision(self, device_serial: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT decision FROM device_decisions WHERE device_serial = ?", (device_serial,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_device_decision(self, device_serial: str, decision: str, when: datetime) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO device_decisions (device_serial, decision, decided_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (device_serial) DO UPDATE SET
+                decision = excluded.decision,
+                decided_at = excluded.decided_at
+            """,
+            (device_serial, decision, when.isoformat()),
+        )
+        self._conn.commit()
+
+    def set_pending_untracked(self, device_serial: str, tracks: Iterable[str]) -> None:
+        self._conn.execute(
+            "DELETE FROM pending_untracked WHERE device_serial = ?", (device_serial,)
+        )
+        self._conn.executemany(
+            "INSERT INTO pending_untracked (device_serial, track) VALUES (?, ?)",
+            [(device_serial, track) for track in tracks],
+        )
+        self._conn.commit()
+
+    def pending_untracked(self, device_serial: str) -> list[str]:
+        return [
+            row[0]
+            for row in self._conn.execute(
+                "SELECT track FROM pending_untracked WHERE device_serial = ? ORDER BY track",
+                (device_serial,),
+            )
+        ]
 
     def _migrate_episodes_columns(self) -> None:
         # Upgrades a pre-existing episodes table (created before title/

@@ -94,7 +94,7 @@ body {
   /* Pinned to the viewport height, not stretched to match .main's own
      height -- .shell is a flex row with default align-items: stretch,
      so without this the nav grows as tall as a long playlist list makes
-     .main, pushing .nav-editing (anchored to the bottom via
+     .main, pushing .nav-status (anchored to the bottom via
      margin-top: auto) off-screen below the fold. */
   position: sticky;
   top: 0;
@@ -143,18 +143,6 @@ body {
   opacity: 1;
 }
 
-.nav-editing {
-  margin-top: auto;
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--text-dim);
-  border-top: 1px solid var(--border);
-}
-
-.nav-editing strong {
-  color: var(--text);
-}
-
 .nav-group-label {
   color: var(--text-dim);
   font-size: 10px;
@@ -164,49 +152,33 @@ body {
   padding: 12px 12px 4px;
 }
 
-.nav-profile-picker {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.nav-profile-empty {
+  padding: 4px 12px;
   margin-bottom: 4px;
 }
 
-.nav-profile-empty {
-  padding: 4px 12px;
-}
-
-.nav-profile-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  text-align: left;
-  background: none;
-  border: none;
-  color: var(--text-dim);
-  padding: 6px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.nav-profile-row:hover {
-  background: var(--panel);
-}
-
-.nav-profile-row.active {
-  background: var(--accent-dim);
+.nav-profile-select {
+  width: calc(100% - 8px);
+  margin: 0 4px 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
   color: var(--text);
-}
-
-.profile-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
 }
 
 .nav-status {
-  margin-top: 8px;
+  /* Anchors this (and nothing else) to the bottom of .nav's flex
+     column -- confirmed live: this used to be .nav-editing's job
+     (the "editing: X" line below the nav items, removed once the
+     profile picker above became a dropdown and made it redundant),
+     so moving the anchor here keeps this pinned to the bottom instead
+     of flowing immediately after the nav items. See .nav's own
+     comment above for why .nav needs a fixed height for this to work. */
+  margin-top: auto;
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   display: flex;
@@ -580,7 +552,16 @@ button.btn:disabled {
 }
 
 .discover-table {
+  /* Fixed layout with explicit column widths below -- confirmed live:
+     auto layout let a long book name (real drop-zone captures can be
+     very messy, 80+ characters) and the varying-length status text
+     ("Already imported (3 days ago)" vs. "New — needs processing")
+     fight over column widths row by row, visibly reflowing/breaking as
+     different rows rendered. Book and Status now truncate with an
+     ellipsis instead (full name still available via the title
+     attribute/native tooltip). */
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 13px;
   margin-top: 8px;
@@ -597,6 +578,39 @@ button.btn:disabled {
 .discover-table td {
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discover-table th:nth-child(2),
+.discover-table td:nth-child(2) {
+  width: 56px;
+}
+
+.discover-table th:nth-child(3),
+.discover-table td:nth-child(3) {
+  width: 220px;
+}
+
+.discover-table th:nth-child(4),
+.discover-table td:nth-child(4) {
+  width: 200px;
+  text-align: right;
+  /* Overrides .discover-table td's ellipsis treatment -- that's meant
+     for long text, but this column holds a button; clipping it would
+     cut the button off mid-label instead of truncating text cleanly,
+     which looks broken rather than tidy. 200px is comfortably wider
+     than "Process into library" (the longest label here) so this
+     should never actually need to clip in practice anyway. */
+  overflow: visible;
+  white-space: normal;
+}
+
+.discover-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* --- "VCpod Console" component language (Nocturne design system) ------- */

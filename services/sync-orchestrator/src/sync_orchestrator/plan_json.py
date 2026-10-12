@@ -44,6 +44,9 @@ def plan_summary(planned: Any) -> dict[str, Any]:
     return {
         "to_add_count": len(plan.to_add),
         "to_remove_count": len(plan.to_remove),
+        "seeding_device_key": planned.device_key,
+        "seeding_required_count": len(planned.seeding_required),
+        "seeding_required_sample": planned.seeding_required[:20],
         "to_update_metadata_count": len(plan.to_update_metadata),
         "to_update_file_count": len(plan.to_update_file),
         "to_update_artwork_count": len(plan.to_update_artwork),

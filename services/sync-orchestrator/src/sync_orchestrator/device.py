@@ -67,20 +67,22 @@ def iter_candidate_mounts(mounts_path: str = _MOUNTS_PATH) -> list[tuple[str, st
 
 def _iter_unmounted_removable_partitions() -> list[str]:
     """Every vfat/hfsplus-formatted partition currently on the system
-    that ISN'T already in /proc/mounts — via `lsblk`, which (unlike
-    /proc/mounts) also sees partitions that exist but aren't mounted yet.
-    Used by mount_candidate_devices() to find things worth auto-mounting."""
-    result = subprocess.run(
-        ["lsblk", "-rno", "PATH,FSTYPE"], capture_output=True, text=True, check=False
-    )
+    that ISN'T already in /proc/mounts. Lists devices via `lsblk`, but
+    takes each filesystem type from `blkid -p`: inside the web-gui-backend
+    container `lsblk` reports an empty FSTYPE for a freshly plugged iPod, so
+    the iPod was never offered for mounting there. Used by
+    mount_candidate_devices() to find things worth auto-mounting."""
+    result = subprocess.run(["lsblk", "-rno", "PATH"], capture_output=True, text=True, check=False)
     already_mounted = {device_path for device_path, _mount_point, _fstype in iter_candidate_mounts()}
     unmounted = []
-    for line in result.stdout.splitlines():
-        parts = line.split(maxsplit=1)
-        if len(parts) != 2:
+    for device_path in result.stdout.split():
+        if device_path in already_mounted:
             continue
-        device_path, fstype = parts
-        if fstype in _MOUNT_FSTYPES and device_path not in already_mounted:
+        probe = subprocess.run(
+            ["blkid", "-p", "-o", "value", "-s", "TYPE", device_path],
+            capture_output=True, text=True, check=False,
+        )
+        if probe.stdout.strip() in _MOUNT_FSTYPES:
             unmounted.append(device_path)
     return unmounted
 
@@ -306,6 +308,74 @@ class EjectError(Exception):
     pass
 
 
+_UDISKS_DRIVE_LINE_RE = re.compile(r"^\s*Drive:\s*'(/org/freedesktop/UDisks2/drives/[^']+)'", re.MULTILINE)
+
+
+def _udisks_eject(block_device: str) -> None:
+    """Ejects the drive holding block_device via UDisks2's Drive.Eject D-Bus
+    method. Raises EjectError on any failure (no udisks tools, polkit refusal,
+    the drive reporting it can't be ejected) so the caller can fall back."""
+    try:
+        info = subprocess.run(
+            ["udisksctl", "info", "-b", block_device], capture_output=True, text=True
+        )
+    except FileNotFoundError as e:
+        raise EjectError(f"udisksctl not found: {e}") from e
+    if info.returncode != 0:
+        raise EjectError(f"udisksctl info failed: {info.stderr.strip()}")
+    match = _UDISKS_DRIVE_LINE_RE.search(info.stdout)
+    if not match:
+        raise EjectError(f"no UDisks2 drive object for {block_device!r}")
+    drive_path = match.group(1)
+
+    try:
+        result = subprocess.run(
+            [
+                "busctl", "--system", "call", "org.freedesktop.UDisks2", drive_path,
+                "org.freedesktop.UDisks2.Drive", "Eject", "a{sv}", "0",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise EjectError(f"busctl not found: {e}") from e
+    if result.returncode != 0:
+        raise EjectError(f"UDisks2 Drive.Eject refused: {result.stderr.strip()}")
+
+
+def find_ipod_block_devices(sys_block: str = "/sys/block") -> list[str]:
+    """Every connected Apple iPod's whole-disk block device (e.g. /dev/sdh),
+    found through sysfs. Doesn't depend on the iPod being mounted, which is
+    what lets an eject still work after a failed or skipped mount."""
+    found: list[str] = []
+    for entry in sorted(Path(sys_block).iterdir()):
+        try:
+            vendor = (entry / "device" / "vendor").read_text().strip()
+            model = (entry / "device" / "model").read_text().strip()
+        except OSError:
+            continue
+        if vendor == "Apple" and model.startswith("iPod"):
+            found.append(f"/dev/{entry.name}")
+    return found
+
+
+def eject_block_device(block_device: str) -> None:
+    """Ejects a whole-disk block device: UDisks2 Drive.Eject first (authorized
+    for a local session and root), then the plain eject binary. Raises
+    EjectError if both fail."""
+    try:
+        _udisks_eject(block_device)
+        return
+    except EjectError:
+        pass
+    try:
+        eject = subprocess.run(["eject", block_device], capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise EjectError(f"eject not found on PATH: {e}") from e
+    if eject.returncode != 0:
+        raise EjectError(f"eject failed: {eject.stdout}{eject.stderr}")
+
+
 def eject_device(device_info: DeviceInfo) -> None:
     """Ejects the drive via the classic `eject` utility (util-linux),
     not `udisksctl`.
@@ -342,6 +412,17 @@ def eject_device(device_info: DeviceInfo) -> None:
             break
     if block_device is None:
         raise EjectError(f"device no longer mounted at {device_info.path!r}; can't eject")
+
+    # UDisks2's Drive.Eject first: it's the same call a desktop file
+    # manager's eject button makes, so a local desktop session (and root,
+    # e.g. the auto-sync unit) is authorized by polkit without a password.
+    # Over SSH, polkit refuses it and we fall through to the plain `eject`
+    # binary below, which needs root. See notes.md.
+    try:
+        _udisks_eject(block_device)
+        return
+    except EjectError:
+        pass
 
     match = _PARENT_DRIVE_RE.match(block_device)
     if not match:

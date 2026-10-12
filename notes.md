@@ -1,5 +1,464 @@
 # Notes / Future Work
 
+## 2026-10-12: dangerous mode (--allow-removals) defaults undecided devices to "remove"
+
+- **What changed:** the per-device seeding gate used to refuse execute
+  unconditionally when a device had no `remove`/`adopt` decision yet, even
+  under `--allow-removals`. The user's call: `--allow-removals` ("dangerous
+  mode") already means the run is allowed to touch removals, so it should
+  never be blocked — an undecided device now defaults to `remove` and the
+  run proceeds, instead of failing. Plain `--execute` (no `--allow-removals`)
+  still refuses and requires an explicit decision, same as before.
+- **Why `remove` and not `adopt`:** the user's reasoning — removed tracks
+  are still sitting in the library pool and can be re-added, where `adopt`
+  would silently commit untracked tracks to the index forever.
+- **How:** `cli.py`'s `_run_sync_body` records a `remove` decision via
+  `apply_device_decision` and re-runs `plan_sync` once, so the new plan
+  proposes removing those tracks (through the existing `to_remove` /
+  `--allow-removals` machinery) instead of leaving them stuck in limbo.
+  Factored the plan computation into a local `_compute_plan()` helper shared
+  by both the initial plan and this retry.
+- **Scope:** `--execute` alone is untouched (still refuses). Auto-sync always
+  runs with `--allow-removals` (see below), so it now never gets stuck on an
+  undecided device either. Rockbox has no seeding gate at all.
+- **Tests:** `test_run_sync_defaults_to_remove_for_seeding_gate_under_allow_removals`
+  in `tests/test_cli.py`; the existing message-format regression test now
+  uses plain `--execute` to isolate that check.
+
+## 2026-10-12: seeding-gate message had a stray quote; first real hit of the gate
+
+- **What happened:** john's real iPod hit the per-device seeding gate for the
+  first time (`FAIL: 641 track(s) on this iPod are not in 'john''s index;
+  choose remove or adopt...`) — expected, since every track synced before the
+  music-index feature existed counts as untracked until a decision is made.
+  The doubled `''` was a real bug: `cli.py` built the message with
+  `f"{profile.profile!r}'s index"` — `!r` already quotes the name (`'john'`),
+  so the literal `'s` right after produced `'john''s`.
+- **Fix:** drop the `!r`; the profile name needs no quoting here.
+- **Still open:** the decision for john's iPod (remove vs. adopt the 641
+  tracks) hasn't been made yet.
+- **Tests:** `test_run_sync_seeding_required_message_has_no_stray_quote` in
+  `tests/test_cli.py`.
+
+## 2026-10-05: podcast show notes sent to the iPod as plain text
+
+- **What changed:** episode descriptions are stored as the feed's HTML, but
+  the iPod displays "Description Text" as plain text, so tags showed up
+  literally. `shownotes.html_to_plaintext` converts at the device boundary
+  (`sync.py`'s `_load_podcast_feeds`): paragraphs and line breaks become
+  newlines, list items become `- ` lines, entities are decoded, script and
+  style content is dropped. The stored description keeps the original HTML.
+- **Open:** a sync only writes episodes it adds, so episodes already on a
+  device keep their HTML notes until they are re-added. Not verified live.
+- **Tests:** `tests/test_shownotes.py`.
+
+## 2026-10-05: per-profile music index with a per-iPod first-sync decision
+
+- **What changed:** music on a device is no longer the whole `library/music`
+  pool. Each profile keeps an additive `music_index` (every track it has ever
+  written), and each device serial has a `device_decisions` row: `remove` or
+  `adopt`. Undecided devices show their untracked tracks in the plan and
+  refuse to execute until the user chooses. The user's decision was: index
+  never shrinks; one index per profile; one decision per iPod; Rockbox skipped.
+- **Index scope:** `profile.music` is ignored for music on decided devices.
+  The index replaces it. Undecided devices still scan the whole pool, so the
+  plan sees what is really on them.
+- **Recording:** only tracks written by a successful execute are added to the
+  index (`record_index_writes`). Plan-only runs record nothing.
+- **Gates:** `_run_sync_body` refuses to execute while
+  `planned.seeding_required` is non-empty. The web GUI gets the same result
+  from `POST /api/profiles/{name}/device-decision`, which runs
+  `sync-orchestrator device-decision`.
+- **Known limit:** the decision is keyed by device serial, falling back to
+  FireWire GUID. Two identical iPods with no serial would share one decision.
+- **Tests:** `tests/test_music_index.py` covers the pure logic. The plan-level
+  path (engine matching, the full-pool first plan) still needs a live check on
+  nienie's iPod before it's trusted.
+- **Also fixed:** `test_activity` pruned against a fixed 2026-09-04 date, so it
+  started failing as the clock moved on. It now uses the current time.
+
+## Current state and open items (2026-10-03)
+
+- **Branch:** `web-gui-visual-refresh` holds all current work (latest pushed
+  commit `cf18051`). Main has PR #16 merged. Olive checks out the same branch.
+- **Deployed on olive:** the web backend is rebuilding for `cf18051` (playlist
+  relative entries, sysfs eject, backup-None fix). Verify the container is
+  recreated and running the build before testing.
+- **Open, waiting on the user:** a Compute plan for nienie on the Sync screen
+  (confirm `playlists_to_add` is 4 and `to_add` includes roughly 300 playlist
+  tracks) before any real sync.
+- **iPod state:** currently mounted read-only at `/media/ipod` on olive, which
+  blocks eject until it's unmounted. Firmware-on-connect is ruled out (snapshot
+  comparison matched). A read-write mount doesn't dirty the FAT (checked). The
+  09:40 backup abort is not yet explained. The safety check now logs exactly
+  which files changed, so the next abort will name them.
+- **udev auto-sync rules:** disabled on olive. Re-enable only after the plan
+  check above.
+- **Operational gotchas:** see `/home/john/Music/CLAUDE.md`.
+
+## 2026-10-03: plans refused on an unchanged iPod ("backup did not produce a snapshot")
+
+iOpenPod's backup returns None, not an error, when the device is unchanged
+since its newest snapshot (the "no changes since last snapshot" path). Our
+sync treated None as failure and refused to write, so every plan on an
+unchanged iPod failed, which is what the Compute plan run showed. Now None
+resolves to the newest existing snapshot (the rollback point). The sync
+still refuses when no snapshot exists at all.
+
+## 2026-10-03: the backup safety check now names the files that changed
+
+The 09:40 abort said only that "the iPod filesystem changed while its backup
+was being created". iOpenPod's check compares each file's size, mtime, ctime,
+device, and inode, plus the overall file set, and it reports neither which
+file nor which field. The sync now records a metadata snapshot (`stat` calls
+only, nothing read or written on the device) before the backup. If the check
+aborts, it takes another snapshot and logs every ADDED, REMOVED, or CHANGED
+file and the fields that changed, so the next abort says what moved.
+
+Earlier tests ruled out the read-write mount (the FAT stayed byte-identical
+through a read-write mount and unmount, and the clean flag held) and
+firmware-on-connect (a before and after manifest matched exactly).
+
+## 2026-10-03: playlist paths were namespace-specific, and eject needed a mount the container couldn't see
+
+Two regressions from the earlier fixes today, found with a plan-only sync
+and an eject attempt.
+
+1. **Plan didn't add the four nienie playlists.** Fetchers wrote host paths
+   (`/mnt/storage/vcpod/library/...`) to fix the bare-metal device sync. The
+   web GUI plans inside the container, which can't see `/mnt/storage`, so it
+   dropped those tracks silently. A path that's right in one namespace is
+   wrong in the other, so the fix can't be a per-writer rewrite.
+   - Fetchers now store **music-root-relative** entries (`Artist/...`, with
+     the music root being `library/music`). Relative paths mean the same thing
+     on the host and in the container, so no environment variable is needed
+     to write them.
+   - Follow-up (2026-10-03): the first version of the reader resolved entries
+     against `library/`, not `library/music/`, so every track came out as
+     `/data/library/gio_/...` and the plan found `to_add=0`. The reader now
+     stages against `library/music`. Checked: all 48 Rise Up entries resolve to
+     existing files in the container.
+   - The sync resolves each entry against its own library root. Old absolute
+     entries (container `/data/library/...` or host `HOST_LIBRARY_ROOT/...`)
+     are rebased, so existing playlists still work. A staging copy of the
+     playlists, with every entry absolute, is what iOpenPod reads.
+   - Note: the sync-orchestrator venv holds a copy of `common`, not a live
+     link. After any change to `common`, run
+     `uv sync --frozen --reinstall-package common` in that project, or the
+     old code keeps running.
+
+2. **Eject didn't find the iPod in the web GUI.** The eject route identified
+   the device by mount point, and the container doesn't see mounts made on
+   the host outside its bind mounts. The container does see the device itself
+   through sysfs (vendor "Apple", model "iPod"), plus `/dev/sdX`, `udisksctl`,
+   `busctl`, and `eject`.
+   - `find_ipod_block_devices()` finds iPods through sysfs and works whether or
+     not they're mounted. `eject_block_device()` tries UDisks2 Drive.Eject,
+     then the `eject` binary.
+   - `sync-orchestrator eject` ejects the connected iPod. It refuses with
+     more than one connected, since guessing would be risky.
+
+Tests: 2 new for staging and rebasing, 3 for the eject command and sysfs
+lookup, and the two fetcher tests that asserted absolute entries now assert
+library-relative ones. 593/593 workspace.
+
+## 2026-10-03: the web GUI's background polling could mount an iPod during a sync
+
+The first auto-sync after the eject change stopped at the backup safety
+check: "The iPod filesystem changed while its backup was being created".
+The eject-on-every-exit change worked (the iPod was ejected, and the
+"Device ejected" line printed before the traceback). The filesystem
+change itself had no read errors or resets behind it, so the drive was
+healthy.
+
+One candidate on our side: the web GUI polls `identify-device` for the
+sidebar footer and the Sync screen, and `identify-device` auto-mounts
+by default. A poll could mount the iPod while auto-sync was backing it
+up. The mount itself, a read-write mount that can update the FAT dirty
+flag, was another candidate. I couldn't confirm which one caused it.
+
+Fix: `identify_connected_devices` now passes `--no-mount` unless
+`mount=True`. `GET /api/device/identify` is read-only by default. Only
+the explicit "detect device" action on the Profiles screen mounts.
+Covered by a test that pins the default.
+
+Still open: whether the iPod's own firmware changes files on connect.
+If it does, the safety check will keep catching the device. That needs
+a before-and-after file comparison on a connect, and it's left for the
+next session.
+
+## 2026-10-03: UDisks2 ejection and a web GUI "Eject iPod" button
+
+The plain `eject` binary needs root, so ejecting from a normal user
+session needed sudo. UDisks2's `Drive.Eject` is the call a desktop file
+manager's eject button makes, and polkit authorizes it for a local
+desktop session and for root without a password. Confirmed live on
+olive: over SSH polkit answers "requires authentication but no agent
+is available", since an SSH session has no seat.
+
+- `device.py`: `eject_device` tries UDisks2 first (`udisksctl info` to
+  find the drive object, then `busctl call ... Drive Eject a{sv} 0`).
+  On any failure it falls back to the `eject` binary, which keeps the
+  current behavior for SSH users.
+- `sync-orchestrator eject --profile PATH`: ejects the matched iPod if
+  it's mounted. The web backend shells out to it.
+- `POST /api/profiles/{name}/eject`: refuses with 409 while a sync is
+  running for that profile, since an eject mid-sync is the unclean
+  unmount this prevents.
+- Sync screen: "Eject iPod" button beside the device status, enabled
+  only when the iPod is connected and no sync is running.
+
+Tests: 3 for the UDisks2 and fallback paths, 2 for the eject command,
+4 for the route. 590/590 workspace.
+
+Not yet verified live: a real eject through the button. The web
+container runs as root with the host D-Bus socket, so it should be
+authorized the same way the auto-sync unit is.
+
+## 2026-10-03: iPod ejected only on success, so failed runs left it mounted and dirty
+
+The FAT corruption behind the repair sessions traces to the same gap.
+`_run_sync` and `_run_rockbox_sync` ejected the iPod only at the very
+end of a successful run. Every early return (plan refused, backup
+aborted, a missing dependency) left the iPod mounted, and the user then
+unplugged it while dirty. The kernel logs show this exact pattern
+repeatedly: the "Volume was not properly unmounted" warnings on
+Sep 10, Sep 11, and Sep 29, each after a disconnect while mounted.
+
+Fix: both sync entry points now run their body inside a `try/finally`
+that calls `eject_device` on every exit path, unless `--skip-eject` is
+set. The success path's own eject is unchanged. If the device has
+already been ejected, the finally is a quiet no-op. Covered by two new
+tests: ejection on a failed plan, and no ejection when `--skip-eject`
+is set.
+
+Known gap, not yet addressed: auto-sync can auto-mount a device whose
+profile doesn't match, and leave it mounted when it gives up. That
+path needs its own eject before this is fully closed.
+
+## 2026-10-03: containerized playlist fetches wrote container paths, so bare-metal device syncs dropped every playlist track
+
+Found after an auto-sync wiped a real iPod down to 3 tracks. The
+nienie profile's playlists were all fetched, but the device plan saw
+only `to_add=3` with `playlists_to_add=4`: the 317 playlist entries
+resolved to nothing.
+
+Root cause: the fetchers (fetcher-apple, fetcher-ytmusic) run inside
+the Docker container, where the library is mounted at `/data/library`,
+and they wrote that container path into every .m3u8 entry. The
+bare-metal sync-orchestrator runs on the host, where `/data/library`
+does not exist, so it could not resolve any playlist track. Every
+profile's playlist files on the server (john: 1,528 entries, nienie:
+317) were affected. The earlier 1,028-track sync worked only because
+it ran from inside the container.
+
+Fix, config-driven rather than hardcoded so it works on any host:
+- `common/playlist.py`: `playlist_entry_path()` maps a track path under
+  the container's library root to `HOST_LIBRARY_ROOT` when that is set
+  (unset means identity, so every bare-metal install is unchanged).
+  `write_m3u8` also normalizes existing entries in additive mode, which
+  john's playlists use, so they don't keep dead container paths next
+  to the new host paths.
+- fetcher-apple / fetcher-ytmusic write host-mapped entries.
+- docker-compose: `HOST_LIBRARY_ROOT` passed to fetcher-apple,
+  fetcher-ytmusic, music-stack, fetch-scheduler, web-gui-backend (the
+  same host path the web GUI already uses for its own `HOST_*` values).
+
+Tests: 3 new for the helper, 1 for additive normalization. 216
+fetcher/common tests pass.
+
+## 2026-10-03: "Fetch now" button for the web GUI
+
+Requested after finding that the missing Apple Music playlist was
+the Apple mobile app not adding it to the library (the web app did,
+and it showed up immediately), so there was no way to force a fetch
+from the UI short of waiting for the scheduler.
+
+- `fetch-scheduler/loop.py`: `_process_profile` gained `force` (skips
+  only the is-due check, nothing else); new public `fetch_profile_now`
+  wraps it. Completion is recorded exactly as a scheduled fetch is, so
+  the scheduler doesn't immediately re-fetch the same targets.
+- `web-gui-backend`: `POST /api/profiles/{name}/fetch-now` (new
+  `routers/fetch_now.py`) — 404 for unknown profiles, 409 if the
+  profile's fetch lock is already held (same `FileLock` the scheduler
+  uses, so a manual fetch can't overlap a scheduled one). Depends on
+  `fetch-scheduler` as a workspace package; Dockerfile now also copies
+  `library-manager`, `music-stack-cli`, `fetch-scheduler` into the
+  image so the workspace sync resolves.
+- `Sources.tsx`: "Fetch now" button next to Refresh, busy state while
+  the request runs, short result summary afterward.
+
+Tests: 2 new in `fetch-scheduler` (forced fetch runs when nothing is
+due; completion recorded), 2 new route tests in `web-gui-backend`.
+582/582 root workspace.
+
+Not live-clicked on the real server: a forced fetch genuinely downloads
+the profile's full selection, so triggering it against real data is
+left to the user rather than done as a verification step.
+
+## 2026-10-03: Apple Music track counts always 0, and no way to retry a newly-created playlist without switching tabs
+
+Reported as "I just added a new playlist on Apple Music, it doesn't
+show up as selectable." Investigated live against the real `john`
+profile's real Apple Music account on `olive` (real cookies, real API
+calls) rather than guessing -- two separate, real findings:
+
+1. **The missing new playlist itself is not a bug in this project.**
+   `get_library_playlists`' own response included `"meta": {"total":
+   48}`, and this project's own listing returned exactly 48 playlists —
+   i.e. Apple's own `/v1/me/library/playlists` endpoint genuinely hasn't
+   indexed the just-created playlist yet at the moment it was checked.
+   This is a known, real Apple Music API eventual-consistency gap, not
+   something `fetcher_apple`/the web GUI can fix. The real, missing
+   piece was that `Sources.tsx` had no way to retry at all beyond
+   switching tabs away and back (which happens to force a re-fetch via
+   its own `useEffect`, but isn't an obvious or intentional affordance)
+   — added an explicit "Refresh" button.
+2. **Every Apple Music playlist's track count showed as 0, always** —
+   confirmed live: `get_library_playlists`' response items never carry
+   a `trackCount` attribute *at all* (not conditionally absent like
+   ytmusicapi's equivalent field, see the 2026-10-01 entry above —
+   genuinely never present in the real response shape), so
+   `fetcher_apple.api.list_playlists`'s `attrs.get("trackCount", 0)`
+   was unconditionally reading the default every single time. The real
+   count only exists via a separate per-playlist request
+   (`get_library_playlist(library_id, include="tracks", limit=1)`,
+   whose `relationships.tracks.meta.total` gives it without needing to
+   fetch more than one actual track) — confirmed live, and confirmed
+   that request needs the library-internal `p.*` id
+   (`item["id"]`), not the `pl.*` catalog id `_playlist_source_id`
+   prefers for the id returned to callers (404s on the latter).
+
+Fixed: `list_playlists` now issues one bounded-concurrency (8 at a
+time — unbounded risks Apple's own rate limiting, fully sequential
+noticeably slows a large library) per-playlist request for the real
+count, same shape as the YTMusic fix. `Sources.tsx` gained a "Refresh"
+button (previously nonexistent — the only way to re-fetch was an
+incidental side effect of switching tabs).
+
+New tests: 2 for `fetcher-apple` (bulk-listing's attribute explicitly
+ignored even if present; a failed per-playlist request falls back to
+0 rather than raising), 4 existing ones updated for the new fixture
+shape. 578/578 root workspace passing. Live-verified against the real
+`john` account on `olive` after deploy: all 48 playlists now show real,
+non-zero counts (e.g. "ALT CTRL" → 81, exactly matching the raw
+`relationships.tracks.meta.total` value confirmed earlier against the
+same real playlist) — 0 out of 48 still reading 0. The whole listing
+(48 real extra per-playlist requests at 8-way bounded concurrency) took
+6.6 seconds end to end, not noticeably slower than before. The new
+playlist still hadn't appeared as of this check (count still exactly
+48) — consistent with the Apple-side propagation-lag explanation above,
+not a regression; the new Refresh button is there for the user to
+retry once it has.
+
+## 2026-10-01: Music sources page — track counts silently showing 0, and an already-selected public YouTube playlist vanishing from the table
+
+Requested directly: two real bugs on the Music sources page.
+
+1. **Track counts often showed as 0/blank.** `fetcher_ytmusic.api.
+   list_playlists` read its `track_count` from `get_library_playlists()`'s
+   own `"count"` field, defaulting to `0` when absent
+   (`p.get("count", 0)`). Confirmed against ytmusicapi's real source
+   (`parsers/browsing.py`'s `parse_playlist`): that field is parsed from
+   YouTube Music's own UI subtitle text, and is only ever set when a
+   playlist's subtitle happens to have an exact 3-run shape (title +
+   count + author) — absent for plenty of real playlists (any without a
+   description, for one), which this project's own code then silently
+   read as a confident "0 tracks" instead of "unknown." Fixed: when the
+   cheap listing call doesn't already have a usable count, one extra
+   `get_playlist(id, limit=1)` call per such playlist fetches the real
+   `trackCount` field — the exact same field/call `get_playlist_summary`
+   (the "add a public playlist by link" path) already relied on, now
+   applied here too. New `_library_track_count()` helper + 5 new tests
+   covering present/missing/unparseable count, and the detail-fetch
+   itself failing.
+2. **A previously-selected public YouTube playlist (added via "Add a
+   public playlist by link," not in the account's own library) vanished
+   from the table on every reload/tab-revisit**, even though it was
+   still genuinely selected and saved in the profile's YAML. Root cause:
+   `Sources.tsx`'s table only ever rendered `listProfileYtmusicPlaylists`'s
+   result (the account's own library listing) plus whatever was added
+   *this session* via the URL-resolve flow — nothing re-populated an
+   already-saved-but-not-in-library entry on a fresh load. Fixed:
+   `loadPlaylists` now diffs `draft.playlists` against the fetched
+   library list for the ytmusic tab, and resolves (via the same
+   `resolveYtmusicPlaylist` call the "add by link" flow already uses)
+   any selected entry missing from it, merging the result in — falling
+   back to the name already on file (rather than disappearing again) if
+   the live resolve itself fails (playlist made private/deleted since).
+
+Both only affect YouTube Music — Apple Music's own `trackCount` comes
+from a real structured API field (not a UI-subtitle-parsed one), and
+there's no "add by link" flow for it to need this kind of merge.
+
+Live-verified (no frontend test framework exists in this project, same
+as the 2026-10-01 visual-cleanup entry above): `chromium --headless` +
+`selenium` driving a locally-started backend with a monkeypatched
+`list_ytmusic_playlists`/`get_ytmusic_playlist_summary` (real
+credentials aren't available in this environment) and a profile with a
+playlist pre-selected under a stale name/id not present in the fake
+library listing. Confirmed: the row appears, checked, with its current
+live-resolved name/track count/owner, not the stale saved name; real
+track counts render for every row. This same pass also caught a real,
+separate bug in the just-landed sidebar dropdown (see the entry above):
+a native `<select>` with no option matching its controlled `value`
+silently falls back to *displaying* its first real option as selected
+(a browser default, not a real selection event) -- `store.selected`
+was still `null` and the rest of the app still correctly treated no
+profile as selected, but the dropdown itself misleadingly looked
+chosen. Fixed by rendering a real, disabled placeholder `<option
+value="">` until a profile is actually selected.
+
+## 2026-10-01: sidebar profile picker + Audiobooks table visual cleanup
+
+Requested directly: the sidebar's profile picker (a vertical list of
+per-profile rows with a colored dot) added visual clutter, and the
+Audiobooks screen's discover table could visibly break/reflow row to
+row.
+
+- `App.tsx`/`App.css`: the profile picker is now a single `<select>`
+  dropdown instead of a list of rows -- matches every other selection
+  UI in this app already using a plain `<select>` (`ScheduleEditor.tsx`,
+  `Podcasts.tsx`, `ExternalLibrary.tsx`, ...), and the per-profile
+  colored-dot styling (`profileColor()`) is dropped along with it, in
+  keeping with the stated goal of less visual noise, not more. The
+  redundant "editing: `<profile>`" line that used to sit at the bottom
+  of the sidebar is removed too, now that the dropdown's own selected
+  value is the one place that information lives. Its CSS had
+  `margin-top: auto` pinning it (and the status footer below it) to the
+  bottom of the sidebar's flex column -- moved onto the status footer's
+  own class so it stays pinned now that the line that used to carry it
+  is gone.
+- `AudiobookDiscovery.tsx`/`App.css`: the discover table's Status column
+  used `display: flex` directly on a `<td>`, which fights the browser's
+  normal table auto-layout -- combined with real row-to-row differences
+  in content length (a messy real drop-zone folder name can run 80+
+  characters; "Already imported (3 days ago)" vs. "New — needs
+  processing" are different lengths), columns visibly reflowed/broke
+  between rows. Fixed with `table-layout: fixed` + explicit per-column
+  widths, the flex layout moved onto a `<span>` inside the cell instead
+  of the cell itself, and long Book/Status text now truncates with an
+  ellipsis (full text still available via a `title` attribute/native
+  tooltip) rather than breaking the row. The button column is
+  deliberately excluded from the ellipsis treatment (`overflow: visible`)
+  since clipping a button mid-label looks broken, not tidy -- it's sized
+  wide enough that this shouldn't matter in practice.
+
+Live-verified: no browser automation tool was available in prior
+sessions this project touched the frontend in, so this is the first
+time a change here was actually screenshotted rather than reasoned
+about from CSS alone -- `chromium --headless` + `selenium` (both
+already present on this machine; `uv run --with selenium` pulled in the
+Python package on the fly) driving a locally-started backend serving
+the real built frontend, against real multi-profile config and a real
+drop-zone containing the actual 100+-character "How to Hide an
+Empire..." folder name from the 2026-09-30 entry above as a genuine
+worst-case. Confirmed: the dropdown renders and actually switches the
+selected profile/draft state on selection; the long real book name
+truncates cleanly with an ellipsis instead of breaking the table, and
+the "Process into library" button stays consistently sized/aligned
+across rows regardless of status-text length.
+
 ## 2026-09-30: real audiobook imports were getting stuck unmatched — messy real folder names, a too-strict match threshold, and no fallback
 
 Requested directly: real imports were failing on the actual homelab

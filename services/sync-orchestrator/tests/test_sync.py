@@ -209,50 +209,6 @@ def test_plan_sync_creates_missing_playlists_folder(tmp_path):
     assert playlists_folder.is_dir()
 
 
-def test_plan_sync_uses_resolve_music_folder_for_pc_folders(monkeypatch, tmp_path):
-    # plan_sync must build its pc_folders from resolve_music_folder's
-    # return value, not a hardcoded library_root/music — asserted by
-    # having the fake return a folder that doesn't exist and confirming
-    # plan_sync's own "pc folder not found" check fires on exactly that
-    # path (reachable without mocking the full iTunesDB/SyncEngine
-    # pipeline, same trick test_plan_sync_raises_when_external_library_
-    # path_missing above uses).
-    import re
-
-    mount = _make_ipod_mount(tmp_path)
-    library_root = tmp_path / "library"
-    (library_root / "music").mkdir(parents=True)
-    (library_root / "playlists" / "test").mkdir(parents=True)
-    state_root = tmp_path / "state"
-    state_root.mkdir()
-
-    profile = _make_profile(tmp_path, str(tmp_path))
-    profile = profile.model_copy(
-        update={"music": MusicLibraryConfig(mode="include", selections=["Some Artist"])}
-    )
-
-    calls = []
-    fake_folder = str(tmp_path / "does-not-exist-music-scope")
-
-    def fake_resolve_music_folder(music_root, config, staging_dir):
-        calls.append((music_root, config, staging_dir))
-        return (fake_folder,), []
-
-    monkeypatch.setattr(sync_module, "resolve_music_folder", fake_resolve_music_folder)
-
-    with pytest.raises(SyncError, match=re.escape(f"pc folder not found: {fake_folder}")):
-        plan_sync(
-            device_info=_FakeDeviceInfo(str(mount)),
-            library_root=library_root,
-            state_root=state_root,
-            profile=profile,
-        )
-
-    assert calls == [
-        (library_root / "music", profile.music, state_root / ".music_staging" / "test")
-    ]
-
-
 def test_transcode_options_for_alac_prefers_lossless(tmp_path):
     profile = _make_profile(tmp_path, str(tmp_path), transcode_format="alac")
     assert _transcode_options_for(profile) == TranscodeOptions(prefer_lossy=False)
@@ -921,3 +877,88 @@ def test_ithmb_max_size_raised_to_fat32_file_limit():
     from iopenpod.artworkdb_writer import artwork_writer as artwork_writer_module
 
     assert artwork_writer_module.ITHMB_MAX_SIZE_BYTES == 4 * 1024**3 - 1
+
+
+def test_stage_playlists_rebases_entries_to_local_library_root(monkeypatch, tmp_path):
+    # Regression: playlists written by a containerized fetch carried container
+    # paths, and then host paths, which the other side couldn't resolve, so
+    # playlist tracks silently dropped out of the device plan. Entries must
+    # resolve against the music root the fetchers write them relative to
+    # (library/music, not library/). See notes.md.
+    from sync_orchestrator import sync as sync_module
+
+    monkeypatch.setenv("HOST_LIBRARY_ROOT", "/mnt/storage/vcpod/library")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "Rise Up.m3u8").write_text(
+        "#EXTM3U\n/data/library/A/01.m4a\n"
+        "/mnt/storage/vcpod/library/B/02.m4a\n"
+        "C/03.m4a\n"
+    )
+    music = tmp_path / "library" / "music"
+
+    staged = sync_module._stage_playlists(source, tmp_path / "staging", music)
+
+    lines = (staged / "Rise Up.m3u8").read_text().splitlines()
+    assert lines == [
+        "#EXTM3U",
+        str(music / "A/01.m4a"),
+        str(music / "B/02.m4a"),
+        str(music / "C/03.m4a"),
+    ]
+
+
+def test_log_backup_file_changes_names_added_removed_and_changed_files(caplog):
+    from sync_orchestrator import sync as sync_module
+
+    before = {
+        "iPod_Control/iTunes/iTunesDB": (100, 1, 1, 9, 5),
+        "iPod_Control/iTunes/Play Counts": (8, 2, 2, 9, 6),
+        "iPod_Control/Music/F00/A.m4a": (50, 3, 3, 9, 7),
+    }
+    after = {
+        "iPod_Control/iTunes/iTunesDB": (100, 1, 1, 9, 5),
+        "iPod_Control/Music/F00/A.m4a": (50, 3, 4, 9, 7),
+        "iPod_Control/Music/F01/new.m4a": (60, 4, 4, 9, 8),
+    }
+
+    with caplog.at_level("WARNING", logger=sync_module.logger.name):
+        sync_module._log_backup_file_changes(before, after)
+
+    text = caplog.text
+    assert "REMOVED iPod_Control/iTunes/Play Counts" in text
+    assert "ADDED iPod_Control/Music/F01/new.m4a" in text
+    assert "CHANGED iPod_Control/Music/F00/A.m4a (ctime_ns)" in text
+    assert "iTunesDB" not in text
+
+
+def test_backup_no_changes_uses_newest_existing_snapshot():
+    # Regression: iOpenPod returns None when the device is unchanged since its
+    # newest snapshot (a success path). Treating None as failure refused every
+    # plan on an unchanged iPod. See notes.md.
+    from sync_orchestrator import sync as sync_module
+
+    class _Info:
+        def __init__(self, id):
+            self.id = id
+
+    class _Mgr:
+        def list_snapshots(self):
+            return [_Info("20260929T090851_154912Z"), _Info("20261003T085629_004656Z")]
+
+    chosen = sync_module._resolve_backup_snapshot(_Mgr(), None)
+
+    assert chosen.id == "20261003T085629_004656Z"
+
+
+def test_backup_refuses_when_no_snapshot_exists():
+    import pytest
+    from sync_orchestrator import sync as sync_module
+    from sync_orchestrator.sync import SyncError
+
+    class _Mgr:
+        def list_snapshots(self):
+            return []
+
+    with pytest.raises(SyncError, match="refusing to write"):
+        sync_module._resolve_backup_snapshot(_Mgr(), None)

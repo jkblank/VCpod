@@ -103,15 +103,6 @@ const GROUP_LABEL_BY_SCREEN: Record<ScreenId, string> = NAV_GROUPS.reduce(
   {} as Record<ScreenId, string>,
 )
 
-// Deterministic per-profile color for the sidebar picker's dot -- no
-// per-profile color field exists in config, so this is display-only,
-// derived from the name itself (stable across reloads, no state needed).
-function profileColor(name: string): string {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) % 360
-  return `hsl(${hash}, 55%, 62%)`
-}
-
 function StatusFooter() {
   const [setup, setSetup] = useState<AutoSyncSetup | null>(null)
   const [setupError, setSetupError] = useState(false)
@@ -164,23 +155,37 @@ export default function App() {
         </div>
 
         <div className="nav-group-label">Profile</div>
-        <div className="nav-profile-picker">
-          {Object.keys(store.profiles).length === 0 && (
-            <div className="nav-profile-empty muted">no profiles yet</div>
-          )}
-          {Object.keys(store.profiles)
-            .sort()
-            .map((name) => (
-              <button
-                key={name}
-                className={`nav-profile-row${store.selected === name ? ' active' : ''}`}
-                onClick={() => store.select(name)}
-              >
-                <span className="profile-dot" style={{ background: profileColor(name) }} />
-                {name}
-              </button>
-            ))}
-        </div>
+        {Object.keys(store.profiles).length === 0 ? (
+          <div className="nav-profile-empty muted">no profiles yet</div>
+        ) : (
+          <select
+            className="nav-profile-select"
+            value={store.selected ?? ''}
+            onChange={(e) => store.select(e.target.value)}
+          >
+            {/* A real <option value=""> is required here -- without it, a
+                native <select> with no matching option for the current
+                `value` silently falls back to displaying its *first* real
+                option as selected (a browser default, not a real .select()
+                call), which looked exactly like a profile had already been
+                chosen even though store.selected was still null and the
+                rest of the app still showed "select a profile first".
+                Confirmed live. Disabled, and only rendered pre-selection,
+                so it can't be re-chosen once a real profile is picked. */}
+            {!store.selected && (
+              <option value="" disabled>
+                Select a profile…
+              </option>
+            )}
+            {Object.keys(store.profiles)
+              .sort()
+              .map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+          </select>
+        )}
 
         {NAV_GROUPS.map((group) => (
           <div key={group.label}>
@@ -203,11 +208,6 @@ export default function App() {
           </div>
         ))}
 
-        {store.draft && (
-          <div className="nav-editing">
-            editing: <strong>{store.draft.profile}</strong>
-          </div>
-        )}
         <StatusFooter />
       </nav>
       <main className="main">

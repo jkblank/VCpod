@@ -30,7 +30,7 @@ import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +66,7 @@ from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
 from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
 from iopenpod.podcasts.podcast_sync import build_podcast_sync_plan
 from iopenpod.sync.audio_fingerprint import FingerprintCache
+from iopenpod.device.write_guard import DeviceWriteSafetyError
 from iopenpod.sync.backup_manager import BackupManager, BackupProgress, SnapshotInfo
 from iopenpod.sync.core.engine import SyncEngine
 from iopenpod.sync.core.models import (
@@ -77,17 +78,25 @@ from iopenpod.sync.core.models import (
 from iopenpod.sync.mapping import MappingManager
 from iopenpod.sync.transcoder import TranscodeOptions
 
+from sync_orchestrator.music_index import (
+    DECISION_ADOPT,
+    build_index_staging,
+    playlist_track_keys,
+    record_music_writes,
+    under_music_root,
+    untracked_tracks,
+)
 from sync_orchestrator.playstate import resolve_played_states
 from sync_orchestrator.podcast_artwork_backfill import (
     build_podcast_artwork_backfill_items,
     exclude_conflicting_with_removal,
 )
 from sync_orchestrator.podcast_removal import build_podcast_removal_items
+from sync_orchestrator.shownotes import html_to_plaintext
 from sync_orchestrator.selection import (
     build_media_folders,
     build_staging_dir,
     resolve_audiobooks_folder,
-    resolve_music_folder,
     resolve_selected_files,
 )
 
@@ -390,7 +399,7 @@ def _load_podcast_feeds(
             PodcastEpisode(
                 guid=row["episode_uuid"],
                 title=row["title"] or Path(row["local_path"]).stem,
-                description=row["description"],
+                description=html_to_plaintext(row["description"]),
                 audio_url=row["audio_url"],
                 duration_seconds=row["duration_seconds"],
                 episode_number=row["episode_number"],
@@ -640,6 +649,12 @@ class PlannedSync:
     # Count of local episodes whose play state changed vs. what was
     # already recorded, per resolve_played_states — see playstate.py.
     play_states_updated: int = 0
+    # Tracks on the device with no first-sync decision yet; execute refuses
+    # while this is non-empty. See music_index.py.
+    seeding_required: list[str] = dataclasses.field(default_factory=list)
+    index_db_path: str = ""
+    device_key: str = ""
+    music_root: str = ""
 
 
 # common.models.SyncSettings.transcode_format is an unconstrained `str` in
@@ -670,6 +685,83 @@ def _transcode_options_for(profile: ProfileConfig) -> TranscodeOptions:
             f"{sorted(_TRANSCODE_FORMAT_TO_PREFER_LOSSY)} are supported"
         ) from None
     return TranscodeOptions(prefer_lossy=prefer_lossy)
+
+
+def _resolve_backup_snapshot(backup_mgr, snapshot):
+    """iOpenPod returns None (not an error) when the device is unchanged since
+    its newest snapshot -- that snapshot is then the rollback point. Refuse
+    only when there is no snapshot at all. See notes.md."""
+    if snapshot is not None:
+        return snapshot
+    existing = backup_mgr.list_snapshots()
+    if not existing:
+        raise SyncError("backup did not produce a snapshot; refusing to write")
+    return max(existing, key=lambda info: info.id)
+
+
+def _device_file_states(root: Path) -> dict[str, tuple[int, int, int, int, int]]:
+    """Metadata for every file on the iPod, keyed by its path relative to
+    the root. Only stat() calls -- nothing is read or written on the device.
+    Used to name exactly which files a safety abort saw change."""
+    import os
+
+    states: dict[str, tuple[int, int, int, int, int]] = {}
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                st = os.stat(full, follow_symlinks=False)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, root)
+            states[rel] = (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino)
+    return states
+
+
+def _log_backup_file_changes(before: dict, after: dict) -> None:
+    """Names every file that was added, removed, or changed (and which field)
+    between two _device_file_states snapshots, so a backup safety abort says
+    what actually moved instead of only that something did."""
+    fields = ("size", "mtime_ns", "ctime_ns", "dev", "ino")
+    lines: list[str] = []
+    for rel in sorted(set(before) | set(after)):
+        if rel not in after:
+            lines.append(f"  REMOVED {rel}")
+        elif rel not in before:
+            lines.append(f"  ADDED {rel}")
+        elif before[rel] != after[rel]:
+            changed = [f for f, a, b in zip(fields, before[rel], after[rel]) if a != b]
+            lines.append(f"  CHANGED {rel} ({', '.join(changed)})")
+    if lines:
+        logger.warning("backup safety check: %d file(s) changed during backup:\n%s",
+                       len(lines), "\n".join(lines))
+    else:
+        logger.warning("backup safety check: no file-level differences found")
+
+
+def _stage_playlists(source: Path, staging: Path, music_root: Path) -> Path:
+    """Rebuilds `staging` from `source`, rewriting every .m3u8 entry to an
+    absolute path under music_root (entries are relative to the music root,
+    the same root the fetchers write them against). Rebuilt every plan so the
+    staging copy never goes stale behind a fetch."""
+    import os
+    import shutil
+
+    from common.playlist import resolve_playlist_entry
+
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    host_root = os.environ.get("HOST_LIBRARY_ROOT") or None
+    for playlist in sorted(source.glob("*.m3u8")):
+        entries = []
+        for line in playlist.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            entries.append(resolve_playlist_entry(line, music_root, host_root))
+        (staging / playlist.name).write_text("#EXTM3U\n" + "\n".join(entries) + "\n")
+    return staging
 
 
 def plan_sync(
@@ -715,15 +807,6 @@ def plan_sync(
         state_root / ".audiobooks_staging" / profile.profile,
     )
 
-    # Only narrows the device's *general* library beyond this profile's
-    # own playlists — a playlist's own tracks are always included
-    # regardless (see resolve_music_folder's docstring for why removing
-    # library/music from pc_folders never drops a playlist's tracks).
-    music_folders, unresolved_music_selections = resolve_music_folder(
-        library_root / "music",
-        profile.music,
-        state_root / ".music_staging" / profile.profile,
-    )
 
     # Unlike every other pc_folder above, this one has no resolve_*
     # helper of its own to guarantee it exists first -- music-stack-cli
@@ -736,10 +819,38 @@ def plan_sync(
     # without this mkdir. Confirmed live: config/profiles/Tobie.yaml.
     playlists_folder = library_root / "playlists" / profile.profile
     playlists_folder.mkdir(parents=True, exist_ok=True)
+    # Playlists are read from a staging copy with every entry resolved to
+    # this sync's own library root -- the fetch may have written them
+    # relative, or with a container or host path, and this process can only
+    # open the files at its own mount. See notes.md.
+    playlists_staging = _stage_playlists(
+        playlists_folder,
+        state_root / ".playlists_staging" / profile.profile,
+        library_root / "music",
+    )
+
+    # Music on a device is this profile's index (see music_index.py), not
+    # profile.music. Until a device has a first-sync decision, the whole pool
+    # is scanned so the plan sees what is already on it.
+    music_root = library_root / "music"
+    device_key = device_info.serial or device_info.firewire_guid or ""
+    index_db_path = state_root / f"{profile.profile}.sqlite"
+    with StateDB(index_db_path) as index_db:
+        device_decision = index_db.get_device_decision(device_key)
+        index_tracks = index_db.index_tracks()
+    unresolved_music_selections: list[str] = []
+    if device_decision is None:
+        music_folders: tuple[str, ...] = (str(music_root),) if music_root.is_dir() else ()
+    else:
+        index_staging = state_root / ".music_index_staging" / profile.profile
+        missing_indexed = build_index_staging(index_staging, music_root, index_tracks)
+        for key in missing_indexed:
+            logger.warning("indexed track missing from library, not synced: %s", key)
+        music_folders = (str(index_staging),)
 
     pc_folders = (
         *music_folders,
-        str(playlists_folder),
+        str(playlists_staging),
         *external_library_folders,
         *audiobooks_folders,
         *extra_pc_folders,
@@ -756,16 +867,20 @@ def plan_sync(
     )
     snapshot: SnapshotInfo | None = None
     if not skip_backup:
-        snapshot = backup_mgr.create_backup(
-            ipod_path,
-            progress_callback=(
-                _backup_progress_adapter(progress_callback) if progress_callback else None
-            ),
-            reported_volume_format=device_info.reported_volume_format,
-            expected_volume_identity_key=device_info.volume_identity_key,
-        )
-        if snapshot is None:
-            raise SyncError("backup did not produce a snapshot; refusing to write")
+        before_backup = _device_file_states(Path(ipod_path))
+        try:
+            snapshot = backup_mgr.create_backup(
+                ipod_path,
+                progress_callback=(
+                    _backup_progress_adapter(progress_callback) if progress_callback else None
+                ),
+                reported_volume_format=device_info.reported_volume_format,
+                expected_volume_identity_key=device_info.volume_identity_key,
+            )
+        except DeviceWriteSafetyError:
+            _log_backup_file_changes(before_backup, _device_file_states(Path(ipod_path)))
+            raise
+        snapshot = _resolve_backup_snapshot(backup_mgr, snapshot)
 
     before = load_ipod_library(itunesdb_path)
     if before is None:
@@ -910,6 +1025,22 @@ def plan_sync(
                     if item.ipod_track
                 )
 
+    seeding_required: list[str] = []
+    if device_decision is None:
+        matched = {
+            key
+            for pc_path in plan.matched_pc_paths.values()
+            if (key := under_music_root(pc_path, music_root))
+        }
+        seeding_required = untracked_tracks(
+            matched, index_tracks, playlist_track_keys(playlists_staging, music_root)
+        )
+        with StateDB(index_db_path) as index_db:
+            if seeding_required:
+                index_db.set_pending_untracked(device_key, seeding_required)
+            else:
+                index_db.set_device_decision(device_key, DECISION_ADOPT, datetime.now(timezone.utc))
+
     return PlannedSync(
         plan=plan,
         device_info=device_info,
@@ -923,7 +1054,25 @@ def plan_sync(
         unresolved_music_selections=unresolved_music_selections,
         unresolved_audiobook_selections=unresolved_audiobook_selections,
         play_states_updated=play_states_updated,
+        seeding_required=seeding_required,
+        index_db_path=str(index_db_path),
+        device_key=device_key,
+        music_root=str(music_root),
     )
+
+
+def record_index_writes(planned: PlannedSync) -> int:
+    """Adds the music this run wrote to the profile's index. Called only
+    after a successful execute."""
+    if not planned.index_db_path:
+        return 0
+    with StateDB(planned.index_db_path) as db:
+        return record_music_writes(
+            db,
+            (item.source_path for item in planned.plan.to_add),
+            Path(planned.music_root),
+            datetime.now(timezone.utc),
+        )
 
 
 def execute_sync(

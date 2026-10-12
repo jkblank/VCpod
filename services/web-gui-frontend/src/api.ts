@@ -45,7 +45,9 @@ export type SelectionConfig = {
 }
 
 export type ExternalLibraryConfig = SelectionConfig & { path: string }
-export type AudiobooksConfig = SelectionConfig
+export type AudiobooksConfig = Omit<SelectionConfig, 'mode'> & {
+  mode: 'include' | 'exclude' | 'none'
+}
 
 // Profile carries one more nested section (music, the general-library
 // scoping) -- passed through untyped via the index signature, since
@@ -162,6 +164,9 @@ export type SyncPlanSummary = {
   to_remove_sample_more: number
   metadata_field_changes: Record<string, number>
   duplicates_count: number
+  seeding_device_key: string
+  seeding_required_count: number
+  seeding_required_sample: string[]
   playlists_to_add: string[]
   playlists_to_edit: string[]
   playlists_to_remove: string[]
@@ -328,7 +333,8 @@ export const api = {
   getGlobalConfig: () => request<GlobalConfig>('/api/global-config'),
   putGlobalConfig: (config: GlobalConfig) =>
     request<GlobalConfig>('/api/global-config', { method: 'PUT', body: JSON.stringify(config) }),
-  identifyDevice: () => request<{ devices: ConnectedDevice[] }>('/api/device/identify'),
+  identifyDevice: (mount = false) =>
+    request<{ devices: ConnectedDevice[] }>(`/api/device/identify?mount=${mount}`),
 
   listAppleMusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/apple-music/playlists'),
   listYtmusicPlaylists: () => request<PlaylistSummary[]>('/api/sources/ytmusic/playlists'),
@@ -367,6 +373,21 @@ export const api = {
   listProfileAppleMusicPlaylists: (profileName: string) =>
     request<PlaylistSummary[]>(
       `/api/profiles/${encodeURIComponent(profileName)}/sources/apple-music/playlists`,
+    ),
+  setDeviceDecision: (profileName: string, serial: string, decision: 'remove' | 'adopt') =>
+    request<{ recorded: boolean; decision: string; serial: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/device-decision`,
+      { method: 'POST', body: JSON.stringify({ serial, decision }) },
+    ),
+  ejectProfileDevice: (profileName: string) =>
+    request<{ ejected: boolean; message: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/eject`,
+      { method: 'POST' },
+    ),
+  fetchProfileNow: (profileName: string) =>
+    request<{ fetched: string[]; source_errors: string[]; errors: string[] }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/fetch-now`,
+      { method: 'POST' },
     ),
   listProfileYtmusicPlaylists: (profileName: string) =>
     request<PlaylistSummary[]>(

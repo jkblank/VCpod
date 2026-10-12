@@ -109,6 +109,7 @@ def _process_profile(
     dry_run: bool,
     lock_timeout: float,
     result: TickResult,
+    force: bool = False,
 ) -> None:
     roots = resolve_roots(library_root, state_root, profile.profile)
     targets = iter_fetch_targets(profile)
@@ -117,7 +118,8 @@ def _process_profile(
         due = [
             target
             for target in targets
-            if is_due(target.schedule, db.get_last_fetched(target.target_type, target.target_id), now)
+            if force
+            or is_due(target.schedule, db.get_last_fetched(target.target_type, target.target_id), now)
         ]
         if not due:
             return
@@ -160,6 +162,37 @@ def _process_profile(
             db.record_fetch(target.target_type, target.target_id, now)
             fetched_ids.append(target.target_id)
         result.fetched[profile.profile] = fetched_ids
+
+
+def fetch_profile_now(
+    *,
+    profile_name: str,
+    config_root: Path,
+    library_root: Path,
+    state_root: Path,
+    now: datetime,
+    lock_timeout: float = 1800,
+) -> TickResult:
+    """Fetches every target a profile has configured, ignoring each
+    target's schedule -- the web GUI's "Fetch now" button. Completion is
+    recorded exactly as a scheduled fetch would be, so the scheduler
+    doesn't immediately re-fetch the same targets on its next tick."""
+    result = TickResult()
+    global_config = load_global_config(config_root / "global.yaml")
+    profile = load_all_profiles(config_root / "profiles")[profile_name]
+    _process_profile(
+        profile=profile,
+        global_config=global_config,
+        config_root=config_root,
+        library_root=library_root,
+        state_root=state_root,
+        now=now,
+        dry_run=False,
+        lock_timeout=lock_timeout,
+        result=result,
+        force=True,
+    )
+    return result
 
 
 def _process_maintenance(
