@@ -1,5 +1,30 @@
 # Notes / Future Work
 
+## 2026-10-12: dangerous mode (--allow-removals) defaults undecided devices to "remove"
+
+- **What changed:** the per-device seeding gate used to refuse execute
+  unconditionally when a device had no `remove`/`adopt` decision yet, even
+  under `--allow-removals`. The user's call: `--allow-removals` ("dangerous
+  mode") already means the run is allowed to touch removals, so it should
+  never be blocked — an undecided device now defaults to `remove` and the
+  run proceeds, instead of failing. Plain `--execute` (no `--allow-removals`)
+  still refuses and requires an explicit decision, same as before.
+- **Why `remove` and not `adopt`:** the user's reasoning — removed tracks
+  are still sitting in the library pool and can be re-added, where `adopt`
+  would silently commit untracked tracks to the index forever.
+- **How:** `cli.py`'s `_run_sync_body` records a `remove` decision via
+  `apply_device_decision` and re-runs `plan_sync` once, so the new plan
+  proposes removing those tracks (through the existing `to_remove` /
+  `--allow-removals` machinery) instead of leaving them stuck in limbo.
+  Factored the plan computation into a local `_compute_plan()` helper shared
+  by both the initial plan and this retry.
+- **Scope:** `--execute` alone is untouched (still refuses). Auto-sync always
+  runs with `--allow-removals` (see below), so it now never gets stuck on an
+  undecided device either. Rockbox has no seeding gate at all.
+- **Tests:** `test_run_sync_defaults_to_remove_for_seeding_gate_under_allow_removals`
+  in `tests/test_cli.py`; the existing message-format regression test now
+  uses plain `--execute` to isolate that check.
+
 ## 2026-10-12: seeding-gate message had a stray quote; first real hit of the gate
 
 - **What happened:** john's real iPod hit the per-device seeding gate for the

@@ -682,7 +682,7 @@ def test_run_sync_seeding_required_message_has_no_stray_quote(monkeypatch, capsy
     )
 
     result = cli_module._run_sync(
-        _run_sync_args(allow_removals=True),
+        _run_sync_args(allow_removals=False),
         profile,
         profile_path=Path("/config/profiles/john.yaml"),
         config_root=Path("/config"),
@@ -693,6 +693,58 @@ def test_run_sync_seeding_required_message_has_no_stray_quote(monkeypatch, capsy
     assert execute_calls == []
     assert "john's index" in out
     assert "''" not in out
+
+
+def test_run_sync_defaults_to_remove_for_seeding_gate_under_allow_removals(
+    monkeypatch, tmp_path
+):
+    # "Dangerous mode" (--allow-removals) must never be blocked by an
+    # undecided device: it defaults to "remove" and proceeds, rather than
+    # refusing like a plain --execute does. See notes.md.
+    profile = SimpleNamespace(
+        profile="john",
+        device=SimpleNamespace(match_by="volume_label", match_value="TEST"),
+        sync=SimpleNamespace(push_play_status_back=False),
+    )
+    monkeypatch.setattr(cli_module, "mount_candidate_devices", lambda: [])
+    monkeypatch.setattr(
+        cli_module, "find_matching_device",
+        lambda match: SimpleNamespace(
+            path="/mnt/ipod", model_family="iPod", generation="5.5th Gen",
+            model_number="MA450", capacity="80GB",
+        ),
+    )
+    undecided = _fake_planned(seeding_required=["A/1.m4a"] * 641, device_key="SER1")
+    decided = _fake_planned(device_key="SER1")
+    plan_calls = []
+    monkeypatch.setattr(
+        cli_module, "plan_sync",
+        lambda **kwargs: plan_calls.append(1) or (undecided if len(plan_calls) == 1 else decided),
+    )
+    decision_calls = []
+    monkeypatch.setattr(
+        cli_module, "apply_device_decision",
+        lambda db, device_key, decision, when: decision_calls.append((device_key, decision)),
+    )
+    execute_calls = []
+    monkeypatch.setattr(
+        cli_module, "execute_sync",
+        lambda *a, **k: execute_calls.append(a) or (
+            SimpleNamespace(summary="done", tracks_added=0), {"mhlt": []}
+        ),
+    )
+
+    result = cli_module._run_sync(
+        _run_sync_args(allow_removals=True, state_root=str(tmp_path)),
+        profile,
+        profile_path=Path("/config/profiles/john.yaml"),
+        config_root=Path("/config"),
+    )
+
+    assert result == 0
+    assert decision_calls == [("SER1", "remove")]
+    assert len(plan_calls) == 2
+    assert len(execute_calls) == 1
 
 
 def test_run_sync_auto_mounts_before_finding_device(monkeypatch, capsys):

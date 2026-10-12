@@ -33,7 +33,7 @@ from sync_orchestrator.device import (
 )
 from sync_orchestrator.plan_json import plan_summary, result_summary
 from sync_orchestrator.rockbox_sync import RockboxSyncError, execute_rockbox_sync, plan_rockbox_sync
-from sync_orchestrator.music_index import DECISIONS, apply_device_decision
+from sync_orchestrator.music_index import DECISION_REMOVE, DECISIONS, apply_device_decision
 from sync_orchestrator.sync import SyncError, execute_sync, plan_sync, record_index_writes
 
 logger = logging.getLogger(__name__)
@@ -230,36 +230,42 @@ def _run_sync_body(
         _out(f"  {message}")
 
     extra_pc_folders = tuple(args.pc_folders) if args.pc_folders else ()
-    try:
-        planned = plan_sync(
-            device_info=device_info,
-            library_root=args.library_root,
-            state_root=args.state_root,
-            profile=profile,
-            extra_pc_folders=extra_pc_folders,
-            skip_backup=args.skip_backup,
-            skip_podcasts=args.skip_podcasts,
-            progress_callback=_report_progress,
-        )
-    except SyncError as e:
-        # A plan-phase failure (e.g. a missing system dependency like
-        # fpcalc) is just as real an auto-sync outcome as an execute-phase
-        # one below -- confirmed live, a real unattended auto-sync run
-        # failed here and never showed up in the Activity screen at all,
-        # since only the execute-phase except block (below) used to call
-        # record_activity. See notes.md's 2026-09-29 entry.
-        record_activity(
-            args.state_root,
-            ActivityEntry(
-                started_at=datetime.now(timezone.utc),
-                service="sync-orchestrator",
-                profile=profile.profile,
-                description=f"sync — plan failed: {e}",
-                duration_seconds=time.monotonic() - start_time,
-                result="error",
-            ),
-        )
-        return _fail(str(e))
+
+    def _compute_plan():
+        try:
+            return plan_sync(
+                device_info=device_info,
+                library_root=args.library_root,
+                state_root=args.state_root,
+                profile=profile,
+                extra_pc_folders=extra_pc_folders,
+                skip_backup=args.skip_backup,
+                skip_podcasts=args.skip_podcasts,
+                progress_callback=_report_progress,
+            )
+        except SyncError as e:
+            # A plan-phase failure (e.g. a missing system dependency like
+            # fpcalc) is just as real an auto-sync outcome as an execute-phase
+            # one below -- confirmed live, a real unattended auto-sync run
+            # failed here and never showed up in the Activity screen at all,
+            # since only the execute-phase except block (below) used to call
+            # record_activity. See notes.md's 2026-09-29 entry.
+            record_activity(
+                args.state_root,
+                ActivityEntry(
+                    started_at=datetime.now(timezone.utc),
+                    service="sync-orchestrator",
+                    profile=profile.profile,
+                    description=f"sync — plan failed: {e}",
+                    duration_seconds=time.monotonic() - start_time,
+                    result="error",
+                ),
+            )
+            return _fail(str(e))
+
+    planned = _compute_plan()
+    if isinstance(planned, int):
+        return planned
 
     for selection in planned.unresolved_selections:
         _out(f"  WARNING: external_library selection {selection!r} matched 0 files")
@@ -343,11 +349,39 @@ def _run_sync_body(
         )
 
     if planned.seeding_required:
-        return _fail(
-            f"{len(planned.seeding_required)} track(s) on this iPod are not in "
-            f"{profile.profile}'s index; choose remove or adopt for this device "
-            "before executing"
+        if not args.allow_removals:
+            return _fail(
+                f"{len(planned.seeding_required)} track(s) on this iPod are not in "
+                f"{profile.profile}'s index; choose remove or adopt for this device "
+                "before executing"
+            )
+        # --allow-removals is "dangerous mode" -- the user has already opted
+        # into this run touching removals, so an undecided device defaults
+        # to "remove" rather than refusing outright. "remove" is the safer
+        # default of the two: it only drops tracks that are still sitting
+        # untouched in the library pool (recoverable by re-adding), where
+        # "adopt" would silently commit them to the index forever.
+        _out(
+            f"  WARNING: {len(planned.seeding_required)} track(s) on this iPod "
+            f"are not in {profile.profile}'s index; --allow-removals is set, so "
+            "defaulting to remove for this device"
         )
+        db_path = Path(args.state_root) / f"{profile.profile}.sqlite"
+        with StateDB(db_path) as db:
+            apply_device_decision(
+                db, planned.device_key, DECISION_REMOVE, datetime.now(timezone.utc)
+            )
+        planned = _compute_plan()
+        if isinstance(planned, int):
+            return planned
+        if planned.seeding_required:
+            return _fail(
+                "the default remove decision didn't clear the device's "
+                "untracked tracks; refusing to execute"
+            )
+        if not json_mode:
+            print(f"== Updated plan for {profile.profile!r} (defaulted to remove) ==")
+            _print_plan(planned.plan)
 
     _out("== Executing ==")
     try:
