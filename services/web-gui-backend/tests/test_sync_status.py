@@ -62,14 +62,15 @@ def test_is_sync_running_scoped_per_profile(tmp_path: Path):
 
 
 def test_recent_auto_sync_log_tail_none_when_missing(tmp_path: Path):
-    assert recent_auto_sync_log_tail(tmp_path, now=time.time()) is None
+    assert recent_auto_sync_log_tail(tmp_path, "john", now=time.time()) is None
 
 
 def test_recent_auto_sync_log_tail_returns_last_lines(tmp_path: Path):
     log = tmp_path / "auto-sync.log"
-    log.write_text("\n".join(f"line {i}" for i in range(30)) + "\n")
+    header = "== Matched profile 'john' ==\n"
+    log.write_text(header + "\n".join(f"line {i}" for i in range(30)) + "\n")
 
-    tail = recent_auto_sync_log_tail(tmp_path, now=time.time())
+    tail = recent_auto_sync_log_tail(tmp_path, "john", now=time.time())
 
     assert tail is not None
     assert len(tail) == 20
@@ -80,8 +81,45 @@ def test_recent_auto_sync_log_tail_none_when_stale(tmp_path: Path):
     import os
 
     log = tmp_path / "auto-sync.log"
-    log.write_text("old run\n")
+    log.write_text("== Matched profile 'john' ==\nold run\n")
     old_time = time.time() - (3 * 60 * 60)
     os.utime(log, (old_time, old_time))
 
-    assert recent_auto_sync_log_tail(tmp_path, now=time.time()) is None
+    assert recent_auto_sync_log_tail(tmp_path, "john", now=time.time()) is None
+
+
+def test_recent_auto_sync_log_tail_none_when_most_recent_run_is_a_different_profile(
+    tmp_path: Path,
+):
+    # Regression: one shared auto-sync.log across every profile's runs --
+    # a user checking their own profile's status used to see a *different*
+    # profile's old run instead. See notes.md.
+    log = tmp_path / "auto-sync.log"
+    log.write_text(
+        "== Matched profile 'john' ==\n"
+        "john's own old run\n"
+        "== Matched profile 'nienie' ==\n"
+        "== Finding device for profile 'nienie' (serial='X') ==\n"
+        "ERROR config/profiles/nienie.yaml\n"
+        "  audiobooks.mode -- Input should be 'include' or 'exclude'\n"
+    )
+
+    assert recent_auto_sync_log_tail(tmp_path, "john", now=time.time()) is None
+
+
+def test_recent_auto_sync_log_tail_scoped_to_the_requested_profiles_own_run(tmp_path: Path):
+    log = tmp_path / "auto-sync.log"
+    log.write_text(
+        "== Matched profile 'nienie' ==\n"
+        "nienie's old run\n"
+        "== Matched profile 'john' ==\n"
+        "== Finding device for profile 'john' (serial='X') ==\n"
+        "syncing john's device\n"
+    )
+
+    tail = recent_auto_sync_log_tail(tmp_path, "john", now=time.time())
+
+    assert tail is not None
+    assert "nienie" not in "\n".join(tail)
+    assert tail[0] == "== Finding device for profile 'john' (serial='X') =="
+    assert tail[-1] == "syncing john's device"
