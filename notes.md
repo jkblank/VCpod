@@ -1,5 +1,34 @@
 # Notes / Future Work
 
+## 2026-10-12: /api/sync/status's log tail could show a different profile's old run
+
+- **What happened:** user started a plan-only sync for john on the web GUI,
+  tabbed away, came back to what looked like a different, much older failed
+  run (nienie's, from before `audiobooks.mode: none` existed). John's actual
+  plan was fine (confirmed live: `to_add=114, to_remove=0, seeding_required=
+  615`, no removals). The real cause: `state/auto-sync.log` is one file
+  shared by every profile's unattended auto-sync run (one systemd service,
+  one log, see sync_status.py's own docstring), and `recent_auto_sync_log_
+  tail` just tailed its last 20 lines with no check that those lines
+  actually belonged to the profile being asked about.
+- **Compounding factor, same investigation:** olive's auto-sync systemd
+  unit runs from a *separate bare-metal venv*
+  (`services/sync-orchestrator/.venv` under the bare host checkout, not the
+  Docker containers) that hadn't been `uv sync`'d since `audiobooks.mode:
+  none` was added -- so literally every auto-sync trigger (for any
+  profile's device, since matching has to load every profile's config
+  first) was failing immediately on nienie's old config, which is why her
+  old failure was the most recent thing in the shared log. Fixed by syncing
+  that venv (see the entry below, once deployed).
+- **Fix:** `recent_auto_sync_log_tail(state_root, profile, *, now)` now
+  scans backward from the end of the log for the most recent per-run
+  header line (`== Matched profile 'X' ==` / `== Finding device for
+  profile 'X' (...) ==`, both already printed by cli.py) and returns None
+  unless that most recent run's profile matches the one being asked about.
+- **Tests:** `test_sync_status.py` gained a regression test for the
+  cross-profile case and one confirming scoping still works for a real
+  match; `routers/sync.py`'s caller updated to pass `profile` through.
+
 ## 2026-10-12: dangerous mode (--allow-removals) defaults undecided devices to "remove"
 
 - **What changed:** the per-device seeding gate used to refuse execute
