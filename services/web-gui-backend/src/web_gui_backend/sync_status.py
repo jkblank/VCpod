@@ -24,7 +24,14 @@ routers/auto_sync_setup.py's generated systemd unit."""
 from __future__ import annotations
 
 import fcntl
+import re
 from pathlib import Path
+
+# Matches the line cli.py prints at the start of every run that lands in
+# this shared log -- auto-sync's own "== Matched profile 'X' ==" and the
+# "== Finding device for profile 'X' (...) ==" that follows it moments
+# later for that same run.
+_RUN_HEADER_RE = re.compile(r"== (?:Matched profile|Finding device for profile) '([^']+)'")
 
 # How stale auto-sync.log's mtime can be while still being shown
 # alongside a "running: true" result. Without this, a months-old log
@@ -63,14 +70,33 @@ def is_sync_running(state_root: Path, profile: str) -> bool:
         fd.close()
 
 
-def recent_auto_sync_log_tail(state_root: Path, *, now: float) -> list[str] | None:
-    """Last `_LOG_TAIL_LINES` lines of state/auto-sync.log, or None if
-    the file doesn't exist or hasn't been touched recently enough to
-    plausibly be describing what's running right now."""
+def recent_auto_sync_log_tail(state_root: Path, profile: str, *, now: float) -> list[str] | None:
+    """Last `_LOG_TAIL_LINES` lines of the given profile's most recent run
+    in state/auto-sync.log, or None if the file doesn't exist, hasn't been
+    touched recently enough to plausibly be describing what's running
+    right now, or its most recent run belongs to a different profile.
+
+    One real `music-stack-auto-sync.service` run per udev trigger, for
+    whichever profile ends up matching the connected device -- but every
+    profile's runs land in this one shared file, one after another, with
+    no other separation between them. Without checking whose run is most
+    recent, a profile whose own auto-sync hasn't run in a while would
+    show whatever profile ran last instead -- confirmed live: a user
+    checking their own profile's status saw a *different* profile's old
+    failed run."""
     path = state_root / "auto-sync.log"
     if not path.is_file():
         return None
     if now - path.stat().st_mtime > _LOG_FRESH_WITHIN_SECONDS:
         return None
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return lines[-_LOG_TAIL_LINES:]
+    start = None
+    for i in range(len(lines) - 1, -1, -1):
+        match = _RUN_HEADER_RE.search(lines[i])
+        if match:
+            if match.group(1) == profile:
+                start = i
+            break
+    if start is None:
+        return None
+    return lines[start:][-_LOG_TAIL_LINES:]

@@ -88,5 +88,5 @@ def sync_status(profile: str, request: Request) -> dict:
     docstring for why."""
     state_root = request.app.state.state_root
     running = is_sync_running(state_root, profile)
-    log_tail = recent_auto_sync_log_tail(state_root, now=time.time()) if running else None
+    log_tail = recent_auto_sync_log_tail(state_root, profile, now=time.time()) if running else None
     return {"running": running, "log_tail": log_tail}
