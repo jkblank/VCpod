@@ -96,7 +96,7 @@ def test_mtime_matches_outside_tolerance():
 
 
 def _item(device_relative: str, source_path: str) -> RockboxSyncItem:
-    from iopenpod.sync.transcoder import TranscodePlan, TranscodeTarget
+    from vcsync.sync.transcoder import TranscodePlan, TranscodeTarget
 
     plan = TranscodePlan(
         source_path=Path(source_path),
@@ -253,7 +253,7 @@ def test_plan_rockbox_sync_new_device_proposes_adding_everything(monkeypatch, tm
     from sync_orchestrator import rockbox_sync as rockbox_sync_module
 
     def fake_resolve_transcode_plan(path, *, options=None):
-        from iopenpod.sync.transcoder import TranscodePlan, TranscodeTarget
+        from vcsync.sync.transcoder import TranscodePlan, TranscodeTarget
 
         return TranscodePlan(
             source_path=Path(path), target=TranscodeTarget.COPY, aac_quality="normal",
@@ -348,7 +348,7 @@ def _patch_copy_transcode(monkeypatch) -> None:
     from sync_orchestrator import rockbox_sync as rockbox_sync_module
 
     def fake_resolve_transcode_plan(path, *, options=None):
-        from iopenpod.sync.transcoder import TranscodePlan, TranscodeTarget
+        from vcsync.sync.transcoder import TranscodePlan, TranscodeTarget
 
         return TranscodePlan(
             source_path=Path(path), target=TranscodeTarget.COPY, aac_quality="normal",

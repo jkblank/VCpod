@@ -23,7 +23,7 @@ import shutil
 from pathlib import Path
 
 from common.models import AudiobooksConfig, MusicLibraryConfig
-from iopenpod.infrastructure.media_folders import (
+from vcsync.infrastructure.media_folders import (
     MEDIA_TYPE_MUSIC,
     MEDIA_TYPE_PLAYLISTS,
     MediaFolderEntry,

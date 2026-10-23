@@ -18,8 +18,11 @@ with Claude Code — hence the name.
 3. **Syncs podcasts**, using [Pocket Casts](https://pocketcasts.com) as the
    source of truth for subscriptions and played/unplayed state.
 4. **Syncs everything onto a real iPod** — music, playlists, and podcasts —
-   using [iOpenPod](https://github.com/TheRealSavi/iOpenPod) as a headless
-   library, no GUI required.
+   using [vcsync](https://github.com/jkblank/vcsync) as a headless sync
+   engine, no GUI required. `vcsync` is our own fork of
+   [iOpenPod](https://github.com/TheRealSavi/iOpenPod) `1.68.1`'s non-GUI
+   engine code (since 2026-10-23 — upstream's `2.0.x` is an incompatible
+   GUI-app rewrite, see `notes.md` 2026-10-22/23).
 
 Everything is driven by plain YAML config files and supports multiple
 user/iPod profiles. See [`music-stack-planning.md`](music-stack-planning.md)
@@ -236,7 +239,7 @@ never the container's own vendored one.
 ### Why the sync step needs privileged Docker access
 
 `web-gui-backend`'s image vendors a full second `sync-orchestrator`
-install (own venv, own `iopenpod` dependency tree — see
+install (own venv, own `vcsync` dependency tree — see
 `services/web-gui-backend/Dockerfile`) so the Sync screen's "identify
 device"/"compute plan"/"execute" buttons work by shelling out to it,
 exactly like a bare-metal CLI install does. That needs real
@@ -639,10 +642,12 @@ processing without leaving the browser). Full details:
 - **Config is the only source of truth** — no database of settings, no
   hidden state beyond what's in `config/` and the per-profile `state/*.sqlite`
   (source-ID-to-local-file maps and sync history, not configuration).
-- **iOpenPod as a library, not a GUI dependency** — the sync step drives
-  iOpenPod's real sync engine (`SyncEngine`, `BackupManager`,
-  `itunesdb_parser`/`itunesdb_writer`) directly, headlessly. See the M6
-  recommendation doc for the full investigation.
+- **An owned sync engine, not a GUI dependency** — the sync step drives
+  `vcsync`'s `SyncEngine`/`BackupManager`/`itunesdb_parser`/
+  `itunesdb_writer` directly, headlessly. `vcsync` is our own fork of
+  iOpenPod `1.68.1`'s engine code (see the M6 recommendation doc for the
+  original investigation, and `notes.md` 2026-10-22/23 for why it's now
+  a fork rather than a PyPI dependency).
 
 ## A note on the fetchers
 

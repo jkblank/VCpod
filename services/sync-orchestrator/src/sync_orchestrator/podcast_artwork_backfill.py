@@ -24,9 +24,9 @@ with no separate "already handled" bookkeeping needed.
 
 from __future__ import annotations
 
-from iopenpod.artworkdb_writer.art_extractor import art_hash, extract_art_with_folder
-from iopenpod.podcasts.models import PodcastFeed
-from iopenpod.sync.contracts import SyncAction, SyncItem
+from vcsync.artworkdb_writer.art_extractor import art_hash, extract_art_with_folder
+from vcsync.podcasts.models import PodcastFeed
+from vcsync.sync.contracts import SyncAction, SyncItem
 
 _PODCAST_MEDIA_TYPE_FLAG = 0x04
 
