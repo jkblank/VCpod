@@ -16,6 +16,18 @@ services/ipod-sync/spike/headless_write_poc.py, now retired in favor of
 this real service). Every workaround here is explained in full in
 docs/m6-ipod-headless-recommendation.md and notes.md — this module keeps
 the reasoning terse and points there instead of repeating it.
+
+As of 2026-10-23, the device/sync/itunesdb/artworkdb engine this module
+drives is `vcsync` (github.com/jkblank/vcsync), our own fork of iOpenPod
+1.68.1 with its GUI layer removed -- not the PyPI `iopenpod` package. The
+comments below still say "iopenpod" where they describe empirical
+research done against upstream iOpenPod (bug reports, byte-diffs against
+real iTunes output, etc.) -- that research and its conclusions are still
+accurate and worth keeping verbatim. Only the actual import paths changed
+(`iopenpod.X` -> `vcsync.X`); every monkeypatch below still targets the
+same, still-present upstream bug in our own copy of the code. See
+notes.md (2026-10-22/23) for why we forked instead of continuing to
+depend on it.
 """
 
 from __future__ import annotations
@@ -34,11 +46,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import iopenpod.device as _iopenpod_device
+import vcsync.device as _vcsync_device
 from common.models import ProfileConfig
 from common.state import StateDB
-from iopenpod.artworkdb_writer import artwork_writer as _artwork_writer
-from iopenpod.artworkdb_writer import artworkdb_chunks as _artworkdb_chunks
+from vcsync.artworkdb_writer import artwork_writer as _artwork_writer
+from vcsync.artworkdb_writer import artworkdb_chunks as _artworkdb_chunks
 
 # iopenpod rolls each artwork format over to a new F{format}_N.ithmb file
 # once the current one passes 32MB (its own ITHMB_MAX_SIZE_BYTES) -- a
@@ -60,23 +72,23 @@ from iopenpod.artworkdb_writer import artworkdb_chunks as _artworkdb_chunks
 # and the now-redundant regression test in test_sync.py -- see notes.md's
 # "album-art size ceiling" entry for the full removal steps.
 _artwork_writer.ITHMB_MAX_SIZE_BYTES = 4 * 1024**3 - 1  # FAT32 max file size
-from iopenpod.device.info import DeviceInfo, resolve_itdb_path
-from iopenpod.itunesdb_writer import mhlt_writer as _mhlt_writer
-from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
-from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
-from iopenpod.podcasts.podcast_sync import build_podcast_sync_plan
-from iopenpod.sync.audio_fingerprint import FingerprintCache
-from iopenpod.device.write_guard import DeviceWriteSafetyError
-from iopenpod.sync.backup_manager import BackupManager, BackupProgress, SnapshotInfo
-from iopenpod.sync.core.engine import SyncEngine
-from iopenpod.sync.core.models import (
+from vcsync.device.info import DeviceInfo, resolve_itdb_path
+from vcsync.itunesdb_writer import mhlt_writer as _mhlt_writer
+from vcsync.itunesdb_parser.ipod_library import load_ipod_library
+from vcsync.podcasts.models import PodcastEpisode, PodcastFeed
+from vcsync.podcasts.podcast_sync import build_podcast_sync_plan
+from vcsync.sync.audio_fingerprint import FingerprintCache
+from vcsync.device.write_guard import DeviceWriteSafetyError
+from vcsync.sync.backup_manager import BackupManager, BackupProgress, SnapshotInfo
+from vcsync.sync.core.engine import SyncEngine
+from vcsync.sync.core.models import (
     EngineOperation,
     EngineOptions,
     EngineProgress,
     EngineRequest,
 )
-from iopenpod.sync.mapping import MappingManager
-from iopenpod.sync.transcoder import TranscodeOptions
+from vcsync.sync.mapping import MappingManager
+from vcsync.sync.transcoder import TranscodeOptions
 
 from sync_orchestrator.music_index import (
     DECISION_ADOPT,
@@ -175,7 +187,7 @@ def _filter_to_plain_album_art_formats(
     `AlbumArt`-family plist entries directly to recover it. An entry
     missing the field entirely is kept (treated as unassociated/plain),
     so devices that don't declare it at all behave exactly as before."""
-    from iopenpod.device.sysinfo import COVER_ART_KEYS
+    from vcsync.device.sysinfo import COVER_ART_KEYS
 
     associated: dict[int, int] = {}
     for key in COVER_ART_KEYS:
@@ -215,7 +227,7 @@ def _read_device_album_art_formats(mount_path: str) -> dict[int, tuple[int, int]
     safely fall back to iopenpod's static per-family table."""
     import plistlib
 
-    from iopenpod.device.sysinfo import COVER_ART_KEYS, extract_image_formats
+    from vcsync.device.sysinfo import COVER_ART_KEYS, extract_image_formats
 
     sysinfo_extended_path = Path(mount_path) / "iPod_Control" / "Device" / "SysInfoExtended"
     try:
@@ -604,7 +616,7 @@ def _register_current_device(info: DeviceInfo) -> Any:
     confirmed this; no more "cached family conflicts with live USB
     PID... using live USB identity" collapse. See notes.md for the full
     verification."""
-    _iopenpod_device.get_current_device_for_path = lambda path: info
+    _vcsync_device.get_current_device_for_path = lambda path: info
 
     # See _read_device_album_art_formats' docstring: enrich() populates
     # info.artwork_formats from a static per-family table and never

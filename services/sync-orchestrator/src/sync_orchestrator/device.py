@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from common.models import DeviceMatch, ProfileConfig
-from iopenpod.device.info import DeviceInfo, enrich
+from vcsync.device.info import DeviceInfo, enrich
 
 _MOUNT_FSTYPES = ("vfat", "hfsplus")
 _MOUNTS_PATH = "/proc/mounts"

@@ -1,10 +1,11 @@
 """Talks to `sync-orchestrator identify-device` as a subprocess, never an
 in-process import -- sync-orchestrator is a standalone `uv` project kept
-isolated specifically so its `iopenpod`/PyQt6 dependency tree never
-merges with this (root-workspace) service's, same reasoning
-sync-orchestrator's own `_build_music_stack_fetch_cmd` already documents
-for the reverse direction (it shells out to `music-stack fetch` rather
-than importing music-stack-cli in-process).
+isolated specifically so its `vcsync` dependency tree (our own fork of
+iOpenPod's engine, previously plain PyPI `iopenpod`/PyQt6 -- see
+notes.md, 2026-10-23) never merges with this (root-workspace) service's,
+same reasoning sync-orchestrator's own `_build_music_stack_fetch_cmd`
+already documents for the reverse direction (it shells out to
+`music-stack fetch` rather than importing music-stack-cli in-process).
 """
 
 from __future__ import annotations

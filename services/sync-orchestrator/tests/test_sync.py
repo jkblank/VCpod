@@ -13,16 +13,16 @@ from common.models import (
     SyncSettings,
 )
 
-import iopenpod.device as _iopenpod_device
-from iopenpod.artworkdb_writer import artworkdb_chunks as artworkdb_chunks_module
-from iopenpod.artworkdb_writer.artwork_types import ArtworkEntry, EncodedFormatPayload
-from iopenpod.device.info import DeviceInfo
+import vcsync.device as _vcsync_device
+from vcsync.artworkdb_writer import artworkdb_chunks as artworkdb_chunks_module
+from vcsync.artworkdb_writer.artwork_types import ArtworkEntry, EncodedFormatPayload
+from vcsync.device.info import DeviceInfo
 
-from iopenpod.sync.transcoder import TranscodeOptions
+from vcsync.sync.transcoder import TranscodeOptions
 
 from sync_orchestrator import sync as sync_module
-from iopenpod.itunesdb_writer import mhlt_writer as mhlt_writer_module
-from iopenpod.itunesdb_writer.mhit_writer import TrackInfo
+from vcsync.itunesdb_writer import mhlt_writer as mhlt_writer_module
+from vcsync.itunesdb_writer.mhit_writer import TrackInfo
 
 from sync_orchestrator.sync import (
     SyncError,
@@ -138,7 +138,7 @@ def test_throttled_progress_printer_always_emits_on_completion(monkeypatch):
 
 def test_backup_progress_adapter_prefers_current_file_over_message():
     messages: list[str] = []
-    from iopenpod.sync.backup_manager import BackupProgress
+    from vcsync.sync.backup_manager import BackupProgress
 
     on_progress = _backup_progress_adapter(messages.append)
     on_progress(BackupProgress("hashing", 1, 5, current_file="track.m4a", message="ignored"))
@@ -148,7 +148,7 @@ def test_backup_progress_adapter_prefers_current_file_over_message():
 
 def test_engine_progress_adapter_uses_stage_and_message():
     messages: list[str] = []
-    from iopenpod.sync.core.models import EngineProgress
+    from vcsync.sync.core.models import EngineProgress
 
     on_progress = _engine_progress_adapter(messages.append)
     on_progress(EngineProgress(stage="scan", current=4, total=9, message="Scanning"))
@@ -253,7 +253,7 @@ def test_register_current_device_registers_device_for_path():
 
     _register_current_device(info)
 
-    assert _iopenpod_device.get_current_device_for_path("/fake/mount") is info
+    assert _vcsync_device.get_current_device_for_path("/fake/mount") is info
 
 
 def test_register_current_device_falls_back_for_unrecognized_family():
@@ -874,7 +874,7 @@ def test_ithmb_max_size_raised_to_fat32_file_limit():
     # iTunes wrote a single 335MB .ithmb with no chunking and rendered
     # fine on the same test device). Importing sync_orchestrator.sync
     # must raise this to FAT32's real per-file ceiling. See notes.md.
-    from iopenpod.artworkdb_writer import artwork_writer as artwork_writer_module
+    from vcsync.artworkdb_writer import artwork_writer as artwork_writer_module
 
     assert artwork_writer_module.ITHMB_MAX_SIZE_BYTES == 4 * 1024**3 - 1
 

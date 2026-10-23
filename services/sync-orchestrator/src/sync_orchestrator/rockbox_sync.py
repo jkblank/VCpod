@@ -29,9 +29,9 @@ from pathlib import Path
 
 from common.models import ProfileConfig
 from common.playlist import _read_existing_entries as _read_m3u8_entries
-from iopenpod.device.info import DeviceInfo
-from iopenpod.sync.backup_manager import BackupManager, SnapshotInfo
-from iopenpod.sync.transcoder import (
+from vcsync.device.info import DeviceInfo
+from vcsync.sync.backup_manager import BackupManager, SnapshotInfo
+from vcsync.sync.transcoder import (
     TranscodeOptions,
     TranscodePlan,
     TranscodeTarget,

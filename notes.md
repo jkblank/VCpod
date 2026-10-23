@@ -1,5 +1,60 @@
 # Notes / Future Work
 
+## 2026-10-23: sync-orchestrator now depends on vcsync, not PyPI iopenpod
+
+- **What changed:** following the 2026-10-22 investigation (below) that
+  found iOpenPod 2.0.x incompatible, we forked `1.68.1`'s non-GUI engine
+  code into its own repo, `vcsync` (github.com/jkblank/vcsync, public,
+  MIT), and re-pointed `sync-orchestrator` at it. `iopenpod==1.68.1` is
+  gone from `services/sync-orchestrator/pyproject.toml`; `vcsync` is a
+  plain git dependency (`git+https://github.com/jkblank/vcsync.git`).
+- **Why a git dependency, not a path dependency or a submodule:** tried a
+  git submodule first (to avoid needing network access during Docker
+  builds), but it turned out unnecessary -- `vcsync` is public, so a
+  plain `git+https` URL resolves with no credentials needed, inside
+  `web-gui-backend`'s Docker build exactly the same as it does on a bare
+  host. Confirmed by deleting `.venv` entirely and re-running `uv sync`
+  + the full test suite from a cold, credential-less state. A git
+  submodule would have worked too, but only a plain git dependency was
+  actually necessary once the repo was made public -- simpler wins.
+  Originally tried `git+ssh`, which would have required BuildKit's
+  `--mount=type=ssh` forwarding inside the Dockerfile -- confirmed
+  **not available** on olive (`docker buildx` isn't installed, and
+  plain `docker build` doesn't expose `--ssh` without it) -- another
+  reason the public-HTTPS path is the right one here, not just the
+  simpler one.
+- **Why the real closure was bigger than first scoped:** the original
+  compatibility investigation (2026-10-22) found 18 symbols across 6
+  files as the "import surface," which undersold the real dependency
+  graph -- `SyncEngine.compute_plan/execute_plan/quick_write` (the 3
+  methods `sync.py` actually calls) lazily import `pc_library.py`,
+  `sync_executor.py`, `quick_writes.py`, `fingerprint_diff_engine.py`,
+  and podcast download/subscription modules at call time, none of which
+  showed up in a plain module-level import grep. Ended up forking whole
+  confirmed-GUI-free directories (`device/`, `sync/`, `podcasts/`,
+  `itunesdb_parser/`, `itunesdb_shared/`, `itunesdb_writer/`,
+  `artworkdb_parser/`, `artworkdb_writer/`, `artworkdb_shared/`,
+  `sqlitedb_writer/`) rather than hand-picking files, which is safer and
+  turned out to be the only way to actually get this right.
+- **Two upstream 2.0.x fixes ported into vcsync** (see vcsync's own
+  README/THIRD_PARTY_NOTICES.md): the MHLI/MHII image-count repair
+  algorithm (retires the workaround this project's own
+  `docs/iopenpod-artworkdb-missing-mhii-chunk.md` describes, at the
+  source instead of via a runtime monkeypatch) and a JPEG-decoder
+  hardening one-liner.
+- **What did NOT change:** `sync.py`'s own three existing ArtworkDB/
+  iTunesDB writer monkeypatches (`_write_mhii_with_missing_index_chunk`,
+  `_write_mhfd_with_real_unk2`, `_write_mhit_with_duplicate_store_fields`)
+  and the `ITHMB_MAX_SIZE_BYTES` override are all still necessary and
+  unchanged -- they patch different bugs (writer-side byte-shape issues)
+  than the MHLI/MHII fix above (a reader-side undercount), so there's no
+  overlap. Retiring them to live directly in vcsync's own source instead
+  of via monkeypatch is a reasonable future cleanup, not done here.
+- **Verified:** all 230 sync-orchestrator tests and all 595 root
+  workspace tests pass unchanged (only import-line changes, zero
+  assertion changes) against the new dependency. Not yet deployed to
+  olive or verified against a real device -- see the open item below.
+
 ## 2026-10-12: /api/sync/status's log tail could show a different profile's old run
 
 - **What happened:** user started a plan-only sync for john on the web GUI,
