@@ -1,5 +1,48 @@
 # Notes / Future Work
 
+## 2026-10-22: iOpenPod 2.0 is not a compatible upgrade -- staying on 1.68.1
+
+- **What was checked:** whether `iopenpod==1.68.1` (pinned in
+  `services/sync-orchestrator/pyproject.toml`) is still the right version,
+  since upstream had shipped updates. PyPI has no `1.69.x`+ -- 1.68.1 is
+  already the newest release in that line. Everything past it (2.0.4
+  through 2.0.14, the current latest) is a ground-up rewrite, not a bump.
+- **Why 2.0.x is incompatible, not just newer:**
+  - The installable top-level package was renamed from `iopenpod` to
+    `iOpenPod` (capitalized, GUI-app-shaped). Every `from iopenpod...`
+    import across the 9 sync-orchestrator files that use it (`device.py`,
+    `sync.py`, `selection.py`, `rockbox_sync.py`, `podcast_removal.py`,
+    `podcast_artwork_backfill.py`, `playstate.py`, `plan_json.py`, `cli.py`)
+    would fail immediately with `ModuleNotFoundError`.
+  - It's not a rename-only move: the actual library-facing classes
+    sync-orchestrator drives headlessly -- `SyncEngine`, `BackupManager`,
+    `MappingManager`, `FingerprintCache`, `TranscodeOptions`,
+    `SyncAction`/`SyncItem`, `DeviceWriteSafetyError` -- do not exist
+    anywhere in the 2.0.14 codebase (confirmed by extracting the wheel and
+    grepping for each symbol). The low-level iPod database format code
+    (itdb/ArtworkDB/mhlt parsing) survived; the headless sync/backup/
+    transcode API layer built on top of it did not.
+  - 2.0.x requires Python `>=3.12,<3.13` specifically -- excludes 3.13 and
+    3.14. Both the local dev venv and olive's bare-metal
+    `services/sync-orchestrator/.venv` run 3.14.7.
+  - New required dependencies: PySide6 (GUI toolkit), librosa + numba (an
+    audio-reactive "synesthesia" visualizer), wasmtime, scrobbling,
+    store/OS update-check machinery. No README or entry point suggests
+    it's still meant to be used as an embeddable library -- it now reads
+    as a packaged desktop app (DMG/MSI/Store distribution), not a
+    library-with-optional-GUI.
+- **Decision:** stay pinned to `iopenpod==1.68.1`. Re-check for a future
+  non-2.0-rewrite-shaped release before assuming this is permanent, but
+  don't attempt a 2.0.x port -- it would mean rewriting sync-orchestrator's
+  entire device/sync/backup layer against an unfamiliar internal API, on a
+  separate Python 3.12 interpreter, for a dependency that no longer looks
+  designed to be embedded.
+- **Future idea, not started:** since upstream has moved in a direction
+  that no longer serves a headless embedder, consider forking 1.68.1 and
+  maintaining/extending that fork ourselves for this project's needs,
+  rather than continuing to track upstream. Explicitly deferred -- to be
+  scoped and executed later, not part of this investigation.
+
 ## 2026-10-12: /api/sync/status's log tail could show a different profile's old run
 
 - **What happened:** user started a plan-only sync for john on the web GUI,
