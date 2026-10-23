@@ -54,6 +54,13 @@
   workspace tests pass unchanged (only import-line changes, zero
   assertion changes) against the new dependency. Not yet deployed to
   olive or verified against a real device -- see the open item below.
+- **Blocked on deploy/live verification:** no iPod currently available to
+  test against (2026-10-23). PR #20 stays open, unmerged, until a real
+  device is back -- this project's own discipline is plan-before-execute
+  on real hardware before trusting a change like this, and that can't be
+  done right now. Don't deploy to olive or merge #20 on code-review
+  confidence alone; wait for an explicit go-ahead once a device exists
+  again.
 
 ## 2026-10-12: /api/sync/status's log tail could show a different profile's old run
 
