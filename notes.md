@@ -1,5 +1,61 @@
 # Notes / Future Work
 
+## 2026-10-26: audiobook-manager now declicks every merge (adeclick)
+
+Reported live: sharp, painful clicking artifacts in some synced
+audiobooks, worse in *Brave New World* than *Gravity's Rainbow*,
+worst on headphones.
+
+- **Investigated whether this project's own merge/encode step was
+  introducing them** (both books went through `merge.py`'s ffmpeg
+  concat+AAC re-encode, and *Brave New World*'s source MP3 is only
+  64kbps -- right in the range where ffmpeg's native, non-`libfdk_aac`
+  `aac` encoder is known to struggle). Ran ffmpeg's own `adeclick`
+  filter against both the raw captured source and the already-merged
+  `.m4b` and diffed original-vs-declicked sample-by-sample (olive has
+  no numpy installed for this, so the comparison script ran there via
+  `uv run --with numpy`) to count genuine impulsive-noise corrections.
+  Full 8-hour scan of *Brave New World*: source had 73 severe
+  (>3000/32768) corrections against 44 in the merged `.m4b` -- a
+  spot-check on *Gravity's Rainbow* showed the same pattern (fewer/
+  smaller corrections in the merged output than the source). **The
+  AAC re-encode was not adding clicks; if anything it had slightly
+  fewer than the source already has.**
+- **Conclusion:** the clicks are baked into the raw captured source
+  audio itself, most likely from the Libby-web-player DevTools
+  capture method this service's own README documents as the only
+  working acquisition path (chunk-boundary glitches are a plausible
+  mechanism, not confirmed). *Brave New World* being worse is a
+  property of that specific capture, not of anything this project's
+  pipeline does differently between the two books.
+- **Also investigated (and rejected) [jive-vocals](https://github.com/linuxmatters/jive-vocals)**
+  as a possible headless fix: it's a real, well-built Go CLI, but it's
+  built to master raw *microphone* podcast recordings -- it forces a
+  mono downmix, runs a noise gate, a 3:1 compressor, a de-esser, and
+  destructively renormalizes everything to -16 LUFS/-1dBTP, none of
+  which belongs in an already-mastered audiobook pipeline. Its only
+  click-handling is a single call to ffmpeg's own `adeclick` filter,
+  used just to clean up artifacts from *its own* limiter -- the exact
+  same filter already available directly, for free, with no new
+  GPLv3 binary dependency.
+- **Fix:** `merge.py`'s `_run_ffmpeg_merge` now always runs `-af
+  adeclick` (ffmpeg's default settings: window=55, overlap=75,
+  arorder=2, threshold=2, burst=2) regardless of codec/bitrate choice.
+  Deliberately scoped to the normal multi-part concat+re-encode path
+  only -- the single-pre-merged-`.m4b` passthrough (`find_pre_merged_m4b`)
+  still copies through byte-for-byte unchanged, same tradeoff as
+  before (no needless re-encode of an already-encoded file).
+
+**Verified**: new regression test injects a single near-full-scale
+sample into an otherwise-quiet synthetic sine-wave source and merges
+it -- confirmed live that without `adeclick` the injected spike
+survives MP3->AAC transcoding at ~7x the surrounding baseline, and
+with it the surviving peak lands back near that baseline. Full
+audiobook-manager suite (57 passed) and root workspace suite (596
+passed). **Not yet re-run against the two already-imported real
+books on olive** -- that would overwrite production library files,
+held until after this PR is reviewed/merged.
+
 ## 2026-10-22: iOpenPod 2.0 is not a compatible upgrade -- staying on 1.68.1
 
 - **What was checked:** whether `iopenpod==1.68.1` (pinned in
