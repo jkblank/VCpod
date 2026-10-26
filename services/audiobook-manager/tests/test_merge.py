@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import array
+import math
 import shutil
+import struct
 import subprocess
+import wave
 from pathlib import Path
 
 import pytest
@@ -60,6 +64,57 @@ def _make_synthetic_m4b(path: Path, *, duration: float = 1.0) -> Path:
         capture_output=True,
     )
     return path
+
+
+def _make_mp3_with_injected_click(
+    path: Path, *, sr: int = 44100, duration: float = 2.0, click_sample: int = 44100
+) -> Path:
+    """A quiet sine wave with a single near-full-scale sample injected
+    partway through -- a synthetic stand-in for the genuine click
+    artifacts confirmed live in Gravity's Rainbow/Brave New World's raw
+    captured source audio (see notes.md). Built from raw PCM rather than
+    an ffmpeg filter expression so the spike's exact sample index and
+    amplitude are known precisely for the assertion below."""
+    n = int(sr * duration)
+    quiet_amp = 3000  # well under int16 full scale -- a believable speech level
+    samples = [int(quiet_amp * math.sin(2 * math.pi * 440 * i / sr)) for i in range(n)]
+    samples[click_sample] = 32000
+
+    wav_path = path.with_suffix(".wav")
+    with wave.open(str(wav_path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(struct.pack(f"<{n}h", *samples))
+
+    subprocess.run(
+        [find_ffmpeg(), "-y", "-v", "error", "-i", str(wav_path),
+         "-c:a", "libmp3lame", "-b:a", "64k", str(path)],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+def test_merge_parts_to_m4b_removes_injected_click(tmp_path: Path) -> None:
+    # Regression: confirmed live that adeclick alone (not this project's
+    # own AAC re-encode) is what actually removes a real click -- without
+    # it, a single injected full-scale sample survives MP3->AAC
+    # transcoding at ~7x the surrounding quiet baseline; with it, the
+    # surviving peak lands back near that baseline. See notes.md.
+    parts_dir = tmp_path / "parts"
+    parts_dir.mkdir()
+    _make_mp3_with_injected_click(parts_dir / "01.mp3")
+
+    output = merge_parts_to_m4b(parts_dir, tmp_path / "out.m4b", bitrate="64k")
+
+    pcm = subprocess.run(
+        [find_ffmpeg(), "-v", "error", "-i", str(output),
+         "-f", "s16le", "-ac", "1", "-ar", "44100", "-"],
+        capture_output=True, check=True,
+    ).stdout
+    samples = array.array("h", pcm)
+    window = samples[44050:44150]
+    assert max(abs(s) for s in window) < 10000
 
 
 def test_discover_parts_sorts_and_filters(tmp_path: Path) -> None:
