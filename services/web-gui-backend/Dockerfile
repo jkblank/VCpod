@@ -60,8 +60,12 @@ FROM python:3.12-slim-trixie
 # against Debian bookworm (this base image's own release at the time) --
 # "chromaprint" is not itself an installable package there, only the
 # library-tools split that actually ships the /usr/bin/fpcalc binary.
+# git: needed by `uv sync` below to resolve sync-orchestrator's `vcsync`
+# dependency, a git+https source (not a PyPI package) -- confirmed live,
+# missing here breaks the build with "Git executable not found" the
+# moment vcsync replaced PyPI iopenpod.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg udisks2 util-linux eject libchromaprint-tools \
+    && apt-get install -y --no-install-recommends ffmpeg udisks2 util-linux eject libchromaprint-tools git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
