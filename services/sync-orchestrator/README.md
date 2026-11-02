@@ -5,16 +5,24 @@ not through `docker-compose.yml`, because it needs the connected iPod
 visible as a mounted USB block device — see `music-stack-planning.md`
 §2/§6.
 
-Drives [iOpenPod](https://github.com/TheRealSavi/iOpenPod) headlessly (as
-a library, not through its GUI) to sync music, playlists, and podcasts
-onto a real click-wheel iPod. Background and every workaround this
-depends on is written up in full in
+Drives [vcsync](https://github.com/jkblank/vcsync) headlessly to sync
+music, playlists, and podcasts onto a real click-wheel iPod. `vcsync` is
+our own fork of [iOpenPod](https://github.com/TheRealSavi/iOpenPod)
+`1.68.1`'s non-GUI engine code (MIT) — not the PyPI `iopenpod` package —
+since 2026-10-23; see `notes.md` (2026-10-22/23) for why. The comments
+throughout this file and `sync.py` still say "iopenpod" where they
+describe empirical research done against upstream iOpenPod (byte-diffs
+against real iTunes output, bug reports, etc.) — that research is still
+accurate; only the import paths and ownership changed. Background and
+every workaround this depends on is written up in full in
 [`docs/m6-ipod-headless-recommendation.md`](../../docs/m6-ipod-headless-recommendation.md)
 and `notes.md`.
 
-Standalone `uv` project (not part of the root workspace) — `iopenpod`
-pulls in PyQt6, a heavy dependency kept isolated from the other services,
-same reasoning as `services/fetcher-spotify`.
+Standalone `uv` project (not part of the root workspace) — kept isolated
+from the root workspace the same way `services/fetcher-spotify` is, so
+`vcsync`'s dependency tree (numpy/pillow/pyusb/wasmtime/etc. — no PyQt6,
+unlike the old `iopenpod` dependency) never merges with the other
+services'.
 
 ## Known limitations: album art on iPod Classic-family devices (both fixed)
 
@@ -73,9 +81,12 @@ rendering.
 **Fixed**: `sync_orchestrator/sync.py` overrides iopenpod's
 `ITHMB_MAX_SIZE_BYTES` to FAT32's real per-file limit (`4 * 1024**3 -
 1`, the same number iopenpod's own `filesystem_profile.py` already
-uses elsewhere) at import time, since `iopenpod` is a plain pinned PyPI
-dependency here, not vendored — this is a runtime monkeypatch, not an
-upstream fix, and is worth upstreaming properly at some point. Verified
+uses elsewhere) at import time, as a runtime monkeypatch rather than a
+source fix — this predates `vcsync` (2026-10-23), which now means the
+"upstream" this could be fixed at the source in is our own fork, not
+someone else's PyPI package; worth folding directly into `vcsync`'s copy
+of `artwork_writer.py` at some point instead of leaving it as a
+monkeypatch here. Verified
 on real hardware: full clean-wipe sync of the entire real library
 (1,984 tracks, single un-chunked `.ithmb` per format) — album art
 renders.
@@ -438,7 +449,7 @@ uv run sync-orchestrator auto-sync \
    anyway. This is deliberately a **subprocess** call
    (`--music-stack-project-dir`, default `services/music-stack-cli`), not
    an in-process import: `sync-orchestrator` is kept standalone
-   specifically so its `iopenpod`/PyQt6 dependency tree never merges with
+   specifically so its `vcsync` dependency tree never merges with
    `music-stack-cli`'s (gamdl, yt-dlp, etc.) — same reasoning as
    `fetcher-spotify`'s isolation. A failed pre-fetch only logs a warning;
    it never blocks the sync below from running against whatever's already

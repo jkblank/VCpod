@@ -26,7 +26,7 @@ effects.
 
 from __future__ import annotations
 
-from iopenpod.sync.contracts import SyncAction, SyncItem
+from vcsync.sync.contracts import SyncAction, SyncItem
 
 from common.state import EpisodeRecord
 

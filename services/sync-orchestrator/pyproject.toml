@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "common",
-    "iopenpod==1.68.1",
+    "vcsync",
 ]
 
 [project.scripts]
@@ -12,6 +12,7 @@ sync-orchestrator = "sync_orchestrator.cli:main"
 
 [tool.uv.sources]
 common = { path = "../common" }
+vcsync = { git = "https://github.com/jkblank/vcsync.git", rev = "main" }
 
 [dependency-groups]
 dev = [

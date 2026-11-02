@@ -3,9 +3,9 @@ runs -- the first streaming-subprocess building block in this service
 (everything else so far either imports in-process, like fetcher_apple/
 podcast_manager, or uses subprocess.run's buffer-until-exit, like
 device.py's identify_connected_devices). sync-orchestrator is a
-standalone `uv` project (isolated venv for its iopenpod/PyQt6 deps,
-same reasoning device.py's own docstring already gives), so this stays
-a subprocess call, never an in-process import.
+standalone `uv` project (isolated venv for its vcsync deps, same
+reasoning device.py's own docstring already gives), so this stays a
+subprocess call, never an in-process import.
 
 Progress lines land on the subprocess's stderr and result/plan JSON
 lands on stdout -- see sync_orchestrator/cli.py's own --json handling,

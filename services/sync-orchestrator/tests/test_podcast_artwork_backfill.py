@@ -1,5 +1,5 @@
-from iopenpod.podcasts.models import PodcastEpisode, PodcastFeed
-from iopenpod.sync.contracts import SyncAction, SyncItem
+from vcsync.podcasts.models import PodcastEpisode, PodcastFeed
+from vcsync.sync.contracts import SyncAction, SyncItem
 
 from sync_orchestrator import podcast_artwork_backfill as backfill_module
 from sync_orchestrator.podcast_artwork_backfill import (
