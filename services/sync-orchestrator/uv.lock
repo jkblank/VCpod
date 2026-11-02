@@ -618,7 +618,7 @@ wheels = [
 [[package]]
 name = "vcsync"
 version = "0.1.0"
-source = { git = "https://github.com/jkblank/vcsync.git?rev=main#09a99c62ec76dce43d4a54ba92f9daf2bf951efc" }
+source = { git = "https://github.com/jkblank/vcsync.git?rev=main#840c56d6f0eb4b05cd22636c4d945149d24658a0" }
 dependencies = [
     { name = "feedparser" },
     { name = "libusb-package" },
