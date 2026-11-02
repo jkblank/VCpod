@@ -14,7 +14,10 @@ player (libbyapp.com, desktop browser only) and capture each chapter's
 plain MP3 segment from your browser's DevTools Network tab. This tool
 picks up from there. See `notes.md` for the full investigation.
 
-Uses [ffmpeg](https://ffmpeg.org/) to merge+chapterize, and
+Uses [ffmpeg](https://ffmpeg.org/) to merge+chapterize (declicking every
+merge with ffmpeg's own `adeclick` filter -- confirmed live that some
+raw captured audiobook sources carry genuine click artifacts baked in
+from acquisition, see notes.md 2026-10-26), and
 [beets](https://beets.io/) + [beets-audible](https://github.com/Neurrone/beets-audible)
 to look up rich metadata (author/narrator/series/cover art) from
 Audible/Audnex and tag+place the final file — a heavier, network-

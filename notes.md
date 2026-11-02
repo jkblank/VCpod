@@ -1,5 +1,61 @@
 # Notes / Future Work
 
+## 2026-10-26: audiobook-manager now declicks every merge (adeclick)
+
+Reported live: sharp, painful clicking artifacts in some synced
+audiobooks, worse in *Brave New World* than *Gravity's Rainbow*,
+worst on headphones.
+
+- **Investigated whether this project's own merge/encode step was
+  introducing them** (both books went through `merge.py`'s ffmpeg
+  concat+AAC re-encode, and *Brave New World*'s source MP3 is only
+  64kbps -- right in the range where ffmpeg's native, non-`libfdk_aac`
+  `aac` encoder is known to struggle). Ran ffmpeg's own `adeclick`
+  filter against both the raw captured source and the already-merged
+  `.m4b` and diffed original-vs-declicked sample-by-sample (olive has
+  no numpy installed for this, so the comparison script ran there via
+  `uv run --with numpy`) to count genuine impulsive-noise corrections.
+  Full 8-hour scan of *Brave New World*: source had 73 severe
+  (>3000/32768) corrections against 44 in the merged `.m4b` -- a
+  spot-check on *Gravity's Rainbow* showed the same pattern (fewer/
+  smaller corrections in the merged output than the source). **The
+  AAC re-encode was not adding clicks; if anything it had slightly
+  fewer than the source already has.**
+- **Conclusion:** the clicks are baked into the raw captured source
+  audio itself, most likely from the Libby-web-player DevTools
+  capture method this service's own README documents as the only
+  working acquisition path (chunk-boundary glitches are a plausible
+  mechanism, not confirmed). *Brave New World* being worse is a
+  property of that specific capture, not of anything this project's
+  pipeline does differently between the two books.
+- **Also investigated (and rejected) [jive-vocals](https://github.com/linuxmatters/jive-vocals)**
+  as a possible headless fix: it's a real, well-built Go CLI, but it's
+  built to master raw *microphone* podcast recordings -- it forces a
+  mono downmix, runs a noise gate, a 3:1 compressor, a de-esser, and
+  destructively renormalizes everything to -16 LUFS/-1dBTP, none of
+  which belongs in an already-mastered audiobook pipeline. Its only
+  click-handling is a single call to ffmpeg's own `adeclick` filter,
+  used just to clean up artifacts from *its own* limiter -- the exact
+  same filter already available directly, for free, with no new
+  GPLv3 binary dependency.
+- **Fix:** `merge.py`'s `_run_ffmpeg_merge` now always runs `-af
+  adeclick` (ffmpeg's default settings: window=55, overlap=75,
+  arorder=2, threshold=2, burst=2) regardless of codec/bitrate choice.
+  Deliberately scoped to the normal multi-part concat+re-encode path
+  only -- the single-pre-merged-`.m4b` passthrough (`find_pre_merged_m4b`)
+  still copies through byte-for-byte unchanged, same tradeoff as
+  before (no needless re-encode of an already-encoded file).
+
+**Verified**: new regression test injects a single near-full-scale
+sample into an otherwise-quiet synthetic sine-wave source and merges
+it -- confirmed live that without `adeclick` the injected spike
+survives MP3->AAC transcoding at ~7x the surrounding baseline, and
+with it the surviving peak lands back near that baseline. Full
+audiobook-manager suite (57 passed) and root workspace suite (596
+passed). **Not yet re-run against the two already-imported real
+books on olive** -- that would overwrite production library files,
+held until after this PR is reviewed/merged.
+
 ## 2026-10-23: sync-orchestrator now depends on vcsync, not PyPI iopenpod
 
 - **What changed:** following the 2026-10-22 investigation (below) that
@@ -61,6 +117,49 @@
   done right now. Don't deploy to olive or merge #20 on code-review
   confidence alone; wait for an explicit go-ahead once a device exists
   again.
+
+## 2026-10-22: iOpenPod 2.0 is not a compatible upgrade -- staying on 1.68.1
+
+- **What was checked:** whether `iopenpod==1.68.1` (pinned in
+  `services/sync-orchestrator/pyproject.toml`) is still the right version,
+  since upstream had shipped updates. PyPI has no `1.69.x`+ -- 1.68.1 is
+  already the newest release in that line. Everything past it (2.0.4
+  through 2.0.14, the current latest) is a ground-up rewrite, not a bump.
+- **Why 2.0.x is incompatible, not just newer:**
+  - The installable top-level package was renamed from `iopenpod` to
+    `iOpenPod` (capitalized, GUI-app-shaped). Every `from iopenpod...`
+    import across the 9 sync-orchestrator files that use it (`device.py`,
+    `sync.py`, `selection.py`, `rockbox_sync.py`, `podcast_removal.py`,
+    `podcast_artwork_backfill.py`, `playstate.py`, `plan_json.py`, `cli.py`)
+    would fail immediately with `ModuleNotFoundError`.
+  - It's not a rename-only move: the actual library-facing classes
+    sync-orchestrator drives headlessly -- `SyncEngine`, `BackupManager`,
+    `MappingManager`, `FingerprintCache`, `TranscodeOptions`,
+    `SyncAction`/`SyncItem`, `DeviceWriteSafetyError` -- do not exist
+    anywhere in the 2.0.14 codebase (confirmed by extracting the wheel and
+    grepping for each symbol). The low-level iPod database format code
+    (itdb/ArtworkDB/mhlt parsing) survived; the headless sync/backup/
+    transcode API layer built on top of it did not.
+  - 2.0.x requires Python `>=3.12,<3.13` specifically -- excludes 3.13 and
+    3.14. Both the local dev venv and olive's bare-metal
+    `services/sync-orchestrator/.venv` run 3.14.7.
+  - New required dependencies: PySide6 (GUI toolkit), librosa + numba (an
+    audio-reactive "synesthesia" visualizer), wasmtime, scrobbling,
+    store/OS update-check machinery. No README or entry point suggests
+    it's still meant to be used as an embeddable library -- it now reads
+    as a packaged desktop app (DMG/MSI/Store distribution), not a
+    library-with-optional-GUI.
+- **Decision:** stay pinned to `iopenpod==1.68.1`. Re-check for a future
+  non-2.0-rewrite-shaped release before assuming this is permanent, but
+  don't attempt a 2.0.x port -- it would mean rewriting sync-orchestrator's
+  entire device/sync/backup layer against an unfamiliar internal API, on a
+  separate Python 3.12 interpreter, for a dependency that no longer looks
+  designed to be embedded.
+- **Future idea, not started:** since upstream has moved in a direction
+  that no longer serves a headless embedder, consider forking 1.68.1 and
+  maintaining/extending that fork ourselves for this project's needs,
+  rather than continuing to track upstream. Explicitly deferred -- to be
+  scoped and executed later, not part of this investigation.
 
 ## 2026-10-12: /api/sync/status's log tail could show a different profile's old run
 

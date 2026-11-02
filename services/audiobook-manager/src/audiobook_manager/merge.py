@@ -44,6 +44,20 @@ notes.md."""
 
 _MIN_SPOKEN_WORD_LOSSY_KBPS = 32
 
+_DECLICK_FILTER = "adeclick"
+"""ffmpeg's own impulsive-noise filter, run on every merge regardless of
+codec/bitrate. Confirmed live (2026-10-26) that Gravity's Rainbow and
+Brave New World's raw captured source audio -- not this project's own
+encode step -- already carries genuine, audible click artifacts: an
+adeclick-vs-untouched diff over the full 8-hour Brave New World file
+found 73 severe (>3000/32768) corrections in the source against 44 in
+the already-merged .m4b, so this project's AAC re-encode wasn't adding
+them. Likely baked in by the Libby-web-player DevTools capture method
+this service's own README documents as the only working acquisition
+path. Default filter settings (window=55, overlap=75, arorder=2,
+threshold=2, burst=2) are left as-is -- see notes.md for the
+investigation and the before/after numbers that justified this."""
+
 _FAT32_SAFE_MAX_BYTES = 3 * 1024**3
 """Safety margin below FAT32's real 4GiB-1 per-file limit (the same
 filesystem sync_orchestrator/sync.py already has to work around for
@@ -303,7 +317,10 @@ def merge_parts_to_m4b(
         # would needlessly re-encode it (lossy source: a real quality
         # loss; lossless source: 16x the storage for no gain) and
         # replace whatever real per-chapter breakdown it may already
-        # have embedded with a single synthetic whole-book chapter.
+        # have embedded with a single synthetic whole-book chapter. Also
+        # means _DECLICK_FILTER doesn't run here -- same tradeoff: a
+        # pre-made .m4b doesn't get declicked for free, only a real
+        # re-encode (the normal multi-part path below) does.
         _report(f"found a single pre-merged {pre_merged.name} -- copying through unchanged")
         shutil.copyfile(pre_merged, output_path)
         return output_path
@@ -347,6 +364,7 @@ def merge_parts_to_m4b(
                 "-map", "0:a",
                 "-map_metadata", "1",
                 "-map_chapters", "1",
+                "-af", _DECLICK_FILTER,
                 "-c:a", codec,
             ]
             if bitrate_flag is not None:
