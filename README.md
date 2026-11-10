@@ -37,6 +37,21 @@ fresh on each playlist's/show's own cron schedule, and plugging in the
 iPod triggers a real device sync automatically (udev → a systemd
 service) — see "Setup" below, Docker or manual.
 
+## Screenshots
+
+The web GUI (`services/web-gui-backend` + `services/web-gui-frontend`) —
+screenshots from a real running instance. Profile names and per-device
+stats are redacted; everything else is live data.
+
+| | |
+|---|---|
+| **Overview** — alerts, device status, recent activity | **Profiles** — one YAML file per person/iPod |
+| ![Overview](docs/images/screenshots/overview.png) | ![Profiles](docs/images/screenshots/profiles.png) |
+| **Sync** — compute/review/execute a real device sync | **Activity** — what fetch-scheduler and sync-orchestrator actually did |
+| ![Sync](docs/images/screenshots/sync.png) | ![Activity](docs/images/screenshots/activity.png) |
+| **Music sources** — pick which playlists sync | **Podcasts** — pick which shows land on the device |
+| ![Music sources](docs/images/screenshots/music-sources.png) | ![Podcasts](docs/images/screenshots/podcasts.png) |
+
 ## Status
 
 | Milestone | What | Status |
