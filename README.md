@@ -40,8 +40,10 @@ service) — see "Setup" below, Docker or manual.
 ## Screenshots
 
 The web GUI (`services/web-gui-backend` + `services/web-gui-frontend`) —
-screenshots from a real running instance. Profile names and per-device
-stats are redacted; everything else is live data.
+screenshots from a real running instance with a real profile selected, so
+you can see actual playlists, podcasts, and audiobooks. Profile names,
+per-device stats, and any credentials are redacted; everything else is
+live data.
 
 | | |
 |---|---|
@@ -51,6 +53,8 @@ stats are redacted; everything else is live data.
 | ![Sync](docs/images/screenshots/sync.png) | ![Activity](docs/images/screenshots/activity.png) |
 | **Music sources** — pick which playlists sync | **Podcasts** — pick which shows land on the device |
 | ![Music sources](docs/images/screenshots/music-sources.png) | ![Podcasts](docs/images/screenshots/podcasts.png) |
+| **Audiobooks** — curate which books sync to this profile | |
+| ![Audiobooks](docs/images/screenshots/audiobooks.png) | |
 
 ## Status
 
