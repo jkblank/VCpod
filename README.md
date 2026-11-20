@@ -55,8 +55,8 @@ live data.
 | ![Sync](docs/images/screenshots/sync.png) | ![Activity](docs/images/screenshots/activity.png) |
 | **Music sources** — pick which playlists sync | **Podcasts** — pick which shows land on the device |
 | ![Music sources](docs/images/screenshots/music-sources.png) | ![Podcasts](docs/images/screenshots/podcasts.png) |
-| **Audiobooks** — curate which books sync to this profile | |
-| ![Audiobooks](docs/images/screenshots/audiobooks.png) | |
+| **Podcasts → Search** — grab a single episode of a show you don't subscribe to, no Pocket Casts needed | **Audiobooks** — curate which books sync to this profile |
+| ![Podcast search](docs/images/screenshots/podcasts-search.png) | ![Audiobooks](docs/images/screenshots/audiobooks.png) |
 
 ## Status
 
