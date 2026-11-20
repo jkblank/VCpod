@@ -7,6 +7,13 @@ history (bugs found/fixed, investigations, design decisions), see
 `notes.md`; this file is just the subset that could actually affect
 someone else running this repo.
 
+## 2026-11-20
+
+- **Podcasts: you can now search for and download a single episode of a
+  show you aren't subscribed to.** New "Search" tab on the web GUI's
+  Podcasts screen — needs no Pocket Casts login at all. See
+  `services/podcast-manager/README.md`.
+
 ## 2026-09-02
 
 ### Breaking

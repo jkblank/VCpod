@@ -1,5 +1,78 @@
 # Notes / Future Work
 
+## 2026-11-20: podcast search + single-episode download for non-subscribed shows
+
+Added a way to grab one episode of a show the profile isn't subscribed
+to in Pocket Casts at all — a new Search tab on the web GUI's Podcasts
+screen, backed by `podcast_manager.rss.search_podcasts` (Apple's
+key-free iTunes Search API, the same one `resolve_feed_url` already
+used for best-effort RSS enrichment) and
+`podcast_manager.download.download_one_off_episode`. Needs no Pocket
+Casts login/credentials at all — search and download both work off
+iTunes Search + the show's own RSS feed directly.
+
+Two real traps found and designed around before writing any code
+(not discovered the hard way in production, this time):
+
+- **`episode_slots` eviction.** `sync-orchestrator/sync.py::
+  _load_podcast_feeds` sets `episode_slots =
+  profile.podcasts.max_episodes_per_show` on every `PodcastFeed` it
+  builds, grouped by `podcast_uuid`. `vcsync/podcasts/podcast_sync.py`
+  *enforces* that as a hard per-feed cap and evicts overflow (confirmed
+  by reading its overflow-handling branches directly, not assumed). If
+  one-off episodes of the same external show were grouped under one
+  shared synthetic `podcast_uuid`, a profile's ordinary
+  `max_episodes_per_show` setting would silently evict an older one-off
+  download the next time a device sync plan ran — exactly backwards
+  from "download this and keep it." **Fix:** every one-off episode gets
+  its own unique synthetic `podcast_uuid` (== its `episode_uuid`,
+  derived from the enclosure URL's sha256), so each is its own
+  single-episode "feed" and the cap is always trivially satisfied.
+- **Subscription-prune / Pocket-Casts-push false positives.**
+  `download.py::prune_unsubscribed_shows` deletes the local file and
+  flags `unsubscribed=True` for any downloaded episode whose
+  `podcast_uuid` isn't in the account's current subscriptions — which a
+  one-off episode's synthetic uuid never will be, since it was never a
+  real subscription. Running unguarded, this would delete every
+  one-off download on the very next `podcast-manager sync` /
+  `music-stack fetch --source podcasts`. Likewise,
+  `push_pending_play_status` would get a guaranteed 4xx from Pocket
+  Casts' API trying to push play state for a synthetic uuid. **Fix:** a
+  new `EpisodeRecord.one_off` flag, checked first and skipped by both
+  (`common/state.py`'s `list_episodes_pending_push` now filters
+  `one_off = 0`; `prune_unsubscribed_shows` now also treats
+  `episode.one_off` as a skip condition).
+
+Device-side removal needed no changes at all —
+`sync-orchestrator/podcast_removal.py::build_podcast_removal_items`
+already keys purely off `EpisodeRecord.played`/`.unsubscribed` (set by
+local device read-back), which one-off episodes participate in exactly
+like subscribed ones.
+
+`common/state.py` gained one genuinely new primitive:
+`StateDB.delete_episode` (a hard `DELETE`, unlike every other method in
+that class, which only ever soft-deletes via `mark_unsubscribed`) —
+needed because "no longer wanted" has no subscription-state meaning
+for a one-off row; `mark_unsubscribed`ing it would just leave a
+permanent, meaningless ghost row. Only reachable for `one_off` rows
+(`download.py::delete_one_off_episode` enforces that; `delete_episode`
+itself doesn't check, staying a plain mechanical primitive like the
+rest of `StateDB`).
+
+See `services/podcast-manager/README.md`'s new section for the
+library-level API and usage example. Full test coverage added across
+`common`, `podcast-manager`, and `web-gui-backend` (including a
+regression test confirming two different one-off episodes get
+different synthetic `podcast_uuid`s, and that `prune_unsubscribed_shows`
+leaves a `one_off=True` row alone even though its uuid is, by
+construction, never subscribed).
+
+**Not yet done:** a real screenshot of the new Search tab for the
+README's Screenshots section — needs this deployed to olive first (see
+CLAUDE.md's "Deployment" note); the existing screenshots there were all
+captured from a live running instance, and this one should be too
+rather than staged from a local dev build.
+
 ## 2026-10-26: audiobook-manager now declicks every merge (adeclick)
 
 Reported live: sharp, painful clicking artifacts in some synced

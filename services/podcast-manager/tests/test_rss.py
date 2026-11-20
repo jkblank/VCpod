@@ -2,7 +2,13 @@ import httpx
 import pytest
 
 from podcast_manager import rss as rss_module
-from podcast_manager.rss import fetch_feed_image_url, fetch_rss_episodes, resolve_feed_url
+from podcast_manager.rss import (
+    _parse_itunes_duration,
+    fetch_feed_image_url,
+    fetch_rss_episodes,
+    resolve_feed_url,
+    search_podcasts,
+)
 
 
 class FakeResponse:
@@ -26,6 +32,7 @@ _SAMPLE_FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
 <description>A real episode description.</description>
 <itunes:episode>3</itunes:episode>
 <itunes:season>2</itunes:season>
+<itunes:duration>01:02:03</itunes:duration>
 <pubDate>Thu, 13 Aug 2026 15:00:00 -0000</pubDate>
 <enclosure url="https://cdn.example.com/ep1.mp3" length="123" type="audio/mpeg"/>
 </item>
@@ -130,6 +137,7 @@ def test_fetch_rss_episodes_parses_description_and_itunes_tags(monkeypatch):
     assert first.episode_number == 3
     assert first.season_number == 2
     assert first.published == "Thu, 13 Aug 2026 15:00:00 -0000"
+    assert first.duration_seconds == 3723  # 1h2m3s
 
 
 def test_fetch_rss_episodes_treats_missing_itunes_tags_as_none(monkeypatch):
@@ -144,6 +152,7 @@ def test_fetch_rss_episodes_treats_missing_itunes_tags_as_none(monkeypatch):
     second = episodes[1]
     assert second.episode_number is None
     assert second.season_number is None
+    assert second.duration_seconds is None
 
 
 def test_fetch_rss_episodes_returns_empty_on_malformed_xml(monkeypatch):
@@ -226,3 +235,106 @@ def test_fetch_feed_image_url_returns_none_on_http_error(monkeypatch):
     monkeypatch.setattr(rss_module.httpx, "get", fake_get)
 
     assert fetch_feed_image_url("https://example.com/feed.xml") is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("01:02:03", 3723),
+        ("02:03", 123),
+        ("45", 45),
+        (None, None),
+        ("", None),
+        ("not a duration", None),
+        ("1:2:3:4", None),
+    ],
+)
+def test_parse_itunes_duration(value, expected):
+    assert _parse_itunes_duration(value) == expected
+
+
+def test_search_podcasts_returns_every_result_with_a_feed_url(monkeypatch):
+    def fake_get(url, params, timeout=None):
+        assert url == rss_module._ITUNES_SEARCH_URL
+        assert params == {"term": "linux", "entity": "podcast", "limit": 15}
+        return FakeResponse(
+            json_data={
+                "results": [
+                    {
+                        "collectionId": 111,
+                        "collectionName": "Linux Lads",
+                        "artistName": "Linux Lads",
+                        "feedUrl": "https://example.com/linux-lads.xml",
+                        "artworkUrl600": "https://example.com/linux-lads.jpg",
+                    },
+                    {
+                        "collectionId": 222,
+                        "collectionName": "No Feed Here",
+                        "artistName": "Nobody",
+                        # no feedUrl -- Apple-exclusive shows do this in practice
+                    },
+                ]
+            }
+        )
+
+    monkeypatch.setattr(rss_module.httpx, "get", fake_get)
+
+    results = search_podcasts("linux")
+
+    assert len(results) == 1
+    assert results[0].collection_id == 111
+    assert results[0].title == "Linux Lads"
+    assert results[0].author == "Linux Lads"
+    assert results[0].feed_url == "https://example.com/linux-lads.xml"
+    assert results[0].artwork_url == "https://example.com/linux-lads.jpg"
+
+
+def test_search_podcasts_falls_back_to_artwork_url_100(monkeypatch):
+    monkeypatch.setattr(
+        rss_module.httpx,
+        "get",
+        lambda url, params, timeout=None: FakeResponse(
+            json_data={
+                "results": [
+                    {
+                        "collectionId": 1,
+                        "collectionName": "Show",
+                        "artistName": "Author",
+                        "feedUrl": "https://example.com/show.xml",
+                        "artworkUrl100": "https://example.com/small.jpg",
+                    }
+                ]
+            }
+        ),
+    )
+
+    results = search_podcasts("show")
+
+    assert results[0].artwork_url == "https://example.com/small.jpg"
+
+
+def test_search_podcasts_respects_limit_param(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, timeout=None):
+        captured.update(params)
+        return FakeResponse(json_data={"results": []})
+
+    monkeypatch.setattr(rss_module.httpx, "get", fake_get)
+
+    search_podcasts("linux", limit=5)
+
+    assert captured["limit"] == 5
+
+
+def test_search_podcasts_raises_on_http_error(monkeypatch):
+    # Unlike resolve_feed_url (best-effort background enrichment),
+    # search_podcasts is a direct user-initiated action -- a real
+    # failure must surface to the caller, not degrade to [].
+    def fake_get(url, params, timeout=None):
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(rss_module.httpx, "get", fake_get)
+
+    with pytest.raises(httpx.ConnectError):
+        search_podcasts("linux")

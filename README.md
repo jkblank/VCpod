@@ -16,7 +16,9 @@ with Claude Code — hence the name.
 2. **Organizes and tags** the acquired audio, deduplicates across sources,
    and writes `.m3u8` playlists.
 3. **Syncs podcasts**, using [Pocket Casts](https://pocketcasts.com) as the
-   source of truth for subscriptions and played/unplayed state.
+   source of truth for subscriptions and played/unplayed state — plus
+   on-demand single-episode downloads for shows you aren't subscribed
+   to at all, independent of Pocket Casts.
 4. **Syncs everything onto a real iPod** — music, playlists, and podcasts —
    using [vcsync](https://github.com/jkblank/vcsync) as a headless sync
    engine, no GUI required. `vcsync` is our own fork of

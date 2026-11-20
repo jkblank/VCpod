@@ -106,6 +106,45 @@ export type PodcastSubscription = {
   author: string
 }
 
+// Search + single-episode download for shows NOT in the account's
+// subscriptions -- independent of Pocket Casts entirely (powered by
+// Apple's iTunes Search API + each show's own RSS feed). See
+// services/podcast-manager/README.md.
+export type PodcastSearchResult = {
+  collection_id: number
+  title: string
+  author: string
+  feed_url: string
+  artwork_url: string | null
+}
+
+export type PodcastRssEpisode = {
+  enclosure_url: string
+  title: string
+  description: string
+  episode_number: number | null
+  season_number: number | null
+  published: string | null
+  duration_seconds: number | null
+}
+
+export type OneOffEpisode = {
+  episode_uuid: string
+  podcast_uuid: string
+  show_name: string
+  local_path: string
+  played: boolean
+  played_up_to: number
+  downloaded_at: string
+  title: string
+  audio_url: string
+  duration_seconds: number
+  description: string
+  episode_number: number | null
+  season_number: number | null
+  published_at: string
+}
+
 export type CredentialFileStatus = {
   exists: boolean
   updated_at: number | null
@@ -441,6 +480,28 @@ export const api = {
     request<{ status: string }>(
       `/api/profiles/${encodeURIComponent(profileName)}/pocketcasts-credentials`,
       { method: 'PUT', body: JSON.stringify({ email, password }) },
+    ),
+
+  searchPodcasts: (term: string) =>
+    request<PodcastSearchResult[]>(`/api/podcasts/search?q=${encodeURIComponent(term)}`),
+  getPodcastEpisodes: (feedUrl: string) =>
+    request<PodcastRssEpisode[]>(`/api/podcasts/episodes?feed_url=${encodeURIComponent(feedUrl)}`),
+  downloadOneOffEpisode: (
+    profileName: string,
+    payload: { show_title: string; feed_url: string; episode: PodcastRssEpisode },
+  ) =>
+    request<OneOffEpisode>(
+      `/api/profiles/${encodeURIComponent(profileName)}/podcasts/one-off`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  getOneOffEpisodes: (profileName: string) =>
+    request<OneOffEpisode[]>(
+      `/api/profiles/${encodeURIComponent(profileName)}/podcasts/one-off`,
+    ),
+  deleteOneOffEpisode: (profileName: string, episodeUuid: string) =>
+    request<{ status: string }>(
+      `/api/profiles/${encodeURIComponent(profileName)}/podcasts/one-off/${encodeURIComponent(episodeUuid)}`,
+      { method: 'DELETE' },
     ),
 
   browseExternalLibrary: (root: string, subpath: string) =>

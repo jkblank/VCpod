@@ -37,6 +37,13 @@ class EpisodeRecord:
     # show is no longer in the account's Pocket Casts subscriptions.
     # Per-profile (unlike the shared local file) — see notes.md.
     unsubscribed: bool = False
+    # Set by podcast_manager.download.download_one_off_episode for an
+    # episode grabbed via search, independent of any Pocket Casts
+    # subscription. podcast_uuid is a synthetic per-episode value for
+    # these rows (never a real subscription uuid), so
+    # prune_unsubscribed_shows and push_pending_play_status must both
+    # skip them explicitly -- see notes.md.
+    one_off: bool = False
     # RSS-sourced metadata (podcast_manager/rss.py) -- Pocket Casts' own
     # API doesn't expose any of these. Best-effort: blank/None when the
     # show's feed couldn't be resolved or doesn't tag them (not every
@@ -84,6 +91,7 @@ class StateDB:
                 episode_number INTEGER,
                 season_number INTEGER,
                 published_at TEXT NOT NULL DEFAULT '',
+                one_off INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (episode_uuid)
             )
             """
@@ -202,6 +210,7 @@ class StateDB:
             ("episode_number", "INTEGER"),
             ("season_number", "INTEGER"),
             ("published_at", "TEXT NOT NULL DEFAULT ''"),
+            ("one_off", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE episodes ADD COLUMN {column} {ddl}")
@@ -269,7 +278,7 @@ class StateDB:
         "episode_uuid, podcast_uuid, show_name, local_path, played, "
         "played_up_to, downloaded_at, title, audio_url, duration_seconds, "
         "pending_push, unsubscribed, description, episode_number, "
-        "season_number, published_at"
+        "season_number, published_at, one_off"
     )
 
     @staticmethod
@@ -291,6 +300,7 @@ class StateDB:
             episode_number=row[13],
             season_number=row[14],
             published_at=row[15],
+            one_off=bool(row[16]),
         )
 
     def get_episode(self, episode_uuid: str) -> EpisodeRecord | None:
@@ -315,18 +325,24 @@ class StateDB:
         return count
 
     def record_episode(self, record: EpisodeRecord) -> None:
-        # unsubscribed is always written as 0 here, regardless of
-        # record.unsubscribed -- this is the self-heal path: being called
-        # at all means a real local file exists right now (just downloaded,
-        # or verified already-present), which can only happen for a show
-        # that's currently subscribed again, so any stale unsubscribed
-        # flag from before must clear.
+        # unsubscribed and one_off are always written as 0 here,
+        # regardless of record.unsubscribed/record.one_off -- this is
+        # the self-heal path: being called at all means a real local
+        # file exists right now via the subscription-driven sync path
+        # (just downloaded, or verified already-present), which can
+        # only happen for a show that's currently subscribed again, so
+        # any stale unsubscribed *or* one_off flag from before must
+        # clear (the two flag sets are mutually exclusive by
+        # construction -- synthetic "oneoff:..." uuids never collide
+        # with real Pocket Casts ones -- but this keeps the row
+        # consistent even if that ever changed).
         self._conn.execute(
             """
             INSERT INTO episodes (episode_uuid, podcast_uuid, show_name, local_path,
                 played, played_up_to, downloaded_at, title, audio_url, duration_seconds,
-                unsubscribed, description, episode_number, season_number, published_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                unsubscribed, description, episode_number, season_number, published_at,
+                one_off)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 0)
             ON CONFLICT (episode_uuid) DO UPDATE SET
                 podcast_uuid = excluded.podcast_uuid,
                 show_name = excluded.show_name,
@@ -341,7 +357,8 @@ class StateDB:
                 description = excluded.description,
                 episode_number = excluded.episode_number,
                 season_number = excluded.season_number,
-                published_at = excluded.published_at
+                published_at = excluded.published_at,
+                one_off = 0
             """,
             (
                 record.episode_uuid,
@@ -361,6 +378,70 @@ class StateDB:
             ),
         )
         self._conn.commit()
+
+    def record_one_off_episode(self, record: EpisodeRecord) -> None:
+        """Like record_episode, but for an episode downloaded via search
+        (podcast_manager.download.download_one_off_episode) rather than a
+        subscription sync. Always writes one_off = 1 (and, same
+        self-heal reasoning as record_episode, unsubscribed = 0 -- a
+        synthetic per-episode podcast_uuid is never a real subscription,
+        so "unsubscribed" is meaningless for these rows)."""
+        self._conn.execute(
+            """
+            INSERT INTO episodes (episode_uuid, podcast_uuid, show_name, local_path,
+                played, played_up_to, downloaded_at, title, audio_url, duration_seconds,
+                unsubscribed, description, episode_number, season_number, published_at,
+                one_off)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1)
+            ON CONFLICT (episode_uuid) DO UPDATE SET
+                podcast_uuid = excluded.podcast_uuid,
+                show_name = excluded.show_name,
+                local_path = excluded.local_path,
+                played = excluded.played,
+                played_up_to = excluded.played_up_to,
+                downloaded_at = excluded.downloaded_at,
+                title = excluded.title,
+                audio_url = excluded.audio_url,
+                duration_seconds = excluded.duration_seconds,
+                unsubscribed = 0,
+                description = excluded.description,
+                episode_number = excluded.episode_number,
+                season_number = excluded.season_number,
+                published_at = excluded.published_at,
+                one_off = 1
+            """,
+            (
+                record.episode_uuid,
+                record.podcast_uuid,
+                record.show_name,
+                record.local_path,
+                int(record.played),
+                record.played_up_to,
+                record.downloaded_at,
+                record.title,
+                record.audio_url,
+                record.duration_seconds,
+                record.description,
+                record.episode_number,
+                record.season_number,
+                record.published_at,
+            ),
+        )
+        self._conn.commit()
+
+    def delete_episode(self, episode_uuid: str) -> EpisodeRecord | None:
+        """Hard-deletes an episode row -- unlike mark_unsubscribed (which
+        only ever soft-deletes), this actually removes it. Only intended
+        for one_off rows (podcast_manager.download.delete_one_off_episode
+        enforces that; this method itself doesn't check, to stay a plain
+        mechanical primitive like the rest of this class). Returns the
+        deleted row, or None if no row existed for episode_uuid."""
+        existing = self.get_episode(episode_uuid)
+        if existing is None:
+            return None
+        self._conn.execute("DELETE FROM episodes WHERE episode_uuid = ?", (episode_uuid,))
+        self._conn.commit()
+        return existing
 
     def mark_unsubscribed(self, episode_uuid: str) -> bool:
         """Records that this episode's show is no longer in the account's
@@ -469,8 +550,11 @@ class StateDB:
         return True
 
     def list_episodes_pending_push(self) -> list[EpisodeRecord]:
+        # one_off = 0: a one-off episode's podcast_uuid is synthetic, not
+        # a real Pocket Casts identity -- pushing its play state would
+        # just get a guaranteed 4xx from Pocket Casts' API every run.
         rows = self._conn.execute(
-            f"SELECT {self._EPISODE_COLUMNS} FROM episodes WHERE pending_push = 1"
+            f"SELECT {self._EPISODE_COLUMNS} FROM episodes WHERE pending_push = 1 AND one_off = 0"
         ).fetchall()
         return [self._episode_from_row(row) for row in rows]
 
