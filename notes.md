@@ -67,11 +67,25 @@ different synthetic `podcast_uuid`s, and that `prune_unsubscribed_shows`
 leaves a `one_off=True` row alone even though its uuid is, by
 construction, never subscribed).
 
-**Not yet done:** a real screenshot of the new Search tab for the
-README's Screenshots section — needs this deployed to olive first (see
-CLAUDE.md's "Deployment" note); the existing screenshots there were all
-captured from a live running instance, and this one should be too
-rather than staged from a local dev build.
+**Deployed to olive and live-verified** (2026-11-20): merged as PR #25,
+pulled on olive, `web-gui-backend`/`fetch-scheduler` images rebuilt and
+recreated, `sync-orchestrator`'s bare-metal venv reinstalled `common`.
+Searched the real iTunes Search API for "The Joe Rogan Experience",
+fetched its real RSS feed (2785 episodes), found "#835 - Louis
+Theroux", and downloaded it onto the `Tobie` profile — which has no
+`config/secrets/pocketcasts/Tobie.json` at all — confirming live that
+this needs zero Pocket Casts involvement. It downloaded the real
+120MB audio file + cover art and showed up correctly under "One-off
+downloads." README's Screenshots section now includes a real capture
+of this (`docs/images/screenshots/podcasts-search.png`).
+
+**Still not done:** the plan's last verification step — confirming a
+plan-only `sync-orchestrator sync` shows the one-off episode as its own
+single-episode `PodcastFeed` (proving the `episode_slots`-eviction
+avoidance live, not just by code reading) — because olive currently has
+no iPod connected (`identify-device` returns `{"devices": []}`); this
+is the same physical disconnect issue flagged separately. Revisit once
+a device is reconnected.
 
 ## 2026-10-26: audiobook-manager now declicks every merge (adeclick)
 
