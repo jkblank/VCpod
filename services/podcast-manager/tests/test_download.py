@@ -8,6 +8,7 @@ from common.lock import FileLock, LockTimeoutError
 from common.state import EpisodeRecord, StateDB
 from podcast_manager import download as download_module
 from podcast_manager.api import EpisodeState, FullEpisode, PodcastSummary
+from podcast_manager.rss import RssEpisodeMeta
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FIXTURE_AUDIO = (FIXTURES / "episode.mp3").read_bytes()
@@ -1349,3 +1350,245 @@ def test_backfill_episode_metadata_counts_unmatched_episodes(monkeypatch, tmp_pa
 
     assert result.unmatched == 1
     assert result.updated == []
+
+
+def _one_off_episode(**overrides) -> RssEpisodeMeta:
+    kwargs = dict(
+        enclosure_url="https://cdn.example/standalone-ep.mp3",
+        title="Standalone Episode",
+        description="Grabbed via search, not a subscription.",
+        episode_number=None,
+        season_number=None,
+        published="2026-09-01T00:00:00Z",
+        duration_seconds=120,
+    )
+    kwargs.update(overrides)
+    return RssEpisodeMeta(**kwargs)
+
+
+def test_download_one_off_episode_downloads_and_records(monkeypatch, patched_pipeline, tmp_path):
+    monkeypatch.setattr(download_module, "fetch_feed_image_url", lambda feed_url: None)
+    record = download_module.download_one_off_episode(
+        show_title="Standalone Show",
+        feed_url="https://example.com/feed.xml",
+        episode=_one_off_episode(),
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    assert record.one_off is True
+    assert record.unsubscribed is False
+    assert record.podcast_uuid == record.episode_uuid  # own single-episode "feed"
+    assert record.episode_uuid.startswith("oneoff:")
+    assert Path(record.local_path).is_file()
+    assert Path(record.local_path).parent.name == "Standalone Show"
+
+    with StateDB(tmp_path / "state.sqlite") as db:
+        fetched = db.get_episode(record.episode_uuid)
+        assert fetched is not None
+        assert fetched.one_off is True
+        assert fetched.title == "Standalone Episode"
+        assert fetched.duration_seconds == 120
+
+
+def test_download_one_off_episode_is_idempotent_for_same_enclosure_url(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # Re-requesting the same episode must resolve to the same synthetic
+    # uuid/row/file, never a duplicate.
+    monkeypatch.setattr(download_module, "fetch_feed_image_url", lambda feed_url: None)
+    kwargs = dict(
+        show_title="Standalone Show",
+        feed_url="https://example.com/feed.xml",
+        episode=_one_off_episode(),
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    first = download_module.download_one_off_episode(**kwargs)
+    second = download_module.download_one_off_episode(**kwargs)
+
+    assert first.episode_uuid == second.episode_uuid
+    with StateDB(tmp_path / "state.sqlite") as db:
+        assert len(db.list_episodes()) == 1
+
+
+def test_download_one_off_episode_two_different_episodes_get_different_podcast_uuids(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # The whole point of the synthetic-uuid design: each one-off episode
+    # is its own single-episode "feed" to sync-orchestrator, so a
+    # profile's max_episodes_per_show setting can never evict one in
+    # favor of another. Confirmed here at the data level -- the
+    # grouping behavior itself is sync-orchestrator's own concern.
+    monkeypatch.setattr(download_module, "fetch_feed_image_url", lambda feed_url: None)
+    first = download_module.download_one_off_episode(
+        show_title="Standalone Show",
+        feed_url="https://example.com/feed.xml",
+        episode=_one_off_episode(enclosure_url="https://cdn.example/ep-a.mp3"),
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+    second = download_module.download_one_off_episode(
+        show_title="Standalone Show",
+        feed_url="https://example.com/feed.xml",
+        episode=_one_off_episode(enclosure_url="https://cdn.example/ep-b.mp3"),
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    assert first.podcast_uuid != second.podcast_uuid
+
+
+def test_download_one_off_episode_fetches_cover_art_when_missing(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    monkeypatch.setattr(
+        download_module, "fetch_feed_image_url", lambda feed_url: "https://cdn.example.com/cover.png"
+    )
+
+    download_module.download_one_off_episode(
+        show_title="Standalone Show",
+        feed_url="https://example.com/feed.xml",
+        episode=_one_off_episode(),
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    assert (tmp_path / "library" / "Standalone Show" / "cover.png").exists()
+
+
+def test_download_one_off_episode_shares_folder_and_cover_with_subscribed_show(
+    monkeypatch, patched_pipeline, tmp_path
+):
+    # A one-off episode of a show the profile is ALSO subscribed to must
+    # land in the exact same show_dir (and reuse its cover), same
+    # convention sync_podcast itself uses.
+    show_dir = tmp_path / "library" / "Test Show"
+    show_dir.mkdir(parents=True)
+    existing_cover = show_dir / "cover.jpg"
+    existing_cover.write_bytes(b"already here")
+
+    def _fail_fetch_image(feed_url):
+        raise AssertionError("should not re-fetch the feed just for an already-present cover")
+
+    monkeypatch.setattr(download_module, "fetch_feed_image_url", _fail_fetch_image)
+
+    record = download_module.download_one_off_episode(
+        show_title="Test Show",
+        feed_url="https://example.com/feed.xml",
+        episode=_one_off_episode(),
+        library_root=tmp_path / "library",
+        state_db_path=tmp_path / "state.sqlite",
+    )
+
+    assert Path(record.local_path).parent == show_dir
+    assert existing_cover.read_bytes() == b"already here"
+
+
+def test_prune_unsubscribed_shows_skips_one_off_episodes(tmp_path):
+    # A one-off episode's synthetic podcast_uuid is never a real
+    # subscription -- prune must not treat that as "unsubscribed."
+    state_db_path = tmp_path / "state.sqlite"
+    episode_path = tmp_path / "library" / "Standalone Show" / "episode.mp3"
+    episode_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", episode_path)
+    with StateDB(state_db_path) as db:
+        db.record_one_off_episode(
+            EpisodeRecord(
+                episode_uuid="oneoff:abc",
+                podcast_uuid="oneoff:abc",
+                show_name="Standalone Show",
+                local_path=str(episode_path),
+                played=False,
+                played_up_to=0,
+                downloaded_at="2026-09-01T00:00:00+00:00",
+            )
+        )
+
+    pruned = download_module.prune_unsubscribed_shows([], state_db_path=state_db_path)
+
+    assert pruned == []
+    assert episode_path.exists()
+    with StateDB(state_db_path) as db:
+        fetched = db.get_episode("oneoff:abc")
+        assert fetched.unsubscribed is False
+        assert fetched.one_off is True
+
+
+def _record_one_off(state_db_path, *, episode_uuid, local_path):
+    with StateDB(state_db_path) as db:
+        db.record_one_off_episode(
+            EpisodeRecord(
+                episode_uuid=episode_uuid,
+                podcast_uuid=episode_uuid,
+                show_name="Standalone Show",
+                local_path=str(local_path),
+                played=False,
+                played_up_to=0,
+                downloaded_at="2026-09-01T00:00:00+00:00",
+            )
+        )
+
+
+def test_delete_one_off_episode_deletes_file_and_row(tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    episode_path = tmp_path / "library" / "Standalone Show" / "episode.mp3"
+    episode_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", episode_path)
+    _record_one_off(state_db_path, episode_uuid="oneoff:abc", local_path=episode_path)
+
+    deleted = download_module.delete_one_off_episode("oneoff:abc", state_db_path=state_db_path)
+
+    assert deleted is not None
+    assert deleted.episode_uuid == "oneoff:abc"
+    assert not episode_path.exists()
+    with StateDB(state_db_path) as db:
+        assert db.get_episode("oneoff:abc") is None
+
+
+def test_delete_one_off_episode_refuses_non_one_off_row(tmp_path):
+    state_db_path = tmp_path / "state.sqlite"
+    episode_path = tmp_path / "library" / "Test Show" / "episode.mp3"
+    episode_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", episode_path)
+    _record_existing_episode(
+        state_db_path, episode_uuid="ep-1", local_path=episode_path, played=False
+    )
+
+    result = download_module.delete_one_off_episode("ep-1", state_db_path=state_db_path)
+
+    assert result is None
+    assert episode_path.exists()  # untouched -- this is a hard delete, never attempted
+    with StateDB(state_db_path) as db:
+        assert db.get_episode("ep-1") is not None
+
+
+def test_delete_one_off_episode_returns_none_for_unknown_episode(tmp_path):
+    result = download_module.delete_one_off_episode(
+        "does-not-exist", state_db_path=tmp_path / "state.sqlite"
+    )
+
+    assert result is None
+
+
+def test_delete_one_off_episode_does_not_delete_file_still_wanted_by_sibling_profile(tmp_path):
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    shared_path = tmp_path / "library" / "Standalone Show" / "episode.mp3"
+    shared_path.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / "episode.mp3", shared_path)
+
+    profile_a_db = state_root / "alice.sqlite"
+    profile_b_db = state_root / "bob.sqlite"
+    for db_path in (profile_a_db, profile_b_db):
+        _record_one_off(db_path, episode_uuid="oneoff:shared", local_path=shared_path)
+
+    deleted = download_module.delete_one_off_episode("oneoff:shared", state_db_path=profile_a_db)
+
+    assert deleted is not None
+    assert shared_path.exists()  # bob still has this one-off episode
+    with StateDB(profile_a_db) as db:
+        assert db.get_episode("oneoff:shared") is None
+    with StateDB(profile_b_db) as db:
+        assert db.get_episode("oneoff:shared") is not None

@@ -33,6 +33,21 @@ class RssEpisodeMeta:
     episode_number: int | None
     season_number: int | None
     published: str | None
+    duration_seconds: int | None = None
+
+
+@dataclass
+class PodcastSearchResult:
+    """One candidate show from search_podcasts -- unlike
+    resolve_feed_url (which silently picks a single best match for
+    best-effort RSS enrichment of an already-known subscribed show),
+    this surfaces every real result so the user can pick."""
+
+    collection_id: int
+    title: str
+    author: str
+    feed_url: str
+    artwork_url: str | None
 
 
 def resolve_feed_url(title: str, author: str) -> str | None:
@@ -81,6 +96,65 @@ def resolve_feed_url(title: str, author: str) -> str | None:
     return None
 
 
+def search_podcasts(term: str, limit: int = 15) -> list[PodcastSearchResult]:
+    """Free-text podcast search via Apple's key-free iTunes Search API --
+    the same endpoint/domain resolve_feed_url already calls, just used
+    directly for user-initiated search instead of best-effort single-
+    match resolution. Returns every result with a feedUrl (skipping any
+    without one, which does happen for a handful of Apple-exclusive
+    shows) -- the user picks among them, so this doesn't collapse to a
+    single "best" match the way resolve_feed_url does.
+
+    Unlike every other function in this module, this raises on a real
+    HTTP failure rather than degrading to [] -- this is a direct,
+    user-initiated action (a search button click), not a background
+    best-effort enrichment step where one failure shouldn't block a
+    whole sync; the caller (the web GUI route) should surface the error
+    to the user instead of silently showing an empty result list."""
+    resp = httpx.get(
+        _ITUNES_SEARCH_URL,
+        params={"term": term, "entity": "podcast", "limit": limit},
+        timeout=_REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+
+    found: list[PodcastSearchResult] = []
+    for result in results:
+        feed_url = result.get("feedUrl")
+        if not feed_url:
+            continue
+        found.append(
+            PodcastSearchResult(
+                collection_id=result.get("collectionId", 0),
+                title=result.get("collectionName", ""),
+                author=result.get("artistName", ""),
+                feed_url=feed_url,
+                artwork_url=result.get("artworkUrl600") or result.get("artworkUrl100"),
+            )
+        )
+    return found
+
+
+def _parse_itunes_duration(value: str | None) -> int | None:
+    """Parses <itunes:duration>, which real feeds write inconsistently --
+    confirmed across sample feeds: "HH:MM:SS", "MM:SS", or a bare integer
+    seconds count all appear in the wild. Returns None (never raises) for
+    anything else, matching this module's existing best-effort contract."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return int(value)
+    parts = value.split(":")
+    if not (2 <= len(parts) <= 3) or not all(p.isdigit() for p in parts):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds
+
+
 def _find_itunes_tag(item: ET.Element, tag: str) -> int | None:
     value = item.findtext(f"{{{_ITUNES_NS}}}{tag}")
     if value is None:
@@ -123,6 +197,9 @@ def fetch_rss_episodes(feed_url: str) -> list[RssEpisodeMeta]:
                 episode_number=_find_itunes_tag(item, "episode"),
                 season_number=_find_itunes_tag(item, "season"),
                 published=item.findtext("pubDate"),
+                duration_seconds=_parse_itunes_duration(
+                    item.findtext(f"{{{_ITUNES_NS}}}duration")
+                ),
             )
         )
     return episodes

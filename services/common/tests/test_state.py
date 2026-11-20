@@ -324,6 +324,7 @@ def test_pre_existing_episodes_table_migrates_new_columns_in_place(tmp_path: Pat
         assert fetched.episode_number is None
         assert fetched.season_number is None
         assert fetched.published_at == ""
+        assert fetched.one_off is False
 
 
 def test_rss_metadata_round_trips_through_record_episode(tmp_path: Path):
@@ -460,3 +461,65 @@ def test_count_episodes_unplayed_only_excludes_played(tmp_path: Path):
 
         assert db.count_episodes(unplayed_only=False) == 2
         assert db.count_episodes(unplayed_only=True) == 1
+
+
+def test_record_one_off_episode_sets_one_off_and_not_unsubscribed(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_one_off_episode(_episode("ep-oneoff"))
+
+        fetched = db.get_episode("ep-oneoff")
+        assert fetched.one_off is True
+        assert fetched.unsubscribed is False
+
+
+def test_record_one_off_episode_upserts_on_duplicate_key(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_one_off_episode(_episode("ep-oneoff"))
+        updated = _episode("ep-oneoff")
+        updated.local_path = "/data/library/podcasts/Test Show/Episode One (2).mp3"
+        db.record_one_off_episode(updated)
+
+        assert db.get_episode("ep-oneoff").local_path == updated.local_path
+        assert len(db.list_episodes()) == 1
+
+
+def test_record_episode_never_sets_one_off(tmp_path: Path):
+    # A regular subscription-driven sync must never produce a one_off
+    # row, even for an episode_uuid that previously went through
+    # record_one_off_episode (shouldn't happen in practice -- synthetic
+    # "oneoff:..." uuids and real Pocket Casts uuids don't collide -- but
+    # confirms record_episode's own upsert doesn't inherit one_off=1).
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_one_off_episode(_episode("ep-1"))
+        db.record_episode(_episode("ep-1"))
+
+        assert db.get_episode("ep-1").one_off is False
+
+
+def test_list_episodes_pending_push_excludes_one_off(tmp_path: Path):
+    # A one-off episode's podcast_uuid is synthetic, not a real Pocket
+    # Casts identity -- pushing play state for it would just fail.
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_episode(_episode("ep-1"))
+        db.update_play_state("ep-1", played=True, played_up_to=0)
+        db.record_one_off_episode(_episode("ep-2"))
+        db.update_play_state("ep-2", played=True, played_up_to=0)
+
+        pending = db.list_episodes_pending_push()
+        assert [e.episode_uuid for e in pending] == ["ep-1"]
+
+
+def test_delete_episode_removes_row_and_returns_it(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        db.record_one_off_episode(_episode("ep-oneoff"))
+
+        deleted = db.delete_episode("ep-oneoff")
+        assert deleted is not None
+        assert deleted.episode_uuid == "ep-oneoff"
+        assert db.get_episode("ep-oneoff") is None
+        assert db.list_episodes() == []
+
+
+def test_delete_episode_returns_none_for_unknown_episode(tmp_path: Path):
+    with StateDB(tmp_path / "state.sqlite") as db:
+        assert db.delete_episode("does-not-exist") is None

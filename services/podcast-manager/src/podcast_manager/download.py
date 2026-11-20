@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +22,12 @@ from podcast_manager.api import (
     list_full_episodes,
     update_episode_status,
 )
-from podcast_manager.rss import fetch_feed_image_url, fetch_rss_episodes, resolve_feed_url
+from podcast_manager.rss import (
+    RssEpisodeMeta,
+    fetch_feed_image_url,
+    fetch_rss_episodes,
+    resolve_feed_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -388,24 +395,143 @@ def sync_shows(
     return outcomes
 
 
-def _other_profile_still_wants_show(
-    podcast_uuid: str, this_state_db_path: Path
+def download_one_off_episode(
+    *,
+    show_title: str,
+    feed_url: str,
+    episode: RssEpisodeMeta,
+    library_root: Path | str,
+    state_db_path: Path | str,
+    lock_path: Path | str | None = None,
+    lock_timeout: float = 1800,
+) -> EpisodeRecord:
+    """Downloads a single episode found via rss.search_podcasts +
+    rss.fetch_rss_episodes, independent of any Pocket Casts subscription
+    -- for grabbing one episode of a show the profile isn't subscribed
+    to (and may never want to be).
+
+    episode_uuid and podcast_uuid are both set to the same synthetic,
+    deterministic value derived from the episode's enclosure URL --
+    re-requesting the same episode resolves to the same row/file instead
+    of duplicating it, and critically, giving every one-off episode its
+    OWN podcast_uuid (rather than grouping them by show) means each one
+    is its own single-episode "feed" to sync-orchestrator's
+    _load_podcast_feeds. That matters: vcsync's build_podcast_sync_plan
+    enforces episode_slots (= profile.podcasts.max_episodes_per_show) as
+    a hard per-feed cap and evicts overflow -- grouping multiple one-off
+    episodes of the same external show under one shared uuid would let a
+    profile's normal max_episodes_per_show setting silently evict an
+    older one-off download the next time a device sync plan runs. A
+    unique uuid per episode keeps that cap always trivially satisfied.
+    See notes.md.
+
+    library_root is resolved the same way sync_podcast resolves it -- a
+    relative path here would produce a relative local_path that
+    sync-orchestrator can't reliably re-resolve later (same bug class as
+    sync_podcast's own docstring/CLAUDE.md already describe)."""
+    library_root = Path(library_root).resolve()
+    if lock_path is None:
+        lock_path = Path(state_db_path).parent / ".podcasts.lock"
+
+    synthetic_uuid = "oneoff:" + hashlib.sha256(episode.enclosure_url.encode()).hexdigest()[:32]
+    show_dir = library_root / _sanitize(show_title)
+    dest = show_dir / f"{_sanitize(episode.title)} [{synthetic_uuid}]{_guess_extension(episode.enclosure_url)}"
+
+    if not dest.exists():
+        _download_enclosure(episode.enclosure_url, dest)
+
+    # Best-effort cover art, same convention as sync_podcast's -- a
+    # single show-level cover gives every episode in show_dir on-device
+    # artwork for free via iopenpod/vcsync's folder-fallback art lookup.
+    if not any(show_dir.glob("cover.*")):
+        image_url = fetch_feed_image_url(feed_url)
+        if image_url:
+            try:
+                _download_enclosure(
+                    image_url, show_dir / f"cover{_guess_image_extension(image_url)}"
+                )
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "podcasts: could not download cover art for %r: %s", show_title, exc
+                )
+
+    record = EpisodeRecord(
+        episode_uuid=synthetic_uuid,
+        podcast_uuid=synthetic_uuid,
+        show_name=show_title,
+        local_path=str(dest),
+        played=False,
+        played_up_to=0,
+        downloaded_at=datetime.now(timezone.utc).isoformat(),
+        title=episode.title,
+        audio_url=episode.enclosure_url,
+        duration_seconds=episode.duration_seconds or 0,
+        description=episode.description,
+        episode_number=episode.episode_number,
+        season_number=episode.season_number,
+        published_at=episode.published or "",
+        one_off=True,
+    )
+    with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
+        db.record_one_off_episode(record)
+    return record
+
+
+def _other_profile_has_matching_episode(
+    predicate: Callable[[EpisodeRecord], bool], this_state_db_path: Path
 ) -> bool:
-    """Podcast audio files are shared/deduped across profiles (no profile
-    name in the path -- see _episode_path/CLAUDE.md), but play/subscribe
-    state is tracked per-profile in each profile's own state db. Before
-    physically deleting a show's file because *this* profile unsubscribed,
-    check every sibling state db in the same directory: if any of them
-    still has a non-unsubscribed row for this podcast_uuid, another
-    profile is still using the file and it must not be deleted."""
+    """Scans every sibling profile's state db (same directory, excluding
+    this_state_db_path itself) for an episode row `predicate` accepts.
+    Shared by prune_unsubscribed_shows (is another profile still
+    subscribed to this show?) and delete_one_off_episode (does another
+    profile still have this exact one-off episode?) -- both need the
+    same "don't delete a file another profile still needs" check before
+    physically removing anything, since podcast audio files are shared/
+    deduped across profiles while subscribe/one-off state is tracked
+    per-profile (see CLAUDE.md)."""
     for sibling in this_state_db_path.parent.glob("*.sqlite"):
         if sibling == this_state_db_path:
             continue
         with StateDB(sibling) as db:
             for episode in db.list_episodes():
-                if episode.podcast_uuid == podcast_uuid and not episode.unsubscribed:
+                if predicate(episode):
                     return True
     return False
+
+
+def delete_one_off_episode(
+    episode_uuid: str,
+    *,
+    state_db_path: Path | str,
+    lock_path: Path | str | None = None,
+    lock_timeout: float = 1800,
+) -> EpisodeRecord | None:
+    """Removes a one-off episode: the shared local file (unless another
+    profile's state db still has a non-deleted one_off row for this
+    exact episode_uuid, same cross-profile file-sharing concern
+    prune_unsubscribed_shows already handles for subscribed shows) and
+    this profile's own state db row.
+
+    Refuses (returns None, deletes nothing) for anything that isn't a
+    one_off row -- this is a hard delete, unlike mark_unsubscribed, and
+    must never be reachable for a subscription-tracked episode."""
+    state_db_path = Path(state_db_path).resolve()
+    if lock_path is None:
+        lock_path = state_db_path.parent / ".podcasts.lock"
+
+    with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
+        existing = db.get_episode(episode_uuid)
+        if existing is None or not existing.one_off:
+            return None
+        if not _other_profile_has_matching_episode(
+            lambda e: e.episode_uuid == episode_uuid and e.one_off,
+            state_db_path,
+        ):
+            path = Path(existing.local_path)
+            if path.is_file():
+                path.unlink()
+        db.delete_episode(episode_uuid)
+    return existing
 
 
 def prune_unsubscribed_shows(
@@ -438,9 +564,16 @@ def prune_unsubscribed_shows(
     pruned: list[EpisodeRecord] = []
     with FileLock(lock_path, timeout=lock_timeout), StateDB(state_db_path) as db:
         for episode in db.list_episodes():
-            if episode.unsubscribed or episode.podcast_uuid in subscribed_uuids:
+            # one_off: a synthetic podcast_uuid is never a real
+            # subscription, so "no longer subscribed" is meaningless for
+            # these rows -- see download_one_off_episode's docstring.
+            if episode.unsubscribed or episode.one_off or episode.podcast_uuid in subscribed_uuids:
                 continue
-            if not _other_profile_still_wants_show(episode.podcast_uuid, state_db_path):
+            if not _other_profile_has_matching_episode(
+                lambda e, puuid=episode.podcast_uuid: e.podcast_uuid == puuid
+                and not e.unsubscribed,
+                state_db_path,
+            ):
                 path = Path(episode.local_path)
                 if path.is_file():
                     path.unlink()
